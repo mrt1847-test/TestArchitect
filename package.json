@@ -1,0 +1,26 @@
+{
+  "name": "testarchitect",
+  "version": "1.0.0",
+  "description": "Test Automation Tool with Recorder, Code Conversion, Test Case Management, Runner, and Result Viewer",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder",
+    "build-python": "node scripts/build-python-bundle.js",
+    "postinstall": "node scripts/build-python-bundle.js"
+  },
+  "keywords": [
+    "test-automation",
+    "electron",
+    "testing"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  },
+  "dependencies": {}
+}
+

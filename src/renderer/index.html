@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TestArchitect</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>TestArchitect</h1>
+            <p class="subtitle">테스트 자동화 도구</p>
+        </header>
+
+        <main>
+            <div class="panel">
+                <h2>테스트 실행</h2>
+                <div class="control-group">
+                    <label for="script-select">테스트 스크립트 선택:</label>
+                    <select id="script-select">
+                        <option value="">스크립트를 선택하세요</option>
+                    </select>
+                    <button id="run-btn" class="btn btn-primary">실행</button>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>실행 결과</h2>
+                <div id="result-container">
+                    <div class="result-placeholder">
+                        테스트를 실행하면 결과가 여기에 표시됩니다.
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script type="module" src="renderer.js"></script>
+</body>
+</html>
+

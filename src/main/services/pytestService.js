@@ -65,72 +65,81 @@ class PytestService {
         // Pytest 명령어 구성 (런타임 정보 사용)
         const command = this._buildCommand(testPath, reportFile, args, runtime);
 
-      // Playwright 환경 변수 설정
-      const playwrightEnv = PythonRuntime.getPlaywrightEnv(runtime);
-      
-      // 테스트 실행
-      exec(
-        command,
-        {
-          cwd: config.paths.scripts,
-          timeout: config.python.timeout,
-          maxBuffer: 10 * 1024 * 1024, // 10MB
-          env: playwrightEnv // Playwright 브라우저 경로 포함
-        },
-        async (error, stdout, stderr) => {
-          try {
-            // 리포트 파일 읽기
-            const reportData = this._readReportFile(reportFile);
+        // Playwright 환경 변수 설정
+        const playwrightEnv = PythonRuntime.getPlaywrightEnv(runtime);
+        
+        // 테스트 실행
+        exec(
+          command,
+          {
+            cwd: config.paths.scripts,
+            timeout: config.python.timeout,
+            maxBuffer: 10 * 1024 * 1024, // 10MB
+            env: playwrightEnv // Playwright 브라우저 경로 포함
+          },
+          async (error, stdout, stderr) => {
+            try {
+              // 리포트 파일 읽기
+              const reportData = this._readReportFile(reportFile);
 
-            // 리포트 파일 정리
-            this._cleanupReportFile(reportFile);
+              // 리포트 파일 정리
+              this._cleanupReportFile(reportFile);
 
-            // pytest는 테스트 실패 시에도 exit code 1을 반환하므로
-            // error가 있어도 리포트가 있으면 성공으로 처리
-            if (reportData) {
-              resolve({
-                success: true,
-                data: reportData,
-                stdout: stdout,
-                stderr: stderr || ''
-              });
-            } else if (error) {
-              // 리포트가 없고 에러가 있는 경우
+              // pytest는 테스트 실패 시에도 exit code 1을 반환하므로
+              // error가 있어도 리포트가 있으면 성공으로 처리
+              if (reportData) {
+                resolve({
+                  success: true,
+                  data: reportData,
+                  stdout: stdout,
+                  stderr: stderr || ''
+                });
+              } else if (error) {
+                // 리포트가 없고 에러가 있는 경우
+                reject({
+                  success: false,
+                  error: error.message || '테스트 실행 실패',
+                  stderr: stderr || '',
+                  stdout: stdout || ''
+                });
+              } else {
+                // 리포트가 없지만 에러도 없는 경우 (이상한 상황)
+                resolve({
+                  success: true,
+                  data: {
+                    summary: {
+                      total: 0,
+                      passed: 0,
+                      failed: 0,
+                      skipped: 0,
+                      error: 0
+                    },
+                    note: '테스트 결과 리포트를 생성할 수 없었습니다.'
+                  },
+                  stdout: stdout,
+                  stderr: stderr || ''
+                });
+              }
+            } catch (parseError) {
+              this._cleanupReportFile(reportFile);
               reject({
                 success: false,
-                error: error.message || '테스트 실행 실패',
+                error: `결과 파싱 실패: ${parseError.message}`,
                 stderr: stderr || '',
                 stdout: stdout || ''
               });
-            } else {
-              // 리포트가 없지만 에러도 없는 경우 (이상한 상황)
-              resolve({
-                success: true,
-                data: {
-                  summary: {
-                    total: 0,
-                    passed: 0,
-                    failed: 0,
-                    skipped: 0,
-                    error: 0
-                  },
-                  note: '테스트 결과 리포트를 생성할 수 없었습니다.'
-                },
-                stdout: stdout,
-                stderr: stderr || ''
-              });
             }
-          } catch (parseError) {
-            this._cleanupReportFile(reportFile);
-            reject({
-              success: false,
-              error: `결과 파싱 실패: ${parseError.message}`,
-              stderr: stderr || '',
-              stdout: stdout || ''
-            });
           }
-        }
-      );
+        );
+      } catch (error) {
+        // 런타임 가져오기 실패 등 초기화 오류 처리
+        reject({
+          success: false,
+          error: error.message || '테스트 실행 초기화 실패',
+          stderr: '',
+          stdout: ''
+        });
+      }
     });
   }
 

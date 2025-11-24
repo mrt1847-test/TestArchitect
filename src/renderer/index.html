@@ -5,38 +5,375 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TestArchitect</title>
     <link rel="stylesheet" href="styles.css">
+    <!-- CodeMirror CSS -->
+    <link rel="stylesheet" href="../../node_modules/codemirror/lib/codemirror.css">
+    <link rel="stylesheet" href="../../node_modules/codemirror/theme/monokai.css">
+    <link rel="stylesheet" href="../../node_modules/codemirror/theme/dracula.css">
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>TestArchitect</h1>
-            <p class="subtitle">테스트 자동화 도구</p>
-        </header>
-
-        <main>
-            <div class="panel">
-                <h2>테스트 실행</h2>
-                <div class="control-group">
-                    <label for="script-select">테스트 스크립트 선택:</label>
-                    <select id="script-select">
-                        <option value="">스크립트를 선택하세요</option>
+    <div class="app-container">
+        <!-- 헤더 + 상단 툴바 (Katalon 스타일) -->
+        <header class="app-header">
+            <div class="header-top">
+                <h1>TestArchitect</h1>
+                <p class="subtitle">테스트 자동화 통합 플랫폼</p>
+            </div>
+            <div class="toolbar">
+                <div class="toolbar-group">
+                    <button id="run-current-btn" class="btn btn-primary btn-sm" title="현재 TC 실행">
+                        <span class="btn-icon">▶️</span>
+                        실행
+                    </button>
+                    <select id="profile-select" class="select-sm" title="프로파일">
+                        <option value="">프로파일</option>
+                        <option value="dev">Dev</option>
+                        <option value="test">Test</option>
+                        <option value="prod">Prod</option>
                     </select>
-                    <button id="run-btn" class="btn btn-primary">실행</button>
+                    <select id="browser-select" class="select-sm" title="브라우저">
+                        <option value="chrome">Chrome</option>
+                        <option value="edge">Edge</option>
+                        <option value="webkit">WebKit</option>
+                    </select>
+                </div>
+                <div class="toolbar-group">
+                    <input type="text" id="search-input" class="search-input" placeholder="🔍 TC 검색...">
+                    <button id="filter-btn" class="btn-icon" title="필터">🔽</button>
+                    <button id="settings-btn" class="btn-icon" title="설정">⚙️</button>
                 </div>
             </div>
+        </header>
 
-            <div class="panel">
-                <h2>실행 결과</h2>
-                <div id="result-container">
-                    <div class="result-placeholder">
-                        테스트를 실행하면 결과가 여기에 표시됩니다.
+        <!-- 메인 컨텐츠 -->
+        <main class="main-content">
+            <!-- 좌측 사이드바: 프로젝트 탐색기 (Katalon 스타일) -->
+            <aside class="sidebar">
+                <!-- 프로젝트 선택 -->
+                <div class="project-selector">
+                    <label for="project-select">프로젝트:</label>
+                    <select id="project-select">
+                        <option value="">프로젝트를 선택하세요</option>
+                    </select>
+                    <button id="new-project-btn" class="btn-icon" title="새 프로젝트">➕</button>
+                </div>
+
+                <!-- 프로젝트 탐색기 (Tests/Objects/Profiles) -->
+                <div class="project-explorer">
+                    <!-- Tests 섹션 -->
+                    <div class="explorer-section">
+                        <div class="section-header" data-section="tests">
+                            <span class="section-icon">📁</span>
+                            <span class="section-title">Tests</span>
+                            <button class="section-toggle">▼</button>
+                        </div>
+                        <div class="section-content" id="tests-section">
+                            <div class="tc-tree-container">
+                                <div class="tree-header">
+                                    <h4>테스트케이스</h4>
+                                    <div class="tree-actions">
+                                        <button id="expand-all-btn" class="btn-icon" title="모두 펼치기">📂</button>
+                                        <button id="collapse-all-btn" class="btn-icon" title="모두 접기">📁</button>
+                                    </div>
+                                </div>
+                                <div id="tc-tree" class="tc-tree">
+                                    <div class="tree-placeholder">프로젝트를 선택하세요</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Objects 섹션 (향후 구현) -->
+                    <div class="explorer-section">
+                        <div class="section-header" data-section="objects">
+                            <span class="section-icon">📦</span>
+                            <span class="section-title">Objects</span>
+                            <button class="section-toggle">▼</button>
+                        </div>
+                        <div class="section-content collapsed" id="objects-section">
+                            <div class="placeholder">객체 리포지토리 (향후 구현)</div>
+                        </div>
+                    </div>
+
+                    <!-- Profiles 섹션 -->
+                    <div class="explorer-section">
+                        <div class="section-header" data-section="profiles">
+                            <span class="section-icon">⚙️</span>
+                            <span class="section-title">Profiles</span>
+                            <button class="section-toggle">▼</button>
+                        </div>
+                        <div class="section-content collapsed" id="profiles-section">
+                            <div class="profile-list">
+                                <div class="profile-item" data-profile="dev">
+                                    <span class="profile-icon">⚙️</span>
+                                    <span class="profile-name">Dev</span>
+                                </div>
+                                <div class="profile-item" data-profile="test">
+                                    <span class="profile-icon">⚙️</span>
+                                    <span class="profile-name">Test</span>
+                                </div>
+                                <div class="profile-item" data-profile="prod">
+                                    <span class="profile-icon">⚙️</span>
+                                    <span class="profile-name">Prod</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 실행 컨트롤 (트리 하단) -->
+                <div class="tree-footer">
+                    <div class="selected-count">
+                        <span id="selected-count">0</span>개 선택됨
+                    </div>
+                    <button id="run-selected-btn" class="btn btn-primary btn-block" disabled>
+                        <span class="btn-icon">▶️</span>
+                        선택한 TC 실행
+                    </button>
+                </div>
+            </aside>
+
+            <!-- 중앙 영역: 탭 기반 컨텐츠 -->
+            <section class="content-area">
+                <!-- 탭 헤더 -->
+                <div class="tabs-header">
+                    <button class="tab-btn active" data-tab="detail">
+                        <span class="tab-icon">📋</span>
+                        TC 상세
+                    </button>
+                    <button class="tab-btn" data-tab="script">
+                        <span class="tab-icon">💻</span>
+                        스크립트
+                    </button>
+                    <button class="tab-btn" data-tab="result">
+                        <span class="tab-icon">📊</span>
+                        결과 상세
+                    </button>
+                    <button class="tab-btn" data-tab="recorder">
+                        <span class="tab-icon">🎬</span>
+                        리코더
+                    </button>
+                </div>
+
+                <!-- 탭 컨텐츠 -->
+                <div class="tabs-content">
+                    <!-- TC 상세 정보 탭 -->
+                    <div class="tab-panel active" id="tab-detail">
+                        <div class="panel-header">
+                            <h3 id="tc-detail-title">테스트케이스 상세</h3>
+                            <div class="header-actions">
+                                <button id="edit-tc-btn" class="btn btn-secondary" disabled>편집</button>
+                                <button id="new-tc-btn" class="btn btn-primary">새 TC</button>
+                            </div>
+                        </div>
+                        <div id="tc-detail-content" class="tab-content-body">
+                            <div class="placeholder">테스트케이스를 선택하세요</div>
+                        </div>
+                    </div>
+
+                    <!-- 스크립트 탭 -->
+                    <div class="tab-panel" id="tab-script">
+                        <div class="panel-header">
+                            <h3>스크립트</h3>
+                            <div class="header-actions">
+                                <div class="script-view-toggle">
+                                    <button class="view-btn active" data-view="code">코드</button>
+                                    <button class="view-btn" data-view="keyword">키워드</button>
+                                </div>
+                                <select id="script-language" class="select-sm">
+                                    <option value="python">Python</option>
+                                    <option value="javascript">JavaScript</option>
+                                    <option value="typescript">TypeScript</option>
+                                </select>
+                                <select id="script-framework" class="select-sm">
+                                    <option value="playwright">Playwright</option>
+                                    <option value="selenium">Selenium</option>
+                                    <option value="appium">Appium</option>
+                                </select>
+                                <button id="save-script-btn" class="btn btn-primary" disabled>저장</button>
+                                <button id="create-script-btn" class="btn btn-primary" disabled>새 스크립트</button>
+                            </div>
+                        </div>
+                        <div id="script-content" class="tab-content-body script-editor-container">
+                            <!-- 코드 뷰 -->
+                            <div id="script-code-view" class="script-view active">
+                                <div id="code-editor-wrapper" class="code-editor-wrapper">
+                                    <textarea id="code-editor"></textarea>
+                                </div>
+                            </div>
+                            <!-- 키워드 뷰 -->
+                            <div id="script-keyword-view" class="script-view">
+                                <div class="keyword-table-container">
+                                    <table id="keyword-table" class="keyword-table">
+                                        <thead>
+                                            <tr>
+                                                <th style="width: 50px;">#</th>
+                                                <th>Action</th>
+                                                <th>Target</th>
+                                                <th>Value</th>
+                                                <th>Description</th>
+                                                <th style="width: 80px;">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="keyword-table-body">
+                                            <tr>
+                                                <td colspan="6" class="placeholder">키워드가 없습니다</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                    <div class="keyword-actions">
+                                        <button id="add-keyword-btn" class="btn btn-primary btn-sm">+ 키워드 추가</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 테스트 결과 상세 탭 -->
+                    <div class="tab-panel" id="tab-result">
+                        <div class="panel-header">
+                            <h3>테스트 결과 상세</h3>
+                            <div class="header-actions">
+                                <button id="refresh-results-btn" class="btn btn-secondary">새로고침</button>
+                            </div>
+                        </div>
+                        <div id="result-detail-content" class="tab-content-body">
+                            <div class="placeholder">테스트케이스를 선택하세요</div>
+                        </div>
+                    </div>
+
+                    <!-- 리코더 탭 -->
+                    <div class="tab-panel" id="tab-recorder">
+                        <div class="panel-header">
+                            <h3>리코더</h3>
+                            <div class="header-actions">
+                                <select id="recorder-browser" class="select-small">
+                                    <option value="chrome">Chrome</option>
+                                    <option value="edge">Edge</option>
+                                    <option value="webkit">WebKit</option>
+                                </select>
+                                <button id="start-recording-btn" class="btn btn-primary">
+                                    <span class="btn-icon">🔴</span>
+                                    녹화 시작
+                                </button>
+                                <button id="stop-recording-btn" class="btn btn-danger" disabled>
+                                    <span class="btn-icon">⏹️</span>
+                                    녹화 중지
+                                </button>
+                            </div>
+                        </div>
+                        <div id="recorder-content" class="tab-content-body">
+                            <div class="recorder-container">
+                                <div class="recorder-info">
+                                    <p>리코더를 사용하여 테스트 시나리오를 녹화하고 TC로 변환할 수 있습니다.</p>
+                                    <ol>
+                                        <li>TC를 선택하거나 새 TC를 생성하세요</li>
+                                        <li>브라우저를 선택하고 "녹화 시작"을 클릭하세요</li>
+                                        <li>브라우저에서 테스트를 수행하세요</li>
+                                        <li>"녹화 중지"를 클릭하여 TC에 저장하세요</li>
+                                    </ol>
+                                </div>
+                                <div id="recorder-viewport" class="recorder-viewport">
+                                    <div class="recorder-placeholder">
+                                        <p>녹화를 시작하면 브라우저가 여기에 표시됩니다</p>
+                                    </div>
+                                </div>
+                                <div id="recorder-events" class="recorder-events">
+                                    <h4>캡처된 이벤트</h4>
+                                    <div id="events-list" class="events-list">
+                                        <div class="placeholder">이벤트가 여기에 표시됩니다</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 우측 패널: 전체 실행 결과 (토글 가능) -->
+            <aside class="results-panel" id="results-panel">
+                <div class="panel-header">
+                    <h3>전체 실행 결과</h3>
+                    <div class="header-actions">
+                        <button id="toggle-results-btn" class="btn-icon" title="패널 접기/펼치기">◀</button>
+                        <button id="export-report-btn" class="btn-icon" title="리포트 내보내기">💾</button>
+                        <button id="clear-results-btn" class="btn-icon" title="결과 지우기">🗑️</button>
+                    </div>
+                </div>
+                <div id="results-container" class="results-container">
+                    <div class="results-summary">
+                        <div class="summary-item">
+                            <span class="summary-label">전체:</span>
+                            <span class="summary-value" id="summary-total">0</span>
+                        </div>
+                        <div class="summary-item passed">
+                            <span class="summary-label">통과:</span>
+                            <span class="summary-value" id="summary-passed">0</span>
+                        </div>
+                        <div class="summary-item failed">
+                            <span class="summary-label">실패:</span>
+                            <span class="summary-value" id="summary-failed">0</span>
+                        </div>
+                        <div class="summary-item error">
+                            <span class="summary-label">에러:</span>
+                            <span class="summary-value" id="summary-error">0</span>
+                        </div>
+                    </div>
+                    <div id="results-list" class="results-list">
+                        <div class="placeholder">실행 결과가 여기에 표시됩니다</div>
+                    </div>
+                </div>
+            </aside>
+        </main>
+
+        <!-- 하단 패널 (Katalon 스타일) -->
+        <footer class="bottom-panel" id="bottom-panel">
+            <div class="panel-tabs">
+                <button class="panel-tab active" data-panel="log">로그</button>
+                <button class="panel-tab" data-panel="result">결과</button>
+                <button class="panel-tab" data-panel="console">콘솔</button>
+                <button class="panel-tab" data-panel="error">에러</button>
+                <button id="toggle-bottom-panel" class="panel-toggle">▼</button>
+            </div>
+            <div class="panel-content">
+                <div class="panel-tab-content active" id="panel-log">
+                    <div class="log-content" id="log-content">
+                        <div class="log-entry info">[INFO] 애플리케이션이 시작되었습니다</div>
+                    </div>
+                </div>
+                <div class="panel-tab-content" id="panel-result">
+                    <div class="result-content" id="result-content">
+                        <div class="placeholder">실행 결과가 여기에 표시됩니다</div>
+                    </div>
+                </div>
+                <div class="panel-tab-content" id="panel-console">
+                    <div class="console-content" id="console-content">
+                        <div class="placeholder">콘솔 출력이 여기에 표시됩니다</div>
+                    </div>
+                </div>
+                <div class="panel-tab-content" id="panel-error">
+                    <div class="error-content" id="error-content">
+                        <div class="placeholder">에러가 없습니다</div>
                     </div>
                 </div>
             </div>
-        </main>
+        </footer>
     </div>
 
-    <script type="module" src="renderer.js"></script>
+    <!-- 컨텍스트 메뉴 -->
+    <div id="context-menu" class="context-menu">
+        <div class="context-menu-item" data-action="run">▶️ 실행</div>
+        <div class="context-menu-item" data-action="edit">✏️ 편집</div>
+        <div class="context-menu-item" data-action="duplicate">📋 복제</div>
+        <div class="context-menu-divider"></div>
+        <div class="context-menu-item" data-action="delete">🗑️ 삭제</div>
+        <div class="context-menu-item" data-action="new-folder">📁 새 폴더</div>
+    </div>
+
+    <!-- CodeMirror JS -->
+    <script src="../../node_modules/codemirror/lib/codemirror.js"></script>
+    <script src="../../node_modules/codemirror/mode/python/python.js"></script>
+    <script src="../../node_modules/codemirror/mode/javascript/javascript.js"></script>
+    <script src="../../node_modules/codemirror/mode/clike/clike.js"></script>
+    <script src="renderer.js"></script>
 </body>
 </html>
-

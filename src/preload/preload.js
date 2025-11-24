@@ -54,6 +54,88 @@ contextBridge.exposeInMainWorld('electronAPI', {
    */
   checkEnvironment: () => {
     return ipcRenderer.invoke('check-environment');
+  },
+
+  /**
+   * 녹화 시작
+   * @param {Object} options - 녹화 옵션 (browser, mobile 등)
+   * @returns {Promise<Object>} 결과
+   */
+  startRecording: (options) => {
+    return ipcRenderer.invoke('start-recording', options);
+  },
+
+  /**
+   * 녹화 중지
+   * @returns {Promise<Object>} 녹화된 이벤트
+   */
+  stopRecording: () => {
+    return ipcRenderer.invoke('stop-recording');
+  },
+
+  /**
+   * 이벤트 캡처
+   * @param {Object} eventData - 캡처된 이벤트 데이터
+   * @returns {Promise<Object>} 결과
+   */
+  captureEvent: (eventData) => {
+    return ipcRenderer.invoke('capture-event', eventData);
+  },
+
+  /**
+   * 브라우저 열기
+   * @param {Object} options - 브라우저 옵션
+   * @returns {Promise<Object>} 결과
+   */
+  openBrowser: (options) => {
+    return ipcRenderer.invoke('open-browser', options);
+  },
+
+  /**
+   * 서버 API 호출
+   */
+  api: {
+    // 프로젝트
+    getProjects: () => ipcRenderer.invoke('api-get-projects'),
+    getProject: (id) => ipcRenderer.invoke('api-get-project', id),
+    createProject: (data) => ipcRenderer.invoke('api-create-project', data),
+    updateProject: (id, data) => ipcRenderer.invoke('api-update-project', id, data),
+    deleteProject: (id) => ipcRenderer.invoke('api-delete-project', id),
+    
+    // 테스트케이스
+    getTestCases: (params) => ipcRenderer.invoke('api-get-test-cases', params),
+    getTestCase: (id) => ipcRenderer.invoke('api-get-test-case', id),
+    getTCTree: (projectId) => ipcRenderer.invoke('api-get-tc-tree', projectId),
+    createTestCase: (data) => ipcRenderer.invoke('api-create-test-case', data),
+    updateTestCase: (id, data) => ipcRenderer.invoke('api-update-test-case', id, data),
+    deleteTestCase: (id) => ipcRenderer.invoke('api-delete-test-case', id),
+    
+    // 스크립트
+    getScripts: (params) => ipcRenderer.invoke('api-get-scripts', params),
+    createScript: (data) => ipcRenderer.invoke('api-create-script', data),
+    updateScript: (id, data) => ipcRenderer.invoke('api-update-script', id, data),
+    deleteScript: (id) => ipcRenderer.invoke('api-delete-script', id),
+    getScriptsByTestCase: (testCaseId) => ipcRenderer.invoke('api-get-scripts-by-test-case', testCaseId),
+    
+    // 동기화
+    getSyncStatus: () => ipcRenderer.invoke('api-get-sync-status'),
+    getTestCaseFull: (id) => ipcRenderer.invoke('api-get-test-case-full', id),
+    
+    // 서버 상태
+    checkServer: () => ipcRenderer.invoke('api-check-server')
+  },
+
+  /**
+   * 서버 이벤트 리스너
+   */
+  onServerUpdate: (callback) => {
+    ipcRenderer.on('server-update', (event, data) => callback(data));
+  },
+  onTestCaseUpdated: (callback) => {
+    ipcRenderer.on('test-case-updated', (event, data) => callback(data));
+  },
+  onScriptUpdated: (callback) => {
+    ipcRenderer.on('script-updated', (event, data) => callback(data));
   }
 
   // ============================================================================

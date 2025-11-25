@@ -15,6 +15,7 @@ const projectRoutes = require('./routes/projects');
 const testCaseRoutes = require('./routes/testCases');
 const scriptRoutes = require('./routes/scripts');
 const syncRoutes = require('./routes/sync');
+const objectRoutes = require('./routes/objects');
 
 const app = express();
 const server = http.createServer(app);
@@ -32,6 +33,7 @@ app.use('/api/projects', projectRoutes);
 app.use('/api/test-cases', testCaseRoutes);
 app.use('/api/scripts', scriptRoutes);
 app.use('/api/sync', syncRoutes);
+app.use('/api/objects', objectRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

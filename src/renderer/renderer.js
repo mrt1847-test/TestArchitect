@@ -633,24 +633,35 @@ function getDefaultScript() {
   const language = scriptLanguage.value;
   const framework = scriptFramework.value;
   
-  if (language === 'python' && framework === 'playwright') {
-    return `from playwright.sync_api import Page, expect
+  if (language === 'python' && framework === 'pytest') {
+    return `import pytest
+from playwright.sync_api import Page
 
-def test_example(page: Page):
-    """테스트 예제"""
-    page.goto("https://example.com")
-    expect(page).to_have_title("Example Domain")
+@pytest.mark.playwright
+def test_example(page_playwright: Page):
+    """테스트 예제 - conftest.py의 fixture 사용"""
+    page_playwright.goto("https://example.com")
+    assert "Example" in page_playwright.title()
+`;
+  } else if (language === 'python' && framework === 'playwright') {
+    return `import pytest
+from playwright.sync_api import Page, expect
+
+@pytest.mark.playwright
+def test_example(page_playwright: Page):
+    """테스트 예제 - conftest.py의 fixture 사용"""
+    page_playwright.goto("https://example.com")
+    expect(page_playwright).to_have_title("Example Domain")
 `;
   } else if (language === 'python' && framework === 'selenium') {
-    return `from selenium import webdriver
-from selenium.webdriver.common.by import By
+    return `import pytest
+from selenium.webdriver.remote.webdriver import WebDriver
 
-def test_example():
-    """테스트 예제"""
-    driver = webdriver.Chrome()
-    driver.get("https://example.com")
-    assert "Example" in driver.title
-    driver.quit()
+@pytest.mark.selenium
+def test_example(driver_selenium: WebDriver):
+    """테스트 예제 - conftest.py의 fixture 사용"""
+    driver_selenium.get("https://example.com")
+    assert "Example" in driver_selenium.title
 `;
   } else if (language === 'python' && framework === 'appium') {
     return `from appium import webdriver
@@ -709,12 +720,19 @@ async function saveScript() {
   }
 
   try {
+    // pytest 형식으로 framework 설정 (python인 경우)
+    let framework = scriptFramework.value;
+    if (scriptLanguage.value === 'python' && framework !== 'pytest') {
+      // playwright, selenium 등은 pytest로 통일
+      framework = 'pytest';
+    }
+    
     const scriptData = {
       test_case_id: currentTC.id,
-      name: currentScript?.name || `script_${currentTC.id}_${Date.now()}.py`,
+      name: currentScript?.name || `TC_${currentTC.id}_${currentTC.name || 'test'}`,
       code: code,
       language: scriptLanguage.value,
-      framework: scriptFramework.value,
+      framework: framework,
       status: 'active'
     };
 
@@ -1052,11 +1070,12 @@ async function runSelectedTCs() {
 
   try {
     const tcIds = Array.from(selectedTCs);
-    const results = [];
+    const testFiles = [];
+    const tcFileMap = new Map(); // TC ID와 파일명 매핑
     
+    // 모든 TC의 스크립트 파일 수집
     for (const tcId of tcIds) {
       try {
-        // TC의 스크립트 조회
         const scriptsResponse = await window.electronAPI.api.getScriptsByTestCase(tcId);
         
         if (scriptsResponse.success && scriptsResponse.data.length > 0) {
@@ -1064,32 +1083,69 @@ async function runSelectedTCs() {
           
           if (script.file_path) {
             const scriptName = script.file_path.split(/[/\\]/).pop();
-            const result = await window.electronAPI.runPythonScript(scriptName);
-            
-            results.push({
-              tcId,
-              scriptId: script.id,
-              name: script.name,
-              result,
-              status: result.success ? 'passed' : 'failed'
-            });
+            // pytest 형식 파일만 수집 (test_*.py)
+            if (scriptName.startsWith('test_') && scriptName.endsWith('.py')) {
+              testFiles.push(scriptName);
+              tcFileMap.set(scriptName, { tcId, scriptId: script.id, name: script.name });
+            }
           }
-        } else {
+        }
+      } catch (error) {
+        console.error(`TC #${tcId} 스크립트 조회 실패:`, error);
+      }
+    }
+
+    if (testFiles.length === 0) {
+      alert('실행할 pytest 테스트 파일이 없습니다. 테스트 케이스에 pytest 형식(test_*.py)의 스크립트가 필요합니다.');
+      return;
+    }
+
+    // 여러 파일을 한번에 pytest로 실행
+    const result = await window.electronAPI.runPythonScript(testFiles);
+    
+    // 결과 파싱 및 매핑
+    const results = [];
+    if (result.success && result.data && result.data.tests) {
+      // pytest JSON 리포트에서 각 테스트 결과 추출
+      for (const test of result.data.tests) {
+        const testName = test.nodeid; // 예: "test_tc1_login.py::test_login"
+        const fileName = testName.split('::')[0]; // 파일명 추출
+        
+        if (tcFileMap.has(fileName)) {
+          const tcInfo = tcFileMap.get(fileName);
+          results.push({
+            tcId: tcInfo.tcId,
+            scriptId: tcInfo.scriptId,
+            name: tcInfo.name,
+            result: {
+              success: test.outcome === 'passed',
+              outcome: test.outcome,
+              duration: test.duration,
+              error: test.call?.longrepr || null
+            },
+            status: test.outcome === 'passed' ? 'passed' : test.outcome === 'failed' ? 'failed' : 'error'
+          });
+        }
+      }
+      
+      // 실행되지 않은 TC 처리 (스크립트가 없는 경우)
+      for (const tcId of tcIds) {
+        if (!results.find(r => r.tcId === tcId)) {
           results.push({
             tcId,
             name: `TC #${tcId}`,
-            error: '스크립트가 없습니다',
+            error: '스크립트가 없거나 pytest 형식이 아닙니다',
             status: 'error'
           });
         }
-      } catch (error) {
-        results.push({
-          tcId,
-          name: `TC #${tcId}`,
-          error: error.message,
-          status: 'error'
-        });
       }
+    } else {
+      // 전체 실행 실패
+      results.push({
+        error: result.error || '테스트 실행 실패',
+        status: 'error',
+        result
+      });
     }
 
     // 결과 표시

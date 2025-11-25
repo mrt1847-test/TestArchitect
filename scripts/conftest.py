@@ -27,7 +27,7 @@ def pytest_addoption(parser):
     parser.addoption(
         "--headless",
         action="store",
-        default=os.getenv("TEST_HEADLESS", "true"),
+        default=os.getenv("TEST_HEADLESS", "false"),  # 기본값을 false로 변경 (브라우저 표시)
         choices=["true", "false"],
         help="헤드리스 모드 실행 여부 (true, false)"
     )

@@ -247,6 +247,7 @@ class PytestService {
       `--json-report-file=${escapedReportFile}`,
       '-v',
       '--tb=short'
+      // --headless 옵션은 conftest.py의 기본값(false)을 사용하므로 명시하지 않음
     ];
 
     // HTML 리포트 옵션 추가

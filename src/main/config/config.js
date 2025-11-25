@@ -6,6 +6,61 @@
 const path = require('path');
 
 /**
+ * 앱 경로 가져오기 (개발/프로덕션 모드 자동 감지)
+ * @param {Object} app - Electron app 객체 (선택사항)
+ * @returns {string} 앱 경로
+ */
+function getAppPath(app = null) {
+  // app 객체가 제공되면 isPackaged 확인
+  if (app && typeof app.isPackaged !== 'undefined') {
+    if (app.isPackaged) {
+      // 프로덕션: 앱 번들 내부 경로
+      return app.getAppPath();
+    } else {
+      // 개발: 프로젝트 루트
+      return path.join(__dirname, '../..');
+    }
+  }
+  
+  // app 객체가 없으면 개발 모드로 가정
+  return path.join(__dirname, '../..');
+}
+
+/**
+ * 경로 설정 초기화 (app 객체 사용 가능 시 호출)
+ * @param {Object} app - Electron app 객체
+ */
+function initializePaths(app) {
+  if (!app) {
+    // app 객체가 없으면 개발 모드로 가정하고 기본 경로 사용
+    return;
+  }
+  
+  const isPackaged = app.isPackaged;
+  
+  if (isPackaged) {
+    // 프로덕션 모드: 앱 번들 내부 경로
+    const appPath = app.getAppPath();
+    config.paths = {
+      scripts: path.join(appPath, 'scripts'),
+      renderer: path.join(appPath, 'src/renderer/index.html'),
+      preload: path.join(appPath, 'src/preload/preload.js')
+    };
+  } else {
+    // 개발 모드: 기본 경로 유지 (이미 올바르게 설정됨)
+    // config.paths는 이미 올바른 기본값으로 설정되어 있음
+  }
+  
+  // 리포트 디렉토리도 사용자 데이터 디렉토리로 변경 (프로덕션)
+  if (isPackaged && app) {
+    const userDataPath = app.getPath('userData');
+    config.pytest.reportDir = path.join(userDataPath, '.pytest-reports');
+    config.pytest.htmlReportDir = path.join(userDataPath, '.pytest-reports', 'html');
+    config.pytest.screenshotDir = path.join(userDataPath, '.pytest-reports', 'screenshots');
+  }
+}
+
+/**
  * 애플리케이션 설정 객체
  */
 const config = {
@@ -18,11 +73,11 @@ const config = {
     title: 'TestArchitect'
   },
 
-  // 경로 설정
+  // 경로 설정 (초기값, initializePaths로 업데이트됨)
   paths: {
     scripts: path.join(__dirname, '../../scripts'),
-    renderer: path.join(__dirname, '../../renderer/index.html'),
-    preload: path.join(__dirname, '../../preload/preload.js')
+    renderer: path.join(__dirname, '../../renderer/index.html'),  // 개발 모드 기본값
+    preload: path.join(__dirname, '../../preload/preload.js')  // 개발 모드 기본값
   },
 
   // Python 실행 설정
@@ -101,6 +156,10 @@ const config = {
     }
   }
 };
+
+// 경로 초기화 함수 export
+config.initializePaths = initializePaths;
+config.getAppPath = getAppPath;
 
 module.exports = config;
 

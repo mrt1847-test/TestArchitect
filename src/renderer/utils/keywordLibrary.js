@@ -15,6 +15,23 @@ export const KEYWORD_TYPES = {
 };
 
 /**
+ * URL에 프로토콜이 없으면 자동으로 추가
+ * @param {string} url - URL 문자열
+ * @returns {string} 프로토콜이 포함된 URL
+ */
+function normalizeUrl(url) {
+  if (!url) return url;
+  
+  // 이미 프로토콜이 있으면 그대로 반환
+  if (/^https?:\/\//i.test(url)) {
+    return url;
+  }
+  
+  // 프로토콜이 없으면 https:// 추가
+  return `https://${url}`;
+}
+
+/**
  * 키워드 정의
  */
 export const KEYWORDS = {
@@ -25,9 +42,9 @@ export const KEYWORDS = {
     description: 'URL 열기',
     parameters: ['url'],
     codeGenerators: {
-      playwright: (params) => `page.goto("${params.url}")`,
-      selenium: (params) => `driver.get("${params.url}")`,
-      pytest: (params) => `page.goto("${params.url}")`
+      playwright: (params) => `page.goto("${normalizeUrl(params.url)}")`,
+      selenium: (params) => `driver.get("${normalizeUrl(params.url)}")`,
+      pytest: (params) => `page.goto("${normalizeUrl(params.url)}")`
     }
   },
   goto: {
@@ -36,9 +53,9 @@ export const KEYWORDS = {
     description: 'URL로 이동',
     parameters: ['url'],
     codeGenerators: {
-      playwright: (params) => `page.goto("${params.url}")`,
-      selenium: (params) => `driver.get("${params.url}")`,
-      pytest: (params) => `page.goto("${params.url}")`
+      playwright: (params) => `page.goto("${normalizeUrl(params.url)}")`,
+      selenium: (params) => `driver.get("${normalizeUrl(params.url)}")`,
+      pytest: (params) => `page.goto("${normalizeUrl(params.url)}")`
     }
   },
   

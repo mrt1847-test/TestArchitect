@@ -2225,7 +2225,10 @@ ${steps.map(step => {
         } else if (step.action === 'type' || step.action === 'setText') {
           return `    page.fill("${step.target || ''}", "${step.value || ''}")  # ${step.description || ''}`;
         } else if (step.action === 'goto' || step.action === 'open') {
-          return `    page.goto("${step.target || step.value || ''}")  # ${step.description || ''}`;
+          const url = step.target || step.value || '';
+          // URL에 프로토콜이 없으면 https:// 추가
+          const normalizedUrl = url && !/^https?:\/\//i.test(url) ? `https://${url}` : url;
+          return `    page.goto("${normalizedUrl}")  # ${step.description || ''}`;
         } else {
           return `    # ${step.action}: ${step.target || ''} ${step.value || ''}  # ${step.description || ''}`;
         }
@@ -2246,7 +2249,10 @@ ${steps.map(step => {
         } else if (step.action === 'type' || step.action === 'setText') {
           return `        driver.find_element(By.${step.target?.includes('id=') ? 'ID' : 'CSS_SELECTOR'}, "${step.target || ''}").send_keys("${step.value || ''}")  # ${step.description || ''}`;
         } else if (step.action === 'goto' || step.action === 'open') {
-          return `        driver.get("${step.target || step.value || ''}")  # ${step.description || ''}`;
+          const url = step.target || step.value || '';
+          // URL에 프로토콜이 없으면 https:// 추가
+          const normalizedUrl = url && !/^https?:\/\//i.test(url) ? `https://${url}` : url;
+          return `        driver.get("${normalizedUrl}")  # ${step.description || ''}`;
         } else {
           return `        # ${step.action}: ${step.target || ''} ${step.value || ''}  # ${step.description || ''}`;
         }
@@ -2463,6 +2469,17 @@ async function runSelectedTCs() {
           // Python + pytest/playwright/selenium만 실행
           if (script.language === 'python' && 
               (script.framework === 'pytest' || script.framework === 'playwright' || script.framework === 'selenium')) {
+            // 파일명 생성 (main.js와 동일한 형식)
+            const sanitizedName = script.name.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+            const filename = `test_tc${tcId}_${sanitizedName}.py`;
+            
+            // TC ID와 파일명 매핑 저장
+            tcFileMap.set(filename, {
+              tcId,
+              scriptId: script.id,
+              name: script.name
+            });
+            
             scriptsToRun.push({
               tcId,
               scriptId: script.id,
@@ -2514,7 +2531,9 @@ async function runSelectedTCs() {
               duration: test.duration,
               error: test.call?.longrepr || null
             },
-            status: test.outcome === 'passed' ? 'passed' : test.outcome === 'failed' ? 'failed' : 'error'
+            status: test.outcome === 'passed' ? 'passed' : 
+                    test.outcome === 'failed' ? 'failed' : 
+                    test.outcome === 'error' ? 'error' : 'error'
           });
         }
       }
@@ -2569,11 +2588,26 @@ function displayResults(results) {
       }
     };
 
+    // status를 기준으로 표시 (result.success가 아닌 status 사용)
+    let statusText = '알 수 없음';
+    let statusClass = '';
+    
+    if (item.status === 'passed') {
+      statusText = '통과';
+      statusClass = 'passed';
+    } else if (item.status === 'failed') {
+      statusText = '실패';
+      statusClass = 'failed';
+    } else if (item.status === 'error') {
+      statusText = '에러';
+      statusClass = 'error';
+    }
+    
     if (item.error) {
       resultDiv.innerHTML = `
         <div class="result-header">
           <span class="result-name">${item.name}</span>
-          <span class="result-status">에러</span>
+          <span class="result-status ${statusClass}">${statusText}</span>
         </div>
         <div>${item.error}</div>
       `;
@@ -2581,13 +2615,24 @@ function displayResults(results) {
       resultDiv.innerHTML = `
         <div class="result-header">
           <span class="result-name">${item.name}</span>
-          <span class="result-status">${item.result.success ? '통과' : '실패'}</span>
+          <span class="result-status ${statusClass}">${statusText}</span>
         </div>
+        ${item.result.error ? `
+          <div class="result-error">${item.result.error}</div>
+        ` : ''}
         ${item.result.data ? `
           <div class="result-details">
             <pre>${JSON.stringify(item.result.data, null, 2)}</pre>
           </div>
         ` : ''}
+      `;
+    } else {
+      // status만 있는 경우
+      resultDiv.innerHTML = `
+        <div class="result-header">
+          <span class="result-name">${item.name}</span>
+          <span class="result-status ${statusClass}">${statusText}</span>
+        </div>
       `;
     }
 

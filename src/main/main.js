@@ -14,6 +14,8 @@ if (process.platform === 'win32') {
   } catch (e) {
     // 무시
   }
+  // 환경 변수 설정
+  process.env.PYTHONIOENCODING = 'utf-8';
 }
 
 const { app, BrowserWindow, ipcMain } = require('electron');
@@ -23,6 +25,9 @@ const PytestService = require('./services/pytestService');
 const ScriptManager = require('./services/scriptManager');
 const EnvironmentChecker = require('./services/environmentChecker');
 const DbService = require('./services/dbService');
+
+// 프로덕션 모드 경로 초기화는 app.whenReady()에서 처리
+// createWindow()가 호출되기 전에 경로가 설정되어야 함
 
 /** @type {BrowserWindow} 메인 윈도우 인스턴스 */
 let mainWindow;
@@ -60,6 +65,8 @@ function createWindow() {
  * Electron 앱이 준비되면 윈도우 생성
  */
 app.whenReady().then(async () => {
+  // 프로덕션 모드 경로 초기화 (createWindow 전에 실행)
+  config.initializePaths(app);
   // 스크립트 디렉토리 초기화
   ScriptManager.initializeScriptsDirectory();
 
@@ -224,6 +231,54 @@ ipcMain.handle('run-python-scripts', async (event, scripts, args = [], options =
       '',
       'utf-8'
     );
+    
+    // 3-1. conftest.py 복사 (pytest 설정 및 fixture를 위해 필요)
+    const isPackaged = app.isPackaged;
+    const scriptsDir = config.paths.scripts;
+    const conftestPath = path.join(scriptsDir, 'conftest.py');
+    const conftestDestPath = path.join(tempDir, 'conftest.py');
+    
+    try {
+      // 파일 존재 여부 확인
+      await fs.access(conftestPath);
+      // 파일 읽기 및 쓰기 (한글 경로 문제 방지)
+      const conftestContent = await fs.readFile(conftestPath, 'utf-8');
+      await fs.writeFile(conftestDestPath, conftestContent, 'utf-8');
+      console.log('[INFO] conftest.py copied successfully');
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        // 여러 경로 시도 (개발/프로덕션 모드 모두 고려)
+        const altPaths = [
+          path.join(scriptsDir, 'conftest.py'),  // config.paths.scripts 사용
+          isPackaged 
+            ? path.join(app.getAppPath(), 'scripts', 'conftest.py')  // 프로덕션
+            : path.join(process.cwd(), 'scripts', 'conftest.py'),   // 개발
+          path.join(__dirname, '..', '..', 'scripts', 'conftest.py') // 상대 경로
+        ];
+        
+        let found = false;
+        for (const altPath of altPaths) {
+          try {
+            await fs.access(altPath);
+            const conftestContent = await fs.readFile(altPath, 'utf-8');
+            await fs.writeFile(conftestDestPath, conftestContent, 'utf-8');
+            console.log(`[INFO] conftest.py copied from: ${altPath}`);
+            found = true;
+            break;
+          } catch (e) {
+            // 다음 경로 시도
+          }
+        }
+        
+        if (!found) {
+          console.warn(`[WARN] conftest.py not found. Tried: ${altPaths.map(p => path.resolve(p)).join(', ')}`);
+          console.warn('[WARN] Continuing without conftest.py (fixtures may not work)');
+        }
+      } else {
+        console.warn(`[WARN] Failed to copy conftest.py: ${error.code || error.message}`);
+      }
+      // conftest.py가 없어도 계속 진행
+    }
     
     // 4. TC 스크립트 파일 생성
     const testFiles = [];

@@ -1,26 +1,25 @@
-# TestArchitect Python 의존성
-# pytest 및 관련 플러그인
+# TestArchitect Python Dependencies
+# pytest and related plugins
 
-# pytest 핵심
+# pytest core
 pytest>=7.4.0
 
-# pytest JSON 리포트 플러그인
+# pytest JSON report plugin
 pytest-json-report>=1.5.0
 
-# 추가 pytest 플러그인 (선택사항)
-pytest-html>=3.2.0          # HTML 리포트 생성
-pytest-cov>=4.1.0            # 코드 커버리지
-pytest-xdist>=3.3.0          # 병렬 테스트 실행
-pytest-rerunfailures>=12.0   # 실패한 테스트 재시도
-pytest-timeout>=2.2.0       # 테스트 타임아웃 관리
+# Additional pytest plugins (optional)
+pytest-html>=3.2.0          # HTML report generation
+pytest-cov>=4.1.0            # Code coverage
+pytest-xdist>=3.3.0          # Parallel test execution
+pytest-rerunfailures>=12.0   # Retry failed tests
+pytest-timeout>=2.2.0        # Test timeout management
 
-# 웹 자동화 프레임워크
-playwright>=1.40.0           # Playwright (최신 버전)
+# Web automation frameworks
+playwright>=1.40.0           # Playwright (latest version)
 selenium>=4.15.0             # Selenium WebDriver
 
-# Playwright 브라우저 드라이버 (자동 설치됨)
-# playwright install 명령어로 별도 설치 필요
+# Playwright browser driver (auto-installed)
+# playwright install command required for separate installation
 
-# Selenium WebDriver 관리
-webdriver-manager>=4.0.0    # WebDriver 자동 관리
-
+# Selenium WebDriver management
+webdriver-manager>=4.0.0     # WebDriver auto management

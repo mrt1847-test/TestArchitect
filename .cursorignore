@@ -1,0 +1,23 @@
+# DB files
+*.db
+*.sqlite
+
+# logs
+*.log
+*.jsonl
+
+# build outputs
+dist/
+build/
+out/
+
+# node stuff
+node_modules/
+
+# binaries
+*.png
+*.jpg
+*.gif
+*.exe
+*.dll
+*.wasm

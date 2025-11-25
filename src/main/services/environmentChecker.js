@@ -109,7 +109,7 @@ class EnvironmentChecker {
     try {
       const pytestCmd = runtime.isBundled 
         ? `"${runtime.pytestPath}"`
-        : config.pytest.command;
+        : `"${runtime.pythonPath}" -m pytest`;
       const { stdout } = await execAsync(`${pytestCmd} --version`, { timeout: 5000 });
       const version = stdout.trim();
       return { installed: true, version };

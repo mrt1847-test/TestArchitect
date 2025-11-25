@@ -237,10 +237,9 @@ class PytestService {
     const escapedPaths = paths.map(p => `"${p}"`);
     const escapedReportFile = `"${reportFile}"`;
     
-    // pytest 실행 경로 (번들된 경우 전체 경로, 시스템의 경우 명령어만)
-    const pytestCmd = runtime.isBundled 
-      ? `"${runtime.pytestPath}"`
-      : config.pytest.command;
+    // pytest 실행 경로 (항상 python -m pytest 사용하여 번들/시스템 모두 지원)
+    // 번들된 Python에도 pytest가 Scripts/에 없을 수 있으므로 python -m pytest 사용
+    const pytestCmd = `"${runtime.pythonPath}" -m pytest`;
     
     // 기본 pytest 옵션
     const baseOptions = [

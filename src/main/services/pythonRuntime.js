@@ -51,15 +51,40 @@ class PythonRuntime {
     const appPath = process.resourcesPath || process.cwd();
     const platform = process.platform;
     
+    // 개발 모드: python-bundle/python 경로 확인
+    const devBundlePath = path.join(process.cwd(), 'python-bundle', 'python');
+    
     if (platform === 'win32') {
-      // Windows: resources/python/python.exe
-      return path.join(appPath, 'python', 'python.exe');
+      // 프로덕션: resources/python/python.exe
+      const prodPath = path.join(appPath, 'python', 'python.exe');
+      // 개발: python-bundle/python/Scripts/python.exe (가상환경)
+      const devPath = path.join(devBundlePath, 'Scripts', 'python.exe');
+      
+      // 개발 모드에서 번들 경로 확인
+      if (fs.existsSync(devPath)) {
+        return devPath;
+      }
+      return prodPath;
     } else if (platform === 'darwin') {
-      // macOS: resources/python/bin/python3
-      return path.join(appPath, 'python', 'bin', 'python3');
+      // 프로덕션: resources/python/bin/python3
+      const prodPath = path.join(appPath, 'python', 'bin', 'python3');
+      // 개발: python-bundle/python/bin/python3 (가상환경)
+      const devPath = path.join(devBundlePath, 'bin', 'python3');
+      
+      if (fs.existsSync(devPath)) {
+        return devPath;
+      }
+      return prodPath;
     } else {
       // Linux: resources/python/bin/python3
-      return path.join(appPath, 'python', 'bin', 'python3');
+      const prodPath = path.join(appPath, 'python', 'bin', 'python3');
+      // 개발: python-bundle/python/bin/python3 (가상환경)
+      const devPath = path.join(devBundlePath, 'bin', 'python3');
+      
+      if (fs.existsSync(devPath)) {
+        return devPath;
+      }
+      return prodPath;
     }
   }
 

@@ -289,162 +289,901 @@ function addLog(type, message) {
 }
 
 // ============================================================================
-// 초기화
+// Setup 함수들 (init() 함수에서 호출되므로 먼저 정의)
 // ============================================================================
 
-async function init() {
-  try {
-    console.log('=== init() 함수 시작 ===');
-    
-    // DOM 요소 초기화 (가장 먼저!)
-    initDOMElements();
-    
-    // electronAPI 확인
-    if (!window.electronAPI) {
-      console.error('❌ window.electronAPI가 없습니다!');
-      console.error('window 객체:', typeof window);
-      console.error('window.electronAPI:', window.electronAPI);
-      alert('Electron API가 초기화되지 않았습니다. 앱을 재시작하세요.');
-      return;
+function setupEventListeners() {
+  // DOM 요소 다시 확인 (초기화 시점에 DOM이 준비되었는지 확인)
+  const projectSelectEl = document.getElementById('project-select');
+  const newProjectBtnEl = document.getElementById('new-project-btn');
+  
+  if (!projectSelectEl) {
+    console.error('projectSelect 요소를 찾을 수 없습니다.');
+  }
+  if (!newProjectBtnEl) {
+    console.error('newProjectBtn 요소를 찾을 수 없습니다.');
+  }
+  
+  // 프로젝트 선택
+  if (projectSelectEl) {
+    projectSelectEl.addEventListener('change', async (e) => {
+    const projectId = e.target.value;
+    if (projectId) {
+      currentProject = { id: parseInt(projectId) };
+      selectedTCs.clear();
+      currentTC = null;
+      updateSelectedCount();
+      updateRunButton();
+      await loadTCTree(projectId);
+      // Page Objects 탭이 활성화되어 있으면 새로고침
+      if (activeTab === 'page-objects') {
+        await loadPageObjects(projectId);
+      }
+    } else {
+      currentProject = null;
+      currentTC = null;
+      tcTree.innerHTML = '<div class="tree-placeholder">프로젝트를 선택하세요</div>';
+      tcDetailContent.innerHTML = '<div class="placeholder">프로젝트를 선택하세요</div>';
     }
-    
-    console.log('✅ window.electronAPI 확인 완료');
-    console.log('  electronAPI.api:', typeof window.electronAPI.api);
+    });
+  }
 
-    addLog('info', '애플리케이션 초기화 중...');
+  // 새 프로젝트 버튼 (DOM에서 다시 찾기)
+  if (newProjectBtnEl) {
+    console.log('새 프로젝트 버튼 찾음:', newProjectBtnEl);
     
-    // 데이터베이스 연결 상태 확인
-    try {
-      if (window.electronAPI.api?.checkServer) {
-        const dbStatus = await window.electronAPI.api.checkServer();
-        if (dbStatus && dbStatus.connected) {
-          addLog('success', '로컬 데이터베이스에 연결되었습니다.');
-          if (dbStatus.path) {
-            addLog('info', `데이터베이스 위치: ${dbStatus.path}`);
-          }
-        } else {
-          addLog('error', '데이터베이스에 연결할 수 없습니다.');
-          addLog('info', '앱을 재시작해보세요.');
+    newProjectBtnEl.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      console.log('새 프로젝트 버튼 클릭됨');
+      
+      try {
+        console.log('showInputDialog 호출 전');
+        const name = await showInputDialog('프로젝트 생성', '프로젝트 이름을 입력하세요:');
+        console.log('showInputDialog 결과:', name);
+        
+        if (name && name.trim()) {
+          console.log('createProject 호출:', name.trim());
+          await createProject(name.trim());
+        } else if (name !== null) {
+          showMessageDialog('알림', '프로젝트 이름을 입력하세요.');
+        }
+      } catch (error) {
+        console.error('프로젝트 생성 버튼 클릭 오류:', error);
+        showMessageDialog('오류', '프로젝트 생성 중 오류가 발생했습니다: ' + error.message);
+      }
+    });
+    
+    // 디버깅: 버튼이 제대로 찾아졌는지 확인
+    console.log('새 프로젝트 버튼 이벤트 리스너 등록 완료');
+  } else {
+    console.error('newProjectBtn 요소를 찾을 수 없습니다. HTML을 확인하세요.');
+    console.error('현재 DOM 상태:', document.getElementById('new-project-btn'));
+  }
+
+  // 새 폴더 버튼 (트리 헤더)
+  if (newFolderBtn) {
+    newFolderBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        if (!currentProject) {
+          showMessageDialog('알림', '먼저 프로젝트를 선택하세요.');
+          return;
+        }
+        
+        // 현재 선택된 항목 확인 (폴더면 그 하위에, 없으면 루트에)
+        const parentItem = currentTC && currentTC.type === 'folder' ? currentTC : null;
+        await createNewFolder(parentItem);
+      } catch (error) {
+        console.error('폴더 생성 버튼 클릭 오류:', error);
+        showMessageDialog('오류', '폴더 생성 중 오류가 발생했습니다: ' + error.message);
+      }
+    });
+    console.log('새 폴더 버튼 이벤트 리스너 등록 완료');
+  } else {
+    console.error('newFolderBtn 요소를 찾을 수 없습니다. HTML을 확인하세요.');
+  }
+
+  // 새 TC 버튼 (트리 헤더)
+  if (newTCTreeBtn) {
+    newTCTreeBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        if (!currentProject) {
+          showMessageDialog('알림', '먼저 프로젝트를 선택하세요.');
+          return;
+        }
+
+        const name = await showInputDialog('새 테스트케이스', '테스트케이스 이름을 입력하세요:');
+        if (name && name.trim()) {
+          // 현재 선택된 항목 확인 (폴더면 그 하위에, 없으면 루트에)
+          const parentId = currentTC && currentTC.type === 'folder' ? currentTC.id : null;
+          
+          await createTestCase({
+            project_id: currentProject.id,
+            parent_id: parentId,
+            name: name.trim(),
+            type: 'test_case',
+            status: 'draft'
+          });
+        }
+      } catch (error) {
+        console.error('TC 생성 오류:', error);
+        showMessageDialog('오류', 'TC 생성 중 오류가 발생했습니다: ' + error.message);
+      }
+    });
+    console.log('새 TC 버튼 (트리 헤더) 이벤트 리스너 등록 완료');
+  } else {
+    console.error('newTCTreeBtn 요소를 찾을 수 없습니다. HTML을 확인하세요.');
+  }
+
+  // 새 TC 버튼 (TC 상세 탭)
+  if (newTCBtn) {
+    newTCBtn.addEventListener('click', async () => {
+      try {
+        if (!currentProject) {
+          showMessageDialog('알림', '먼저 프로젝트를 선택하세요.');
+          return;
+        }
+
+        const name = await showInputDialog('새 테스트케이스', '테스트케이스 이름을 입력하세요:');
+        if (name && name.trim()) {
+          // 현재 선택된 항목 확인 (폴더면 그 하위에, 없으면 루트에)
+          const parentId = currentTC && currentTC.type === 'folder' ? currentTC.id : null;
+          
+          await createTestCase({
+            project_id: currentProject.id,
+            parent_id: parentId,
+            name: name.trim(),
+            type: 'test_case',
+            status: 'draft'
+          });
+        }
+      } catch (error) {
+        console.error('TC 생성 오류:', error);
+        showMessageDialog('오류', 'TC 생성 중 오류가 발생했습니다: ' + error.message);
+      }
+    });
+    console.log('새 TC 버튼 이벤트 리스너 등록 완료');
+  } else {
+    console.error('newTCBtn 요소를 찾을 수 없습니다. HTML을 확인하세요.');
+  }
+
+  // TC/폴더 편집 버튼
+  if (editTCBtn) {
+    editTCBtn.addEventListener('click', () => {
+      if (currentTC) {
+        if (currentTC.type === 'test_case') {
+          editTestCase(currentTC);
+        } else if (currentTC.type === 'folder') {
+          editFolder(currentTC);
         }
       }
-    } catch (error) {
-      console.warn('데이터베이스 상태 확인 실패:', error);
-      addLog('warning', '데이터베이스 상태를 확인할 수 없습니다.');
-    }
+    });
+  }
 
-    await loadProjects();
-    
-    // 이벤트 리스너 설정 (순서 중요, 각각 try-catch로 감싸서 하나가 실패해도 계속 진행)
-    console.log('이벤트 리스너 설정 시작...');
-    
-    // setup 함수들이 정의되어 있는지 확인하고 호출
-    if (typeof setupEventListeners === 'function') {
-      try {
-        setupEventListeners();
-        console.log('✅ setupEventListeners 완료');
-      } catch (error) {
-        console.error('❌ setupEventListeners 실패:', error);
+
+  // 실행
+  if (runSelectedBtn) {
+    runSelectedBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      console.log('runSelectedBtn 클릭됨');
+      runSelectedTCs();
+    });
+    console.log('✅ runSelectedBtn 이벤트 리스너 등록 완료');
+  } else {
+    console.error('❌ runSelectedBtn 요소를 찾을 수 없습니다.');
+  }
+
+  // 리코더
+  if (startRecordingBtn) {
+    startRecordingBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      console.log('startRecordingBtn 클릭됨');
+      startRecording();
+    });
+    console.log('✅ startRecordingBtn 이벤트 리스너 등록 완료');
+  } else {
+    console.error('❌ startRecordingBtn 요소를 찾을 수 없습니다.');
+  }
+
+  if (stopRecordingBtn) {
+    stopRecordingBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      console.log('stopRecordingBtn 클릭됨');
+      stopRecording();
+    });
+    console.log('✅ stopRecordingBtn 이벤트 리스너 등록 완료');
+  } else {
+    console.error('❌ stopRecordingBtn 요소를 찾을 수 없습니다.');
+  }
+
+  // 결과 패널 토글
+  if (toggleResultsBtn && resultsPanel) {
+    toggleResultsBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      console.log('toggleResultsBtn 클릭됨');
+      resultsPanel.classList.toggle('collapsed');
+      toggleResultsBtn.textContent = resultsPanel.classList.contains('collapsed') ? '▶' : '◀';
+    });
+    console.log('✅ toggleResultsBtn 이벤트 리스너 등록 완료');
+  } else {
+    console.error('❌ toggleResultsBtn 또는 resultsPanel 요소를 찾을 수 없습니다.');
+  }
+
+  // 리포트 내보내기
+  if (exportReportBtn) {
+    exportReportBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      console.log('exportReportBtn 클릭됨');
+      alert('리포트 내보내기 기능은 향후 구현 예정입니다.');
+    });
+    console.log('✅ exportReportBtn 이벤트 리스너 등록 완료');
+  } else {
+    console.error('❌ exportReportBtn 요소를 찾을 수 없습니다.');
+  }
+
+  // 결과 지우기
+  if (clearResultsBtn && resultsList) {
+    clearResultsBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      console.log('clearResultsBtn 클릭됨');
+      resultsList.innerHTML = '<div class="placeholder">실행 결과가 여기에 표시됩니다</div>';
+      updateSummary([]);
+    });
+    console.log('✅ clearResultsBtn 이벤트 리스너 등록 완료');
+  } else {
+    console.error('❌ clearResultsBtn 또는 resultsList 요소를 찾을 수 없습니다.');
+  }
+
+  // 상단 툴바
+  if (runCurrentBtn) {
+    runCurrentBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      console.log('runCurrentBtn 클릭됨');
+      if (currentTC && currentTC.type === 'test_case') {
+        runSingleTC(currentTC.id);
+      } else {
+        alert('테스트케이스를 선택하세요');
       }
-    } else {
-      console.error('❌ setupEventListeners 함수가 정의되지 않았습니다.');
-    }
-    
-    if (typeof setupTabs === 'function') {
-      try {
-        setupTabs();
-        console.log('✅ setupTabs 완료');
-      } catch (error) {
-        console.error('❌ setupTabs 실패:', error);
+    });
+    console.log('✅ runCurrentBtn 이벤트 리스너 등록 완료');
+  } else {
+    console.error('❌ runCurrentBtn 요소를 찾을 수 없습니다.');
+  }
+
+  if (searchInput) {
+    searchInput.addEventListener('input', (e) => {
+      console.log('searchInput 입력:', e.target.value);
+      filterTreeBySearch(e.target.value);
+    });
+    console.log('✅ searchInput 이벤트 리스너 등록 완료');
+  } else {
+    console.error('❌ searchInput 요소를 찾을 수 없습니다.');
+  }
+
+  if (filterBtn) {
+    filterBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      console.log('filterBtn 클릭됨');
+      alert('필터 기능은 향후 구현 예정입니다.');
+    });
+    console.log('✅ filterBtn 이벤트 리스너 등록 완료');
+  } else {
+    console.error('❌ filterBtn 요소를 찾을 수 없습니다.');
+  }
+
+  if (settingsBtn) {
+    settingsBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      console.log('settingsBtn 클릭됨');
+      alert('설정 기능은 향후 구현 예정입니다.');
+    });
+    console.log('✅ settingsBtn 이벤트 리스너 등록 완료');
+  } else {
+    console.error('❌ settingsBtn 요소를 찾을 수 없습니다.');
+  }
+
+  // 스크립트 저장
+  if (saveScriptBtn) {
+    saveScriptBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      console.log('saveScriptBtn 클릭됨');
+      saveScript();
+    });
+    console.log('✅ saveScriptBtn 이벤트 리스너 등록 완료');
+  } else {
+    console.error('❌ saveScriptBtn 요소를 찾을 수 없습니다.');
+  }
+
+  // 새 스크립트 생성
+  if (createScriptBtn) {
+    createScriptBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      console.log('createScriptBtn 클릭됨');
+      if (!currentTC || currentTC.type === 'folder') {
+        alert('테스트케이스를 선택하세요');
+        return;
       }
-    } else {
-      console.error('❌ setupTabs 함수가 정의되지 않았습니다.');
-    }
-    
-    if (typeof setupProjectExplorer === 'function') {
-      try {
-        setupProjectExplorer();
-        console.log('✅ setupProjectExplorer 완료');
-      } catch (error) {
-        console.error('❌ setupProjectExplorer 실패:', error);
+      currentScript = null;
+      if (codeMirrorEditor) {
+        codeMirrorEditor.setValue(getDefaultScript());
+        codeMirrorEditor.setOption('readOnly', false);
       }
-    } else {
-      console.error('❌ setupProjectExplorer 함수가 정의되지 않았습니다.');
-    }
-    
-    if (typeof setupBottomPanel === 'function') {
-      try {
-        setupBottomPanel();
-        console.log('✅ setupBottomPanel 완료');
-      } catch (error) {
-        console.error('❌ setupBottomPanel 실패:', error);
-      }
-    } else {
-      console.error('❌ setupBottomPanel 함수가 정의되지 않았습니다.');
-    }
-    
-    if (typeof setupContextMenu === 'function') {
-      try {
-        setupContextMenu();
-        console.log('✅ setupContextMenu 완료');
-      } catch (error) {
-        console.error('❌ setupContextMenu 실패:', error);
-      }
-    } else {
-      console.error('❌ setupContextMenu 함수가 정의되지 않았습니다.');
-    }
-    
-    if (typeof setupCodeEditor === 'function') {
-      try {
-        setupCodeEditor();
-        console.log('✅ setupCodeEditor 완료');
-      } catch (error) {
-        console.error('❌ setupCodeEditor 실패:', error);
-      }
-    } else {
-      console.error('❌ setupCodeEditor 함수가 정의되지 않았습니다.');
-    }
-    
-    if (typeof setupScriptViews === 'function') {
-      try {
-        setupScriptViews();
-        console.log('✅ setupScriptViews 완료');
-      } catch (error) {
-        console.error('❌ setupScriptViews 실패:', error);
-      }
-    } else {
-      console.error('❌ setupScriptViews 함수가 정의되지 않았습니다.');
-    }
-    
-    if (typeof setupPageObjects === 'function') {
-      try {
-        setupPageObjects();
-        console.log('✅ setupPageObjects 완료');
-      } catch (error) {
-        console.error('❌ setupPageObjects 실패:', error);
-      }
-    } else {
-      console.error('❌ setupPageObjects 함수가 정의되지 않았습니다.');
-    }
-    
-    // 서버 이벤트 리스너
-    if (window.electronAPI?.onTestCaseUpdated) {
-      window.electronAPI.onTestCaseUpdated((data) => {
-        if (currentProject) {
-          loadTCTree(currentProject.id);
+      isDirty = true;
+      updateSaveButton();
+      createScriptBtn.disabled = true;
+      addLog('info', '새 스크립트 생성 준비');
+    });
+    console.log('✅ createScriptBtn 이벤트 리스너 등록 완료');
+  } else {
+    console.error('❌ createScriptBtn 요소를 찾을 수 없습니다.');
+  }
+
+  // 키워드 추가 버튼
+  if (addKeywordBtn && keywordTableBody) {
+    addKeywordBtn.addEventListener('click', () => {
+      const newRow = createKeywordRow(keywordTableBody.children.length + 1, {
+        action: '',
+        target: '',
+        value: '',
+        description: ''
+      });
+      keywordTableBody.appendChild(newRow);
+      updateKeywordTable();
+    });
+    console.log('✅ addKeywordBtn 이벤트 리스너 등록 완료');
+  } else {
+    console.error('❌ addKeywordBtn 또는 keywordTableBody 요소를 찾을 수 없습니다.');
+  }
+
+  console.log('=== setupEventListeners() 완료 ===');
+}
+
+function setupProjectExplorer() {
+  const sectionHeaders = document.querySelectorAll('.section-header');
+  
+  sectionHeaders.forEach(header => {
+    header.addEventListener('click', () => {
+      const section = header.dataset.section;
+      const content = document.getElementById(`${section}-section`);
+      const toggle = header.querySelector('.section-toggle');
+      
+      content.classList.toggle('collapsed');
+      toggle.textContent = content.classList.contains('collapsed') ? '▶' : '▼';
+    });
+  });
+
+  // 프로파일 선택
+  const profileItems = document.querySelectorAll('.profile-item');
+  profileItems.forEach(item => {
+    item.addEventListener('click', () => {
+      profileItems.forEach(p => p.classList.remove('active'));
+      item.classList.add('active');
+      profileSelect.value = item.dataset.profile;
+      addLog('info', `프로파일 변경: ${item.dataset.profile}`);
+    });
+  });
+}
+
+function setupBottomPanel() {
+  // 패널 토글
+  toggleBottomPanel.addEventListener('click', () => {
+    bottomPanel.classList.toggle('collapsed');
+    toggleBottomPanel.textContent = bottomPanel.classList.contains('collapsed') ? '▲' : '▼';
+  });
+
+  // 탭 전환
+  panelTabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      const panelName = tab.dataset.panel;
+      
+      // 탭 활성화
+      panelTabs.forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      
+      // 컨텐츠 표시
+      panelTabContents.forEach(content => {
+        content.classList.remove('active');
+        if (content.id === `panel-${panelName}`) {
+          content.classList.add('active');
         }
       });
-    }
+    });
+  });
+}
 
-    addLog('success', '애플리케이션 초기화 완료');
-  } catch (error) {
-    console.error('초기화 실패:', error);
-    addLog('error', `초기화 실패: ${error.message}`);
+function setupContextMenu() {
+  // 메뉴 항목 클릭
+  const menuItems = document.querySelectorAll('.context-menu-item');
+  menuItems.forEach(item => {
+    item.addEventListener('click', () => {
+      const action = item.dataset.action;
+      handleContextMenuAction(action);
+      hideContextMenu();
+    });
+  });
+
+  // 외부 클릭 시 메뉴 숨김
+  document.addEventListener('click', (e) => {
+    if (!contextMenu.contains(e.target) && !e.target.closest('.tc-tree-item')) {
+      hideContextMenu();
+    }
+  });
+
+  // 트리 영역 빈 공간 우클릭 시 컨텍스트 메뉴 표시 (TestRail 스타일)
+  if (tcTree) {
+    tcTree.addEventListener('contextmenu', (e) => {
+      // 트리 아이템 위에 있으면 기본 동작 사용
+      if (e.target.closest('.tc-tree-item')) {
+        return;
+      }
+      
+      e.preventDefault();
+      // 빈 공간 우클릭 시 루트에 폴더 생성 메뉴 표시
+      showContextMenu(e.pageX, e.pageY, {
+        type: 'root',
+        id: null,
+        name: '루트'
+      });
+    });
   }
 }
 
-// ============================================================================
-// 탭 관리
-// ============================================================================
+function showContextMenu(x, y, item) {
+  contextMenuTarget = item;
+  contextMenu.style.left = `${x}px`;
+  contextMenu.style.top = `${y}px`;
+  
+  // 컨텍스트 메뉴 항목 표시/숨김 처리
+  const menuItems = contextMenu.querySelectorAll('.context-menu-item');
+  menuItems.forEach(menuItem => {
+    const action = menuItem.dataset.action;
+    
+    // 실행: test_case만 표시
+    if (action === 'run') {
+      menuItem.style.display = item.type === 'test_case' ? 'block' : 'none';
+    }
+    // 편집: test_case와 folder만 표시
+    else if (action === 'edit') {
+      menuItem.style.display = (item.type === 'test_case' || item.type === 'folder') ? 'block' : 'none';
+    }
+    // 복제: test_case만 표시
+    else if (action === 'duplicate') {
+      menuItem.style.display = item.type === 'test_case' ? 'block' : 'none';
+    }
+    // 새 폴더: root, folder만 표시 (test_case 하위에는 생성 불가)
+    else if (action === 'new-folder') {
+      menuItem.style.display = (item.type === 'root' || item.type === 'folder') ? 'block' : 'none';
+    }
+    // 새 TC: root, folder만 표시 (test_case 하위에는 생성 불가)
+    else if (action === 'new-tc') {
+      menuItem.style.display = (item.type === 'root' || item.type === 'folder') ? 'block' : 'none';
+    }
+    // 삭제: root는 삭제 불가
+    else if (action === 'delete') {
+      menuItem.style.display = item.type === 'root' ? 'none' : 'block';
+    }
+  });
+  
+  contextMenu.classList.add('show');
+}
+
+function hideContextMenu() {
+  contextMenu.classList.remove('show');
+  contextMenuTarget = null;
+}
+
+function handleContextMenuAction(action) {
+  if (!contextMenuTarget) return;
+
+  switch (action) {
+    case 'run':
+      if (contextMenuTarget.type === 'test_case') {
+        runSingleTC(contextMenuTarget.id);
+      }
+      break;
+    case 'edit':
+      if (contextMenuTarget.type === 'test_case') {
+        selectTC(contextMenuTarget);
+        editTCBtn.click();
+      } else if (contextMenuTarget.type === 'folder') {
+        editFolder(contextMenuTarget);
+      }
+      break;
+    case 'duplicate':
+      addLog('info', `TC 복제: ${contextMenuTarget.name}`);
+      alert('복제 기능은 향후 구현 예정입니다.');
+      break;
+    case 'delete':
+      if (contextMenuTarget.type === 'root') {
+        return; // 루트는 삭제 불가
+      }
+      if (confirm(`'${contextMenuTarget.name}'을(를) 삭제하시겠습니까?`)) {
+        deleteTC(contextMenuTarget.id);
+      }
+      break;
+    case 'new-folder':
+      // 루트 우클릭 시 또는 폴더 우클릭 시
+      if (contextMenuTarget.type === 'root' || contextMenuTarget.type === 'folder') {
+        createNewFolder(contextMenuTarget.type === 'root' ? null : contextMenuTarget);
+      } else {
+        // 테스트케이스 우클릭 시에는 부모 폴더에 생성 (또는 루트)
+        createNewFolder(null);
+      }
+      break;
+    case 'new-tc':
+      // 루트 우클릭 시 또는 폴더 우클릭 시
+      if (contextMenuTarget.type === 'root' || contextMenuTarget.type === 'folder') {
+        createTestCaseFromContext(contextMenuTarget.type === 'root' ? null : contextMenuTarget);
+      } else {
+        // 테스트케이스 우클릭 시에는 부모 폴더에 생성 (또는 루트)
+        createTestCaseFromContext(null);
+      }
+      break;
+  }
+}
+
+function showInputDialog(title, message, defaultValue = '') {
+  return new Promise((resolve) => {
+    // 기존 다이얼로그가 있으면 제거
+    const existing = document.getElementById('input-dialog');
+    if (existing) {
+      existing.remove();
+    }
+
+    // 다이얼로그 생성
+    const dialog = document.createElement('div');
+    dialog.id = 'input-dialog';
+    dialog.className = 'modal-dialog';
+    
+    const dialogContent = document.createElement('div');
+    dialogContent.className = 'modal-content';
+    
+    // 헤더
+    const header = document.createElement('div');
+    header.className = 'modal-header';
+    header.innerHTML = `<h3>${title}</h3>`;
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'modal-close';
+    closeBtn.textContent = '×';
+    closeBtn.addEventListener('click', () => {
+      dialog.remove();
+      resolve(null);
+    });
+    header.appendChild(closeBtn);
+    
+    // 바디
+    const body = document.createElement('div');
+    body.className = 'modal-body';
+    body.innerHTML = `<p>${message}</p>`;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.id = 'input-dialog-input';
+    input.className = 'modal-input';
+    input.value = defaultValue;
+    input.placeholder = '이름을 입력하세요';
+    body.appendChild(input);
+    
+    // 푸터
+    const footer = document.createElement('div');
+    footer.className = 'modal-footer';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn btn-secondary';
+    cancelBtn.textContent = '취소';
+    cancelBtn.addEventListener('click', () => {
+      dialog.remove();
+      resolve(null);
+    });
+    const confirmBtn = document.createElement('button');
+    confirmBtn.className = 'btn btn-primary';
+    confirmBtn.textContent = '확인';
+    confirmBtn.addEventListener('click', () => {
+      dialog.remove();
+      resolve(input.value);
+    });
+    footer.appendChild(cancelBtn);
+    footer.appendChild(confirmBtn);
+    
+    dialogContent.appendChild(header);
+    dialogContent.appendChild(body);
+    dialogContent.appendChild(footer);
+    dialog.appendChild(dialogContent);
+
+    // 다이얼로그 표시
+    document.body.appendChild(dialog);
+    
+    // 다이얼로그가 제대로 추가되었는지 확인
+    const addedDialog = document.getElementById('input-dialog');
+    if (!addedDialog) {
+      console.error('다이얼로그가 DOM에 추가되지 않았습니다.');
+      resolve(null);
+      return;
+    }
+    
+    input.focus();
+    input.select();
+
+    // Enter 키로 확인
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        dialog.remove();
+        resolve(input.value);
+      } else if (e.key === 'Escape') {
+        dialog.remove();
+        resolve(null);
+      }
+    });
+  });
+}
+
+function showMessageDialog(title, message) {
+  return new Promise((resolve) => {
+    // 기존 다이얼로그가 있으면 제거
+    const existing = document.getElementById('message-dialog');
+    if (existing) {
+      existing.remove();
+    }
+
+    // 다이얼로그 생성
+    const dialog = document.createElement('div');
+    dialog.id = 'message-dialog';
+    dialog.className = 'modal-dialog';
+    
+    const dialogContent = document.createElement('div');
+    dialogContent.className = 'modal-content';
+    
+    // 헤더
+    const header = document.createElement('div');
+    header.className = 'modal-header';
+    header.innerHTML = `<h3>${title}</h3>`;
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'modal-close';
+    closeBtn.textContent = '×';
+    closeBtn.addEventListener('click', () => {
+      dialog.remove();
+      resolve();
+    });
+    header.appendChild(closeBtn);
+    
+    // 바디
+    const body = document.createElement('div');
+    body.className = 'modal-body';
+    body.innerHTML = `<p>${message}</p>`;
+    
+    // 푸터
+    const footer = document.createElement('div');
+    footer.className = 'modal-footer';
+    const confirmBtn = document.createElement('button');
+    confirmBtn.className = 'btn btn-primary';
+    confirmBtn.textContent = '확인';
+    confirmBtn.addEventListener('click', () => {
+      dialog.remove();
+      resolve();
+    });
+    footer.appendChild(confirmBtn);
+    
+    dialogContent.appendChild(header);
+    dialogContent.appendChild(body);
+    dialogContent.appendChild(footer);
+    dialog.appendChild(dialogContent);
+
+    // 다이얼로그 표시
+    document.body.appendChild(dialog);
+    confirmBtn.focus();
+  });
+}
+
+function setupPageObjects() {
+  if (!newPageObjectBtn) return;
+  
+  newPageObjectBtn.addEventListener('click', () => {
+    if (!currentProject) {
+      showMessageDialog('알림', '프로젝트를 먼저 선택하세요.');
+      return;
+    }
+    createNewPageObject();
+  });
+  
+  if (savePageObjectBtn) {
+    savePageObjectBtn.addEventListener('click', savePageObject);
+  }
+  
+  if (cancelPageObjectBtn) {
+    cancelPageObjectBtn.addEventListener('click', cancelPageObjectEdit);
+  }
+  
+  // Page Object 코드 에디터 초기화
+  if (pageObjectCodeEditor) {
+    pageObjectCodeMirrorEditor = CodeMirror.fromTextArea(pageObjectCodeEditor, {
+      lineNumbers: true,
+      mode: 'python',
+      theme: 'monokai',
+      indentUnit: 4,
+      indentWithTabs: false,
+      lineWrapping: true
+    });
+  }
+}
+
+function updateSelectedCount() {
+  selectedCountSpan.textContent = selectedTCs.size;
+}
+
+function updateRunButton() {
+  runSelectedBtn.disabled = selectedTCs.size === 0;
+}
+
+async function createTestCase(data) {
+  try {
+    if (!window.electronAPI?.api?.createTestCase) {
+      showMessageDialog('오류', 'TC 생성 API가 없습니다.');
+      return;
+    }
+
+    addLog('info', `TC 생성 중: ${data.name}`);
+    
+    const response = await window.electronAPI.api.createTestCase(data);
+    
+    if (response && response.success) {
+      addLog('success', `TC 생성 완료: ${data.name}`);
+      
+      // TC 트리 새로고침
+      if (currentProject) {
+        await loadTCTree(currentProject.id);
+      }
+      
+      // 새로 생성된 TC 선택
+      if (response.data) {
+        selectTC(response.data);
+      }
+      
+      showMessageDialog('성공', `테스트케이스 '${data.name}'이(가) 생성되었습니다.`);
+    } else {
+      const errorMsg = response?.error || '알 수 없는 오류';
+      throw new Error(errorMsg);
+    }
+  } catch (error) {
+    console.error('TC 생성 실패:', error);
+    const errorMessage = error.message || '알 수 없는 오류가 발생했습니다';
+    addLog('error', `TC 생성 실패: ${errorMessage}`);
+    showMessageDialog('오류', `TC 생성 실패: ${errorMessage}`);
+  }
+}
+
+async function createNewFolder(parentItem = null) {
+  try {
+    if (!currentProject) {
+      showMessageDialog('알림', '먼저 프로젝트를 선택하세요.');
+      return;
+    }
+
+    // parentItem이 없으면 현재 선택된 항목 확인
+    let actualParent = parentItem;
+    if (!actualParent && currentTC && currentTC.type === 'folder') {
+      actualParent = currentTC;
+    }
+
+    // 부모가 테스트케이스인 경우 폴더 생성 불가
+    if (actualParent && actualParent.type === 'test_case') {
+      showMessageDialog('오류', '테스트케이스 하위에는 폴더를 생성할 수 없습니다. 폴더는 다른 폴더나 루트에만 생성할 수 있습니다.');
+      return;
+    }
+
+    const name = await showInputDialog('새 폴더', '폴더 이름을 입력하세요:');
+    if (name && name.trim()) {
+      const folderData = {
+        project_id: currentProject.id,
+        parent_id: (actualParent && actualParent.type === 'folder') ? actualParent.id : null,
+        name: name.trim(),
+        type: 'folder',
+        status: 'active'
+      };
+
+      const response = await window.electronAPI.api.createTestCase(folderData);
+      
+      if (response && response.success) {
+        addLog('success', `폴더 생성 완료: ${name.trim()}`);
+        
+        // TC 트리 새로고침
+        if (currentProject) {
+          await loadTCTree(currentProject.id);
+        }
+        
+        showMessageDialog('성공', `폴더 '${name.trim()}'이(가) 생성되었습니다.`);
+      } else {
+        throw new Error(response?.error || '폴더 생성 실패');
+      }
+    }
+  } catch (error) {
+    console.error('폴더 생성 실패:', error);
+    addLog('error', `폴더 생성 실패: ${error.message}`);
+    showMessageDialog('오류', `폴더 생성 실패: ${error.message}`);
+  }
+}
+
+async function savePageObject() {
+  if (!currentProject) {
+    showMessageDialog('알림', '프로젝트를 먼저 선택하세요.');
+    return;
+  }
+  
+  try {
+    const name = pageObjectNameInput?.value?.trim();
+    if (!name) {
+      showMessageDialog('알림', '이름을 입력하세요.');
+      return;
+    }
+    
+    let urlPatterns = [];
+    try {
+      urlPatterns = JSON.parse(pageObjectUrlPatternsInput?.value || '[]');
+    } catch (e) {
+      showMessageDialog('오류', 'URL 패턴이 올바른 JSON 형식이 아닙니다.');
+      return;
+    }
+    
+    const code = pageObjectCodeMirrorEditor?.getValue() || '';
+    if (!code.trim()) {
+      showMessageDialog('알림', '코드를 입력하세요.');
+      return;
+    }
+    
+    const data = {
+      project_id: currentProject.id,
+      name,
+      description: pageObjectDescriptionInput?.value?.trim() || null,
+      url_patterns: urlPatterns,
+      framework: pageObjectFrameworkSelect?.value || 'pytest',
+      language: pageObjectLanguageSelect?.value || 'python',
+      code,
+      status: 'active'
+    };
+    
+    let response;
+    if (currentPageObject) {
+      response = await window.electronAPI.api.updatePageObject(currentPageObject.id, data);
+    } else {
+      response = await window.electronAPI.api.createPageObject(data);
+    }
+    
+    if (response.success) {
+      showMessageDialog('성공', 'Page Object가 저장되었습니다.');
+      cancelPageObjectEdit();
+      await loadPageObjects(currentProject.id);
+    } else {
+      throw new Error(response.error || '저장 실패');
+    }
+  } catch (error) {
+    console.error('Page Object 저장 실패:', error);
+    showMessageDialog('오류', `저장 실패: ${error.message}`);
+  }
+}
+
+function cancelPageObjectEdit() {
+  currentPageObject = null;
+  
+  if (pageObjectEditor) {
+    pageObjectEditor.style.display = 'none';
+  }
+  
+  if (pageObjectsList) {
+    pageObjectsList.style.display = 'block';
+  }
+}
 
 function setupTabs() {
   const { tabButtons: buttons, tabPanels: panels } = getTabElements();
@@ -488,10 +1227,12 @@ function switchTab(tabName) {
     return;
   }
   
-  // 탭 요소 다시 찾기 (필요시)
-  const { tabButtons: buttons, tabPanels: panels } = getTabElements();
-  if (buttons) tabButtons = buttons;
-  if (panels) tabPanels = panels;
+  // 탭 요소 다시 찾기 (전역 변수가 없을 때만)
+  if (!tabButtons || tabButtons.length === 0 || !tabPanels || tabPanels.length === 0) {
+    const { tabButtons: buttons, tabPanels: panels } = getTabElements();
+    if (buttons) tabButtons = buttons;
+    if (panels) tabPanels = panels;
+  }
   
   // 탭 버튼 활성화
   if (tabButtons && tabButtons.length > 0) {
@@ -1433,10 +2174,21 @@ function updateKeywordTable() {
 }
 
 async function generateCodeFromKeywords(steps) {
+  // 파라미터 검증
+  if (!steps || !Array.isArray(steps)) {
+    console.error('generateCodeFromKeywords: steps가 배열이 아닙니다.', steps);
+    return '// 스텝이 없습니다.';
+  }
+
   // 키워드 라이브러리 사용
   try {
-    const language = scriptLanguage.value;
-    const framework = scriptFramework.value === 'pytest' ? 'pytest' : scriptFramework.value;
+    // null 체크 추가
+    if (!scriptLanguage || !scriptFramework) {
+      throw new Error('scriptLanguage 또는 scriptFramework가 초기화되지 않았습니다.');
+    }
+
+    const language = scriptLanguage.value || 'python';
+    const framework = scriptFramework.value === 'pytest' ? 'pytest' : (scriptFramework.value || 'pytest');
     
     // URL 기반 Page Object 찾기 함수
     const findPageObjectByUrl = async (url, projectId) => {
@@ -1458,29 +2210,29 @@ async function generateCodeFromKeywords(steps) {
     console.error('키워드 라이브러리 사용 실패, 기본 코드 생성:', error);
     
     // 폴백: 기본 코드 생성
-    const language = scriptLanguage.value;
-    const framework = scriptFramework.value;
+    const language = (scriptLanguage?.value || 'python');
+    const framework = (scriptFramework?.value || 'pytest');
   
-  if (language === 'python' && framework === 'playwright') {
-    return `from playwright.sync_api import Page, expect
+    if (language === 'python' && framework === 'playwright') {
+      return `from playwright.sync_api import Page, expect
 import pytest
 
 def test_${currentTC?.id || 'example'}(page: Page):
     """${currentTC?.name || 'Test'}"""
 ${steps.map(step => {
-      if (step.action === 'click') {
-        return `    page.click("${step.target || ''}")  # ${step.description || ''}`;
-      } else if (step.action === 'type' || step.action === 'setText') {
-        return `    page.fill("${step.target || ''}", "${step.value || ''}")  # ${step.description || ''}`;
-      } else if (step.action === 'goto' || step.action === 'open') {
-        return `    page.goto("${step.target || step.value || ''}")  # ${step.description || ''}`;
-      } else {
-        return `    # ${step.action}: ${step.target || ''} ${step.value || ''}  # ${step.description || ''}`;
-      }
-    }).join('\n')}
+        if (step.action === 'click') {
+          return `    page.click("${step.target || ''}")  # ${step.description || ''}`;
+        } else if (step.action === 'type' || step.action === 'setText') {
+          return `    page.fill("${step.target || ''}", "${step.value || ''}")  # ${step.description || ''}`;
+        } else if (step.action === 'goto' || step.action === 'open') {
+          return `    page.goto("${step.target || step.value || ''}")  # ${step.description || ''}`;
+        } else {
+          return `    # ${step.action}: ${step.target || ''} ${step.value || ''}  # ${step.description || ''}`;
+        }
+      }).join('\n')}
 `;
-  } else if (language === 'python' && framework === 'selenium') {
-    return `from selenium import webdriver
+    } else if (language === 'python' && framework === 'selenium') {
+      return `from selenium import webdriver
 from selenium.webdriver.common.by import By
 import pytest
 
@@ -1489,35 +2241,25 @@ def test_${currentTC?.id || 'example'}():
     driver = webdriver.Chrome()
     try:
 ${steps.map(step => {
-      if (step.action === 'click') {
-        return `        driver.find_element(By.${step.target?.includes('id=') ? 'ID' : 'CSS_SELECTOR'}, "${step.target || ''}").click()  # ${step.description || ''}`;
-      } else if (step.action === 'type' || step.action === 'setText') {
-        return `        driver.find_element(By.${step.target?.includes('id=') ? 'ID' : 'CSS_SELECTOR'}, "${step.target || ''}").send_keys("${step.value || ''}")  # ${step.description || ''}`;
-      } else if (step.action === 'goto' || step.action === 'open') {
-        return `        driver.get("${step.target || step.value || ''}")  # ${step.description || ''}`;
-      } else {
-        return `        # ${step.action}: ${step.target || ''} ${step.value || ''}  # ${step.description || ''}`;
-      }
-    }).join('\n')}
+        if (step.action === 'click') {
+          return `        driver.find_element(By.${step.target?.includes('id=') ? 'ID' : 'CSS_SELECTOR'}, "${step.target || ''}").click()  # ${step.description || ''}`;
+        } else if (step.action === 'type' || step.action === 'setText') {
+          return `        driver.find_element(By.${step.target?.includes('id=') ? 'ID' : 'CSS_SELECTOR'}, "${step.target || ''}").send_keys("${step.value || ''}")  # ${step.description || ''}`;
+        } else if (step.action === 'goto' || step.action === 'open') {
+          return `        driver.get("${step.target || step.value || ''}")  # ${step.description || ''}`;
+        } else {
+          return `        # ${step.action}: ${step.target || ''} ${step.value || ''}  # ${step.description || ''}`;
+        }
+      }).join('\n')}
     finally:
         driver.quit()
 `;
-  }
+    }
   
-  return steps.map(step => `${step.action}(${step.target || ''}, ${step.value || ''})`).join('\n');
+    // 기본 폴백: 단순 문자열 반환
+    return steps.map(step => `${step.action || 'unknown'}(${step.target || ''}, ${step.value || ''})`).join('\n');
+  }
 }
-
-// 키워드 추가
-addKeywordBtn.addEventListener('click', () => {
-  const newRow = createKeywordRow(keywordTableBody.children.length + 1, {
-    action: '',
-    target: '',
-    value: '',
-    description: ''
-  });
-  keywordTableBody.appendChild(newRow);
-  updateKeywordTable();
-});
 
 // ============================================================================
 // 결과 상세 탭
@@ -1673,14 +2415,6 @@ function selectItemAndChildren(item, select) {
       selectItemAndChildren(child, select);
     });
   }
-}
-
-function updateSelectedCount() {
-  selectedCountSpan.textContent = selectedTCs.size;
-}
-
-function updateRunButton() {
-  runSelectedBtn.disabled = selectedTCs.size === 0;
 }
 
 /**
@@ -1885,550 +2619,6 @@ function findTCById(tcId) {
     return null;
   }
   return tcTreeData ? searchTree(tcTreeData) : null;
-}
-
-// ============================================================================
-// Setup 함수들 (init() 함수에서 호출되므로 먼저 정의)
-// ============================================================================
-
-function setupEventListeners() {
-  // DOM 요소 다시 확인 (초기화 시점에 DOM이 준비되었는지 확인)
-  const projectSelectEl = document.getElementById('project-select');
-  const newProjectBtnEl = document.getElementById('new-project-btn');
-  
-  if (!projectSelectEl) {
-    console.error('projectSelect 요소를 찾을 수 없습니다.');
-  }
-  if (!newProjectBtnEl) {
-    console.error('newProjectBtn 요소를 찾을 수 없습니다.');
-  }
-  
-  // 프로젝트 선택
-  if (projectSelectEl) {
-    projectSelectEl.addEventListener('change', async (e) => {
-    const projectId = e.target.value;
-    if (projectId) {
-      currentProject = { id: parseInt(projectId) };
-      selectedTCs.clear();
-      currentTC = null;
-      updateSelectedCount();
-      updateRunButton();
-      await loadTCTree(projectId);
-      // Page Objects 탭이 활성화되어 있으면 새로고침
-      if (activeTab === 'page-objects') {
-        await loadPageObjects(projectId);
-      }
-    } else {
-      currentProject = null;
-      currentTC = null;
-      tcTree.innerHTML = '<div class="tree-placeholder">프로젝트를 선택하세요</div>';
-      tcDetailContent.innerHTML = '<div class="placeholder">프로젝트를 선택하세요</div>';
-    }
-    });
-  }
-
-  // 새 프로젝트 버튼 (DOM에서 다시 찾기)
-  if (newProjectBtnEl) {
-    console.log('새 프로젝트 버튼 찾음:', newProjectBtnEl);
-    
-    newProjectBtnEl.addEventListener('click', async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      console.log('새 프로젝트 버튼 클릭됨');
-      
-      try {
-        console.log('showInputDialog 호출 전');
-        const name = await showInputDialog('프로젝트 생성', '프로젝트 이름을 입력하세요:');
-        console.log('showInputDialog 결과:', name);
-        
-        if (name && name.trim()) {
-          console.log('createProject 호출:', name.trim());
-          await createProject(name.trim());
-        } else if (name !== null) {
-          showMessageDialog('알림', '프로젝트 이름을 입력하세요.');
-        }
-      } catch (error) {
-        console.error('프로젝트 생성 버튼 클릭 오류:', error);
-        showMessageDialog('오류', '프로젝트 생성 중 오류가 발생했습니다: ' + error.message);
-      }
-    });
-    
-    // 디버깅: 버튼이 제대로 찾아졌는지 확인
-    console.log('새 프로젝트 버튼 이벤트 리스너 등록 완료');
-  } else {
-    console.error('newProjectBtn 요소를 찾을 수 없습니다. HTML을 확인하세요.');
-    console.error('현재 DOM 상태:', document.getElementById('new-project-btn'));
-  }
-
-  // 새 폴더 버튼 (트리 헤더)
-  if (newFolderBtn) {
-    newFolderBtn.addEventListener('click', async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      try {
-        if (!currentProject) {
-          showMessageDialog('알림', '먼저 프로젝트를 선택하세요.');
-          return;
-        }
-        
-        // 현재 선택된 항목 확인 (폴더면 그 하위에, 없으면 루트에)
-        const parentItem = currentTC && currentTC.type === 'folder' ? currentTC : null;
-        await createNewFolder(parentItem);
-      } catch (error) {
-        console.error('폴더 생성 버튼 클릭 오류:', error);
-        showMessageDialog('오류', '폴더 생성 중 오류가 발생했습니다: ' + error.message);
-      }
-    });
-    console.log('새 폴더 버튼 이벤트 리스너 등록 완료');
-  } else {
-    console.error('newFolderBtn 요소를 찾을 수 없습니다. HTML을 확인하세요.');
-  }
-
-  // 새 TC 버튼 (트리 헤더)
-  if (newTCTreeBtn) {
-    newTCTreeBtn.addEventListener('click', async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      try {
-        if (!currentProject) {
-          showMessageDialog('알림', '먼저 프로젝트를 선택하세요.');
-          return;
-        }
-
-        const name = await showInputDialog('새 테스트케이스', '테스트케이스 이름을 입력하세요:');
-        if (name && name.trim()) {
-          // 현재 선택된 항목 확인 (폴더면 그 하위에, 없으면 루트에)
-          const parentId = currentTC && currentTC.type === 'folder' ? currentTC.id : null;
-          
-          await createTestCase({
-            project_id: currentProject.id,
-            parent_id: parentId,
-            name: name.trim(),
-            type: 'test_case',
-            status: 'draft'
-          });
-        }
-      } catch (error) {
-        console.error('TC 생성 오류:', error);
-        showMessageDialog('오류', 'TC 생성 중 오류가 발생했습니다: ' + error.message);
-      }
-    });
-    console.log('새 TC 버튼 (트리 헤더) 이벤트 리스너 등록 완료');
-  } else {
-    console.error('newTCTreeBtn 요소를 찾을 수 없습니다. HTML을 확인하세요.');
-  }
-
-  // 새 TC 버튼 (TC 상세 탭)
-  if (newTCBtn) {
-    newTCBtn.addEventListener('click', async () => {
-      try {
-        if (!currentProject) {
-          showMessageDialog('알림', '먼저 프로젝트를 선택하세요.');
-          return;
-        }
-
-        const name = await showInputDialog('새 테스트케이스', '테스트케이스 이름을 입력하세요:');
-        if (name && name.trim()) {
-          // 현재 선택된 항목 확인 (폴더면 그 하위에, 없으면 루트에)
-          const parentId = currentTC && currentTC.type === 'folder' ? currentTC.id : null;
-          
-          await createTestCase({
-            project_id: currentProject.id,
-            parent_id: parentId,
-            name: name.trim(),
-            type: 'test_case',
-            status: 'draft'
-          });
-        }
-      } catch (error) {
-        console.error('TC 생성 오류:', error);
-        showMessageDialog('오류', 'TC 생성 중 오류가 발생했습니다: ' + error.message);
-      }
-    });
-    console.log('새 TC 버튼 이벤트 리스너 등록 완료');
-  } else {
-    console.error('newTCBtn 요소를 찾을 수 없습니다. HTML을 확인하세요.');
-  }
-
-  // TC/폴더 편집 버튼
-  if (editTCBtn) {
-    editTCBtn.addEventListener('click', () => {
-      if (currentTC) {
-        if (currentTC.type === 'test_case') {
-          editTestCase(currentTC);
-        } else if (currentTC.type === 'folder') {
-          editFolder(currentTC);
-        }
-      }
-    });
-  }
-
-
-  // 실행
-  if (runSelectedBtn) {
-    runSelectedBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      console.log('runSelectedBtn 클릭됨');
-      runSelectedTCs();
-    });
-    console.log('✅ runSelectedBtn 이벤트 리스너 등록 완료');
-  } else {
-    console.error('❌ runSelectedBtn 요소를 찾을 수 없습니다.');
-  }
-
-  // 리코더
-  if (startRecordingBtn) {
-    startRecordingBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      console.log('startRecordingBtn 클릭됨');
-      startRecording();
-    });
-    console.log('✅ startRecordingBtn 이벤트 리스너 등록 완료');
-  } else {
-    console.error('❌ startRecordingBtn 요소를 찾을 수 없습니다.');
-  }
-
-  if (stopRecordingBtn) {
-    stopRecordingBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      console.log('stopRecordingBtn 클릭됨');
-      stopRecording();
-    });
-    console.log('✅ stopRecordingBtn 이벤트 리스너 등록 완료');
-  } else {
-    console.error('❌ stopRecordingBtn 요소를 찾을 수 없습니다.');
-  }
-
-  // 결과 패널 토글
-  if (toggleResultsBtn && resultsPanel) {
-    toggleResultsBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      console.log('toggleResultsBtn 클릭됨');
-      resultsPanel.classList.toggle('collapsed');
-      toggleResultsBtn.textContent = resultsPanel.classList.contains('collapsed') ? '▶' : '◀';
-    });
-    console.log('✅ toggleResultsBtn 이벤트 리스너 등록 완료');
-  } else {
-    console.error('❌ toggleResultsBtn 또는 resultsPanel 요소를 찾을 수 없습니다.');
-  }
-
-  // 리포트 내보내기
-  if (exportReportBtn) {
-    exportReportBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      console.log('exportReportBtn 클릭됨');
-      alert('리포트 내보내기 기능은 향후 구현 예정입니다.');
-    });
-    console.log('✅ exportReportBtn 이벤트 리스너 등록 완료');
-  } else {
-    console.error('❌ exportReportBtn 요소를 찾을 수 없습니다.');
-  }
-
-  // 결과 지우기
-  if (clearResultsBtn && resultsList) {
-    clearResultsBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      console.log('clearResultsBtn 클릭됨');
-      resultsList.innerHTML = '<div class="placeholder">실행 결과가 여기에 표시됩니다</div>';
-      updateSummary([]);
-    });
-    console.log('✅ clearResultsBtn 이벤트 리스너 등록 완료');
-  } else {
-    console.error('❌ clearResultsBtn 또는 resultsList 요소를 찾을 수 없습니다.');
-  }
-
-  // 상단 툴바
-  if (runCurrentBtn) {
-    runCurrentBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      console.log('runCurrentBtn 클릭됨');
-      if (currentTC && currentTC.type === 'test_case') {
-        runSingleTC(currentTC.id);
-      } else {
-        alert('테스트케이스를 선택하세요');
-      }
-    });
-    console.log('✅ runCurrentBtn 이벤트 리스너 등록 완료');
-  } else {
-    console.error('❌ runCurrentBtn 요소를 찾을 수 없습니다.');
-  }
-
-  if (searchInput) {
-    searchInput.addEventListener('input', (e) => {
-      console.log('searchInput 입력:', e.target.value);
-      filterTreeBySearch(e.target.value);
-    });
-    console.log('✅ searchInput 이벤트 리스너 등록 완료');
-  } else {
-    console.error('❌ searchInput 요소를 찾을 수 없습니다.');
-  }
-
-  if (filterBtn) {
-    filterBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      console.log('filterBtn 클릭됨');
-      alert('필터 기능은 향후 구현 예정입니다.');
-    });
-    console.log('✅ filterBtn 이벤트 리스너 등록 완료');
-  } else {
-    console.error('❌ filterBtn 요소를 찾을 수 없습니다.');
-  }
-
-  if (settingsBtn) {
-    settingsBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      console.log('settingsBtn 클릭됨');
-      alert('설정 기능은 향후 구현 예정입니다.');
-    });
-    console.log('✅ settingsBtn 이벤트 리스너 등록 완료');
-  } else {
-    console.error('❌ settingsBtn 요소를 찾을 수 없습니다.');
-  }
-
-  // 스크립트 저장
-  if (saveScriptBtn) {
-    saveScriptBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      console.log('saveScriptBtn 클릭됨');
-      saveScript();
-    });
-    console.log('✅ saveScriptBtn 이벤트 리스너 등록 완료');
-  } else {
-    console.error('❌ saveScriptBtn 요소를 찾을 수 없습니다.');
-  }
-
-  // 새 스크립트 생성
-  if (createScriptBtn) {
-    createScriptBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      console.log('createScriptBtn 클릭됨');
-      if (!currentTC || currentTC.type === 'folder') {
-        alert('테스트케이스를 선택하세요');
-        return;
-      }
-      currentScript = null;
-      if (codeMirrorEditor) {
-        codeMirrorEditor.setValue(getDefaultScript());
-        codeMirrorEditor.setOption('readOnly', false);
-      }
-      isDirty = true;
-      updateSaveButton();
-      createScriptBtn.disabled = true;
-      addLog('info', '새 스크립트 생성 준비');
-    });
-    console.log('✅ createScriptBtn 이벤트 리스너 등록 완료');
-  } else {
-    console.error('❌ createScriptBtn 요소를 찾을 수 없습니다.');
-  }
-
-  console.log('=== setupEventListeners() 완료 ===');
-}
-
-// ============================================================================
-// 프로젝트 탐색기 관리
-// ============================================================================
-
-function setupProjectExplorer() {
-  const sectionHeaders = document.querySelectorAll('.section-header');
-  
-  sectionHeaders.forEach(header => {
-    header.addEventListener('click', () => {
-      const section = header.dataset.section;
-      const content = document.getElementById(`${section}-section`);
-      const toggle = header.querySelector('.section-toggle');
-      
-      content.classList.toggle('collapsed');
-      toggle.textContent = content.classList.contains('collapsed') ? '▶' : '▼';
-    });
-  });
-
-  // 프로파일 선택
-  const profileItems = document.querySelectorAll('.profile-item');
-  profileItems.forEach(item => {
-    item.addEventListener('click', () => {
-      profileItems.forEach(p => p.classList.remove('active'));
-      item.classList.add('active');
-      profileSelect.value = item.dataset.profile;
-      addLog('info', `프로파일 변경: ${item.dataset.profile}`);
-    });
-  });
-}
-
-// ============================================================================
-// 하단 패널 관리
-// ============================================================================
-
-function setupBottomPanel() {
-  // 패널 토글
-  toggleBottomPanel.addEventListener('click', () => {
-    bottomPanel.classList.toggle('collapsed');
-    toggleBottomPanel.textContent = bottomPanel.classList.contains('collapsed') ? '▲' : '▼';
-  });
-
-  // 탭 전환
-  panelTabs.forEach(tab => {
-    tab.addEventListener('click', () => {
-      const panelName = tab.dataset.panel;
-      
-      // 탭 활성화
-      panelTabs.forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-      
-      // 컨텐츠 표시
-      panelTabContents.forEach(content => {
-        content.classList.remove('active');
-        if (content.id === `panel-${panelName}`) {
-          content.classList.add('active');
-        }
-      });
-    });
-  });
-}
-
-// ============================================================================
-// 컨텍스트 메뉴
-// ============================================================================
-
-function setupContextMenu() {
-  // 메뉴 항목 클릭
-  const menuItems = document.querySelectorAll('.context-menu-item');
-  menuItems.forEach(item => {
-    item.addEventListener('click', () => {
-      const action = item.dataset.action;
-      handleContextMenuAction(action);
-      hideContextMenu();
-    });
-  });
-
-  // 외부 클릭 시 메뉴 숨김
-  document.addEventListener('click', (e) => {
-    if (!contextMenu.contains(e.target) && !e.target.closest('.tc-tree-item')) {
-      hideContextMenu();
-    }
-  });
-
-  // 트리 영역 빈 공간 우클릭 시 컨텍스트 메뉴 표시 (TestRail 스타일)
-  if (tcTree) {
-    tcTree.addEventListener('contextmenu', (e) => {
-      // 트리 아이템 위에 있으면 기본 동작 사용
-      if (e.target.closest('.tc-tree-item')) {
-        return;
-      }
-      
-      e.preventDefault();
-      // 빈 공간 우클릭 시 루트에 폴더 생성 메뉴 표시
-      showContextMenu(e.pageX, e.pageY, {
-        type: 'root',
-        id: null,
-        name: '루트'
-      });
-    });
-  }
-}
-
-function showContextMenu(x, y, item) {
-  contextMenuTarget = item;
-  contextMenu.style.left = `${x}px`;
-  contextMenu.style.top = `${y}px`;
-  
-  // 컨텍스트 메뉴 항목 표시/숨김 처리
-  const menuItems = contextMenu.querySelectorAll('.context-menu-item');
-  menuItems.forEach(menuItem => {
-    const action = menuItem.dataset.action;
-    
-    // 실행: test_case만 표시
-    if (action === 'run') {
-      menuItem.style.display = item.type === 'test_case' ? 'block' : 'none';
-    }
-    // 편집: test_case와 folder만 표시
-    else if (action === 'edit') {
-      menuItem.style.display = (item.type === 'test_case' || item.type === 'folder') ? 'block' : 'none';
-    }
-    // 복제: test_case만 표시
-    else if (action === 'duplicate') {
-      menuItem.style.display = item.type === 'test_case' ? 'block' : 'none';
-    }
-    // 새 폴더: root, folder만 표시 (test_case 하위에는 생성 불가)
-    else if (action === 'new-folder') {
-      menuItem.style.display = (item.type === 'root' || item.type === 'folder') ? 'block' : 'none';
-    }
-    // 새 TC: root, folder만 표시 (test_case 하위에는 생성 불가)
-    else if (action === 'new-tc') {
-      menuItem.style.display = (item.type === 'root' || item.type === 'folder') ? 'block' : 'none';
-    }
-    // 삭제: root는 삭제 불가
-    else if (action === 'delete') {
-      menuItem.style.display = item.type === 'root' ? 'none' : 'block';
-    }
-  });
-  
-  contextMenu.classList.add('show');
-}
-
-function hideContextMenu() {
-  contextMenu.classList.remove('show');
-  contextMenuTarget = null;
-}
-
-function handleContextMenuAction(action) {
-  if (!contextMenuTarget) return;
-
-  switch (action) {
-    case 'run':
-      if (contextMenuTarget.type === 'test_case') {
-        runSingleTC(contextMenuTarget.id);
-      }
-      break;
-    case 'edit':
-      if (contextMenuTarget.type === 'test_case') {
-        selectTC(contextMenuTarget);
-        editTCBtn.click();
-      } else if (contextMenuTarget.type === 'folder') {
-        editFolder(contextMenuTarget);
-      }
-      break;
-    case 'duplicate':
-      addLog('info', `TC 복제: ${contextMenuTarget.name}`);
-      alert('복제 기능은 향후 구현 예정입니다.');
-      break;
-    case 'delete':
-      if (contextMenuTarget.type === 'root') {
-        return; // 루트는 삭제 불가
-      }
-      if (confirm(`'${contextMenuTarget.name}'을(를) 삭제하시겠습니까?`)) {
-        deleteTC(contextMenuTarget.id);
-      }
-      break;
-    case 'new-folder':
-      // 루트 우클릭 시 또는 폴더 우클릭 시
-      if (contextMenuTarget.type === 'root' || contextMenuTarget.type === 'folder') {
-        createNewFolder(contextMenuTarget.type === 'root' ? null : contextMenuTarget);
-      } else {
-        // 테스트케이스 우클릭 시에는 부모 폴더에 생성 (또는 루트)
-        createNewFolder(null);
-      }
-      break;
-    case 'new-tc':
-      // 루트 우클릭 시 또는 폴더 우클릭 시
-      if (contextMenuTarget.type === 'root' || contextMenuTarget.type === 'folder') {
-        createTestCaseFromContext(contextMenuTarget.type === 'root' ? null : contextMenuTarget);
-      } else {
-        // 테스트케이스 우클릭 시에는 부모 폴더에 생성 (또는 루트)
-        createTestCaseFromContext(null);
-      }
-      break;
-  }
 }
 
 /**
@@ -2852,203 +3042,6 @@ async function saveEditedTestCase(tcId, data, dialog) {
 // 다이얼로그 유틸리티 (Electron에서 prompt/alert 대체)
 // ============================================================================
 
-/**
- * 입력 다이얼로그 표시
- */
-function showInputDialog(title, message, defaultValue = '') {
-  return new Promise((resolve) => {
-    // 기존 다이얼로그가 있으면 제거
-    const existing = document.getElementById('input-dialog');
-    if (existing) {
-      existing.remove();
-    }
-
-    // 다이얼로그 생성
-    const dialog = document.createElement('div');
-    dialog.id = 'input-dialog';
-    dialog.className = 'modal-dialog';
-    
-    const dialogContent = document.createElement('div');
-    dialogContent.className = 'modal-content';
-    
-    // 헤더
-    const header = document.createElement('div');
-    header.className = 'modal-header';
-    header.innerHTML = `<h3>${title}</h3>`;
-    const closeBtn = document.createElement('button');
-    closeBtn.className = 'modal-close';
-    closeBtn.textContent = '×';
-    closeBtn.addEventListener('click', () => {
-      dialog.remove();
-      resolve(null);
-    });
-    header.appendChild(closeBtn);
-    
-    // 바디
-    const body = document.createElement('div');
-    body.className = 'modal-body';
-    body.innerHTML = `<p>${message}</p>`;
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.id = 'input-dialog-input';
-    input.className = 'modal-input';
-    input.value = defaultValue;
-    input.placeholder = '이름을 입력하세요';
-    body.appendChild(input);
-    
-    // 푸터
-    const footer = document.createElement('div');
-    footer.className = 'modal-footer';
-    const cancelBtn = document.createElement('button');
-    cancelBtn.className = 'btn btn-secondary';
-    cancelBtn.textContent = '취소';
-    cancelBtn.addEventListener('click', () => {
-      dialog.remove();
-      resolve(null);
-    });
-    const confirmBtn = document.createElement('button');
-    confirmBtn.className = 'btn btn-primary';
-    confirmBtn.textContent = '확인';
-    confirmBtn.addEventListener('click', () => {
-      dialog.remove();
-      resolve(input.value);
-    });
-    footer.appendChild(cancelBtn);
-    footer.appendChild(confirmBtn);
-    
-    dialogContent.appendChild(header);
-    dialogContent.appendChild(body);
-    dialogContent.appendChild(footer);
-    dialog.appendChild(dialogContent);
-
-    // 다이얼로그 표시
-    document.body.appendChild(dialog);
-    
-    // 다이얼로그가 제대로 추가되었는지 확인
-    const addedDialog = document.getElementById('input-dialog');
-    if (!addedDialog) {
-      console.error('다이얼로그가 DOM에 추가되지 않았습니다.');
-      resolve(null);
-      return;
-    }
-    
-    input.focus();
-    input.select();
-
-    // Enter 키로 확인
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        dialog.remove();
-        resolve(input.value);
-      } else if (e.key === 'Escape') {
-        dialog.remove();
-        resolve(null);
-      }
-    });
-  });
-}
-
-/**
- * 메시지 다이얼로그 표시
- */
-function showMessageDialog(title, message) {
-  return new Promise((resolve) => {
-    // 기존 다이얼로그가 있으면 제거
-    const existing = document.getElementById('message-dialog');
-    if (existing) {
-      existing.remove();
-    }
-
-    // 다이얼로그 생성
-    const dialog = document.createElement('div');
-    dialog.id = 'message-dialog';
-    dialog.className = 'modal-dialog';
-    
-    const dialogContent = document.createElement('div');
-    dialogContent.className = 'modal-content';
-    
-    // 헤더
-    const header = document.createElement('div');
-    header.className = 'modal-header';
-    header.innerHTML = `<h3>${title}</h3>`;
-    const closeBtn = document.createElement('button');
-    closeBtn.className = 'modal-close';
-    closeBtn.textContent = '×';
-    closeBtn.addEventListener('click', () => {
-      dialog.remove();
-      resolve();
-    });
-    header.appendChild(closeBtn);
-    
-    // 바디
-    const body = document.createElement('div');
-    body.className = 'modal-body';
-    body.innerHTML = `<p>${message}</p>`;
-    
-    // 푸터
-    const footer = document.createElement('div');
-    footer.className = 'modal-footer';
-    const confirmBtn = document.createElement('button');
-    confirmBtn.className = 'btn btn-primary';
-    confirmBtn.textContent = '확인';
-    confirmBtn.addEventListener('click', () => {
-      dialog.remove();
-      resolve();
-    });
-    footer.appendChild(confirmBtn);
-    
-    dialogContent.appendChild(header);
-    dialogContent.appendChild(body);
-    dialogContent.appendChild(footer);
-    dialog.appendChild(dialogContent);
-
-    // 다이얼로그 표시
-    document.body.appendChild(dialog);
-    confirmBtn.focus();
-  });
-}
-
-// ============================================================================
-// TC 생성
-// ============================================================================
-
-async function createTestCase(data) {
-  try {
-    if (!window.electronAPI?.api?.createTestCase) {
-      showMessageDialog('오류', 'TC 생성 API가 없습니다.');
-      return;
-    }
-
-    addLog('info', `TC 생성 중: ${data.name}`);
-    
-    const response = await window.electronAPI.api.createTestCase(data);
-    
-    if (response && response.success) {
-      addLog('success', `TC 생성 완료: ${data.name}`);
-      
-      // TC 트리 새로고침
-      if (currentProject) {
-        await loadTCTree(currentProject.id);
-      }
-      
-      // 새로 생성된 TC 선택
-      if (response.data) {
-        selectTC(response.data);
-      }
-      
-      showMessageDialog('성공', `테스트케이스 '${data.name}'이(가) 생성되었습니다.`);
-    } else {
-      const errorMsg = response?.error || '알 수 없는 오류';
-      throw new Error(errorMsg);
-    }
-  } catch (error) {
-    console.error('TC 생성 실패:', error);
-    const errorMessage = error.message || '알 수 없는 오류가 발생했습니다';
-    addLog('error', `TC 생성 실패: ${errorMessage}`);
-    showMessageDialog('오류', `TC 생성 실패: ${errorMessage}`);
-  }
-}
-
 // ============================================================================
 // 단일 TC 실행
 // ============================================================================
@@ -3168,59 +3161,6 @@ async function createProject(name) {
 // 폴더 관리
 // ============================================================================
 
-/**
- * 새 폴더 생성
- */
-async function createNewFolder(parentItem = null) {
-  try {
-    if (!currentProject) {
-      showMessageDialog('알림', '먼저 프로젝트를 선택하세요.');
-      return;
-    }
-
-    // parentItem이 없으면 현재 선택된 항목 확인
-    let actualParent = parentItem;
-    if (!actualParent && currentTC && currentTC.type === 'folder') {
-      actualParent = currentTC;
-    }
-
-    // 부모가 테스트케이스인 경우 폴더 생성 불가
-    if (actualParent && actualParent.type === 'test_case') {
-      showMessageDialog('오류', '테스트케이스 하위에는 폴더를 생성할 수 없습니다. 폴더는 다른 폴더나 루트에만 생성할 수 있습니다.');
-      return;
-    }
-
-    const name = await showInputDialog('새 폴더', '폴더 이름을 입력하세요:');
-    if (name && name.trim()) {
-      const folderData = {
-        project_id: currentProject.id,
-        parent_id: (actualParent && actualParent.type === 'folder') ? actualParent.id : null,
-        name: name.trim(),
-        type: 'folder',
-        status: 'active'
-      };
-
-      const response = await window.electronAPI.api.createTestCase(folderData);
-      
-      if (response && response.success) {
-        addLog('success', `폴더 생성 완료: ${name.trim()}`);
-        
-        // TC 트리 새로고침
-        if (currentProject) {
-          await loadTCTree(currentProject.id);
-        }
-        
-        showMessageDialog('성공', `폴더 '${name.trim()}'이(가) 생성되었습니다.`);
-      } else {
-        throw new Error(response?.error || '폴더 생성 실패');
-      }
-    }
-  } catch (error) {
-    console.error('폴더 생성 실패:', error);
-    addLog('error', `폴더 생성 실패: ${error.message}`);
-    showMessageDialog('오류', `폴더 생성 실패: ${error.message}`);
-  }
-}
 
 /**
  * 폴더 편집
@@ -3440,42 +3380,6 @@ async function moveTCToFolder(tcId, folderId) {
   }
 }
 
-// ============================================================================
-// Page Objects 관리
-// ============================================================================
-
-function setupPageObjects() {
-  if (!newPageObjectBtn) return;
-  
-  newPageObjectBtn.addEventListener('click', () => {
-    if (!currentProject) {
-      showMessageDialog('알림', '프로젝트를 먼저 선택하세요.');
-      return;
-    }
-    createNewPageObject();
-  });
-  
-  if (savePageObjectBtn) {
-    savePageObjectBtn.addEventListener('click', savePageObject);
-  }
-  
-  if (cancelPageObjectBtn) {
-    cancelPageObjectBtn.addEventListener('click', cancelPageObjectEdit);
-  }
-  
-  // Page Object 코드 에디터 초기화
-  if (pageObjectCodeEditor) {
-    pageObjectCodeMirrorEditor = CodeMirror.fromTextArea(pageObjectCodeEditor, {
-      lineNumbers: true,
-      mode: 'python',
-      theme: 'monokai',
-      indentUnit: 4,
-      indentWithTabs: false,
-      lineWrapping: true
-    });
-  }
-}
-
 function showPageObjectsPlaceholder() {
   if (pageObjectsList) {
     pageObjectsList.innerHTML = '<div class="placeholder">프로젝트를 선택하세요</div>';
@@ -3557,7 +3461,10 @@ function createNewPageObject() {
   
   if (pageObjectEditor) {
     pageObjectEditor.style.display = 'block';
-    document.getElementById('page-object-editor-title').textContent = '새 Page Object';
+    const titleEl = document.getElementById('page-object-editor-title');
+    if (titleEl) {
+      titleEl.textContent = '새 Page Object';
+    }
   }
   
   if (pageObjectsList) {
@@ -3585,7 +3492,10 @@ async function editPageObject(id) {
       
       if (pageObjectEditor) {
         pageObjectEditor.style.display = 'block';
-        document.getElementById('page-object-editor-title').textContent = `편집: ${currentPageObject.name}`;
+        const titleEl = document.getElementById('page-object-editor-title');
+        if (titleEl) {
+          titleEl.textContent = `편집: ${currentPageObject.name}`;
+        }
       }
       
       if (pageObjectsList) {
@@ -3597,76 +3507,6 @@ async function editPageObject(id) {
   } catch (error) {
     console.error('Page Object 편집 실패:', error);
     showMessageDialog('오류', `편집 실패: ${error.message}`);
-  }
-}
-
-async function savePageObject() {
-  if (!currentProject) {
-    showMessageDialog('알림', '프로젝트를 먼저 선택하세요.');
-    return;
-  }
-  
-  try {
-    const name = pageObjectNameInput?.value?.trim();
-    if (!name) {
-      showMessageDialog('알림', '이름을 입력하세요.');
-      return;
-    }
-    
-    let urlPatterns = [];
-    try {
-      urlPatterns = JSON.parse(pageObjectUrlPatternsInput?.value || '[]');
-    } catch (e) {
-      showMessageDialog('오류', 'URL 패턴이 올바른 JSON 형식이 아닙니다.');
-      return;
-    }
-    
-    const code = pageObjectCodeMirrorEditor?.getValue() || '';
-    if (!code.trim()) {
-      showMessageDialog('알림', '코드를 입력하세요.');
-      return;
-    }
-    
-    const data = {
-      project_id: currentProject.id,
-      name,
-      description: pageObjectDescriptionInput?.value?.trim() || null,
-      url_patterns: urlPatterns,
-      framework: pageObjectFrameworkSelect?.value || 'pytest',
-      language: pageObjectLanguageSelect?.value || 'python',
-      code,
-      status: 'active'
-    };
-    
-    let response;
-    if (currentPageObject) {
-      response = await window.electronAPI.api.updatePageObject(currentPageObject.id, data);
-    } else {
-      response = await window.electronAPI.api.createPageObject(data);
-    }
-    
-    if (response.success) {
-      showMessageDialog('성공', 'Page Object가 저장되었습니다.');
-      cancelPageObjectEdit();
-      await loadPageObjects(currentProject.id);
-    } else {
-      throw new Error(response.error || '저장 실패');
-    }
-  } catch (error) {
-    console.error('Page Object 저장 실패:', error);
-    showMessageDialog('오류', `저장 실패: ${error.message}`);
-  }
-}
-
-function cancelPageObjectEdit() {
-  currentPageObject = null;
-  
-  if (pageObjectEditor) {
-    pageObjectEditor.style.display = 'none';
-  }
-  
-  if (pageObjectsList) {
-    pageObjectsList.style.display = 'block';
   }
 }
 
@@ -3729,3 +3569,157 @@ window.addEventListener('error', (event) => {
 window.addEventListener('unhandledrejection', (event) => {
   console.error('처리되지 않은 Promise 거부:', event.reason);
 });
+
+// ============================================================================
+// 초기화
+// ============================================================================
+
+async function init() {
+  try {
+    console.log('=== init() 함수 시작 ===');
+    
+    // DOM 요소 초기화 (가장 먼저!)
+    initDOMElements();
+    
+    // electronAPI 확인
+    if (!window.electronAPI) {
+      console.error('❌ window.electronAPI가 없습니다!');
+      console.error('window 객체:', typeof window);
+      console.error('window.electronAPI:', window.electronAPI);
+      alert('Electron API가 초기화되지 않았습니다. 앱을 재시작하세요.');
+      return;
+    }
+    
+    console.log('✅ window.electronAPI 확인 완료');
+    console.log('  electronAPI.api:', typeof window.electronAPI.api);
+
+    addLog('info', '애플리케이션 초기화 중...');
+    
+    // 데이터베이스 연결 상태 확인
+    try {
+      if (window.electronAPI.api?.checkServer) {
+        const dbStatus = await window.electronAPI.api.checkServer();
+        if (dbStatus && dbStatus.connected) {
+          addLog('success', '로컬 데이터베이스에 연결되었습니다.');
+          if (dbStatus.path) {
+            addLog('info', `데이터베이스 위치: ${dbStatus.path}`);
+          }
+        } else {
+          addLog('error', '데이터베이스에 연결할 수 없습니다.');
+          addLog('info', '앱을 재시작해보세요.');
+        }
+      }
+    } catch (error) {
+      console.warn('데이터베이스 상태 확인 실패:', error);
+      addLog('warning', '데이터베이스 상태를 확인할 수 없습니다.');
+    }
+
+    await loadProjects();
+    
+    // 이벤트 리스너 설정 (순서 중요, 각각 try-catch로 감싸서 하나가 실패해도 계속 진행)
+    console.log('이벤트 리스너 설정 시작...');
+    
+    // setup 함수들이 정의되어 있는지 확인하고 호출
+    if (typeof setupEventListeners === 'function') {
+      try {
+        setupEventListeners();
+        console.log('✅ setupEventListeners 완료');
+      } catch (error) {
+        console.error('❌ setupEventListeners 실패:', error);
+      }
+    } else {
+      console.error('❌ setupEventListeners 함수가 정의되지 않았습니다.');
+    }
+    
+    if (typeof setupTabs === 'function') {
+      try {
+        setupTabs();
+        console.log('✅ setupTabs 완료');
+      } catch (error) {
+        console.error('❌ setupTabs 실패:', error);
+      }
+    } else {
+      console.error('❌ setupTabs 함수가 정의되지 않았습니다.');
+    }
+    
+    if (typeof setupProjectExplorer === 'function') {
+      try {
+        setupProjectExplorer();
+        console.log('✅ setupProjectExplorer 완료');
+      } catch (error) {
+        console.error('❌ setupProjectExplorer 실패:', error);
+      }
+    } else {
+      console.error('❌ setupProjectExplorer 함수가 정의되지 않았습니다.');
+    }
+    
+    if (typeof setupBottomPanel === 'function') {
+      try {
+        setupBottomPanel();
+        console.log('✅ setupBottomPanel 완료');
+      } catch (error) {
+        console.error('❌ setupBottomPanel 실패:', error);
+      }
+    } else {
+      console.error('❌ setupBottomPanel 함수가 정의되지 않았습니다.');
+    }
+    
+    if (typeof setupContextMenu === 'function') {
+      try {
+        setupContextMenu();
+        console.log('✅ setupContextMenu 완료');
+      } catch (error) {
+        console.error('❌ setupContextMenu 실패:', error);
+      }
+    } else {
+      console.error('❌ setupContextMenu 함수가 정의되지 않았습니다.');
+    }
+    
+    if (typeof setupCodeEditor === 'function') {
+      try {
+        setupCodeEditor();
+        console.log('✅ setupCodeEditor 완료');
+      } catch (error) {
+        console.error('❌ setupCodeEditor 실패:', error);
+      }
+    } else {
+      console.error('❌ setupCodeEditor 함수가 정의되지 않았습니다.');
+    }
+    
+    if (typeof setupScriptViews === 'function') {
+      try {
+        setupScriptViews();
+        console.log('✅ setupScriptViews 완료');
+      } catch (error) {
+        console.error('❌ setupScriptViews 실패:', error);
+      }
+    } else {
+      console.error('❌ setupScriptViews 함수가 정의되지 않았습니다.');
+    }
+    
+    if (typeof setupPageObjects === 'function') {
+      try {
+        setupPageObjects();
+        console.log('✅ setupPageObjects 완료');
+      } catch (error) {
+        console.error('❌ setupPageObjects 실패:', error);
+      }
+    } else {
+      console.error('❌ setupPageObjects 함수가 정의되지 않았습니다.');
+    }
+    
+    // 서버 이벤트 리스너
+    if (window.electronAPI?.onTestCaseUpdated) {
+      window.electronAPI.onTestCaseUpdated((data) => {
+        if (currentProject) {
+          loadTCTree(currentProject.id);
+        }
+      });
+    }
+
+    addLog('success', '애플리케이션 초기화 완료');
+  } catch (error) {
+    console.error('초기화 실패:', error);
+    addLog('error', `초기화 실패: ${error.message}`);
+  }
+}

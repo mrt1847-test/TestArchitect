@@ -1307,8 +1307,16 @@ async function runSelectedTCs() {
       return;
     }
 
-    // 여러 파일을 한번에 pytest로 실행
-    const result = await window.electronAPI.runPythonScript(testFiles);
+    // 여러 파일을 한번에 pytest로 실행 (병렬 실행 활성화)
+    // 여러 TC를 선택한 경우 자동으로 병렬 실행
+    const options = {
+      parallel: testFiles.length > 1,  // 파일이 2개 이상이면 병렬 실행
+      workers: 'auto',                 // 자동 워커 수
+      htmlReport: true,                // HTML 리포트 생성
+      captureScreenshots: true         // 스크린샷 캡처
+    };
+    
+    const result = await window.electronAPI.runPythonScript(testFiles, [], options);
     
     // 결과 파싱 및 매핑
     const results = [];

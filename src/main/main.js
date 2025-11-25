@@ -360,6 +360,7 @@ function buildTree(items, parentId = null, scriptsMap = {}) {
         status: item.status,
         hasScript: scriptsMap[item.id] || false,
         order_index: item.order_index,
+        tc_number: item.tc_number || null, // 프로젝트별 TC 번호
         created_at: item.created_at,
         updated_at: item.updated_at
       };
@@ -378,6 +379,11 @@ function buildTree(items, parentId = null, scriptsMap = {}) {
         }
       }
 
+      // tc_number가 없으면 id를 사용 (기존 데이터 호환성)
+      if (!node.tc_number && node.type === 'test_case') {
+        node.tc_number = node.id;
+      }
+
       // 자식 노드 추가
       const children = buildTree(items, item.id, scriptsMap);
       if (children.length > 0) {
@@ -386,7 +392,18 @@ function buildTree(items, parentId = null, scriptsMap = {}) {
 
       return node;
     })
-    .sort((a, b) => a.order_index - b.order_index);
+    .sort((a, b) => {
+      // tc_number로 정렬 (없으면 order_index, 그 다음 id)
+      if (a.tc_number && b.tc_number) {
+        return a.tc_number - b.tc_number;
+      }
+      if (a.tc_number) return -1;
+      if (b.tc_number) return 1;
+      if (a.order_index !== b.order_index) {
+        return a.order_index - b.order_index;
+      }
+      return a.id - b.id;
+    });
 }
 
 ipcMain.handle('api-get-tc-tree', async (event, projectId) => {
@@ -459,11 +476,28 @@ ipcMain.handle('api-create-test-case', async (event, data) => {
     if (!project_id || !name) {
       return { success: false, error: '프로젝트 ID와 이름은 필수입니다' };
     }
+    
+    // tc_number 자동 할당 (test_case인 경우만)
+    let tc_number = null;
+    if (type === 'test_case') {
+      try {
+        const maxResult = DbService.get(
+          'SELECT COALESCE(MAX(tc_number), 0) as max_number FROM test_cases WHERE project_id = ? AND type = ?',
+          [project_id, 'test_case']
+        );
+        tc_number = (maxResult?.max_number || 0) + 1;
+      } catch (error) {
+        // tc_number 컬럼이 없을 수 있으므로 에러 무시
+        console.warn('tc_number 조회 실패 (마이그레이션 필요):', error);
+      }
+    }
+    
     const result = DbService.run(
-      `INSERT INTO test_cases (project_id, parent_id, name, description, type, steps, tags, status, order_index)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO test_cases (project_id, tc_number, parent_id, name, description, type, steps, tags, status, order_index)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         project_id,
+        tc_number,
         parent_id || null,
         name,
         description || null,

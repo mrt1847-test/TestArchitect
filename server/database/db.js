@@ -61,6 +61,7 @@ async function createTables() {
     `CREATE TABLE IF NOT EXISTS test_cases (
       id INT AUTO_INCREMENT PRIMARY KEY,
       project_id INT NOT NULL,
+      tc_number INT NULL,
       parent_id INT NULL,
       name VARCHAR(255) NOT NULL,
       description TEXT,
@@ -75,6 +76,7 @@ async function createTables() {
       version INT DEFAULT 1,
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
       FOREIGN KEY (parent_id) REFERENCES test_cases(id) ON DELETE CASCADE,
+      UNIQUE KEY unique_project_tc_number (project_id, tc_number),
       INDEX idx_test_cases_project_id (project_id),
       INDEX idx_test_cases_parent_id (parent_id),
       INDEX idx_test_cases_status (status),

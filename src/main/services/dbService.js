@@ -100,6 +100,7 @@ function createTables() {
     `CREATE TABLE IF NOT EXISTS test_cases (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       project_id INTEGER NOT NULL,
+      tc_number INTEGER,
       parent_id INTEGER,
       name TEXT NOT NULL,
       description TEXT,
@@ -113,7 +114,8 @@ function createTables() {
       created_by TEXT,
       version INTEGER DEFAULT 1,
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-      FOREIGN KEY (parent_id) REFERENCES test_cases(id) ON DELETE CASCADE
+      FOREIGN KEY (parent_id) REFERENCES test_cases(id) ON DELETE CASCADE,
+      UNIQUE(project_id, tc_number)
     )`,
 
     // 테스트 스크립트 테이블

@@ -71,8 +71,8 @@
                                 <div class="tree-header">
                                     <h4>테스트케이스</h4>
                                     <div class="tree-actions">
-                                        <button id="expand-all-btn" class="btn-icon" title="모두 펼치기">📂</button>
-                                        <button id="collapse-all-btn" class="btn-icon" title="모두 접기">📁</button>
+                                        <button id="new-folder-btn" class="btn-icon" title="새 폴더">📁</button>
+                                        <button id="new-tc-tree-btn" class="btn-icon" title="새 TC">📄</button>
                                     </div>
                                 </div>
                                 <div id="tc-tree" class="tc-tree">
@@ -151,6 +151,10 @@
                     <button class="tab-btn" data-tab="recorder">
                         <span class="tab-icon">🎬</span>
                         리코더
+                    </button>
+                    <button class="tab-btn" data-tab="page-objects">
+                        <span class="tab-icon">📄</span>
+                        Page Objects
                     </button>
                 </div>
 
@@ -238,6 +242,67 @@
                         </div>
                         <div id="result-detail-content" class="tab-content-body">
                             <div class="placeholder">테스트케이스를 선택하세요</div>
+                        </div>
+                    </div>
+
+                    <!-- Page Objects 탭 -->
+                    <div class="tab-panel" id="tab-page-objects">
+                        <div class="panel-header">
+                            <h3>Page Objects</h3>
+                            <div class="header-actions">
+                                <button id="new-page-object-btn" class="btn btn-primary">새 Page Object</button>
+                            </div>
+                        </div>
+                        <div id="page-objects-content" class="tab-content-body">
+                            <div class="page-objects-list-container">
+                                <div id="page-objects-list" class="page-objects-list">
+                                    <div class="placeholder">프로젝트를 선택하세요</div>
+                                </div>
+                            </div>
+                            <div id="page-object-editor" class="page-object-editor" style="display: none;">
+                                <div class="editor-header">
+                                    <h4 id="page-object-editor-title">Page Object 편집</h4>
+                                    <div class="editor-actions">
+                                        <button id="save-page-object-btn" class="btn btn-primary">저장</button>
+                                        <button id="cancel-page-object-btn" class="btn btn-secondary">취소</button>
+                                    </div>
+                                </div>
+                                <div class="editor-body">
+                                    <div class="form-group">
+                                        <label>이름:</label>
+                                        <input type="text" id="page-object-name" class="form-input" placeholder="LoginPage">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>설명:</label>
+                                        <input type="text" id="page-object-description" class="form-input" placeholder="로그인 페이지">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>URL 패턴 (JSON 배열):</label>
+                                        <textarea id="page-object-url-patterns" class="form-textarea" rows="3" placeholder='["https://example.com/login", "/login"]'></textarea>
+                                        <small>예: ["https://example.com/login", "/login"] 또는 ["regex:.*/login.*"]</small>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>프레임워크:</label>
+                                        <select id="page-object-framework" class="form-select">
+                                            <option value="pytest">pytest</option>
+                                            <option value="playwright">Playwright</option>
+                                            <option value="selenium">Selenium</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>언어:</label>
+                                        <select id="page-object-language" class="form-select">
+                                            <option value="python">Python</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>코드:</label>
+                                        <div id="page-object-code-editor-wrapper" class="code-editor-wrapper">
+                                            <textarea id="page-object-code-editor"></textarea>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
@@ -366,6 +431,7 @@
         <div class="context-menu-item" data-action="duplicate">📋 복제</div>
         <div class="context-menu-divider"></div>
         <div class="context-menu-item" data-action="new-folder">📁 새 폴더</div>
+        <div class="context-menu-item" data-action="new-tc">📄 새 TC</div>
         <div class="context-menu-divider"></div>
         <div class="context-menu-item" data-action="delete">🗑️ 삭제</div>
     </div>

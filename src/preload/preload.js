@@ -30,6 +30,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   /**
+   * 여러 스크립트를 임시 파일로 생성하여 실행
+   * @param {Array} scripts - 스크립트 배열 [{tcId, scriptId, name, code, framework, language}, ...]
+   * @param {string[]} args - pytest 인자 배열
+   * @param {Object} options - 실행 옵션
+   * @returns {Promise<Object>} 실행 결과
+   */
+  runPythonScripts: (scripts, args = [], options = {}) => {
+    return ipcRenderer.invoke('run-python-scripts', scripts, args, options);
+  },
+
+  /**
    * 사용 가능한 테스트 스크립트 목록 조회
    * @returns {Promise<string[]>} 스크립트 파일명 배열
    * 
@@ -128,6 +139,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     createObject: (data) => ipcRenderer.invoke('api-create-object', data),
     updateObject: (id, data) => ipcRenderer.invoke('api-update-object', id, data),
     deleteObject: (id) => ipcRenderer.invoke('api-delete-object', id),
+    
+    // Page Objects
+    getPageObjects: (projectId) => ipcRenderer.invoke('api-get-page-objects', projectId),
+    getPageObject: (id) => ipcRenderer.invoke('api-get-page-object', id),
+    createPageObject: (data) => ipcRenderer.invoke('api-create-page-object', data),
+    updatePageObject: (id, data) => ipcRenderer.invoke('api-update-page-object', id, data),
+    deletePageObject: (id) => ipcRenderer.invoke('api-delete-page-object', id),
+    findPageObjectByUrl: (url, projectId) => ipcRenderer.invoke('api-find-page-object-by-url', url, projectId),
     
     // 서버 상태
     checkServer: () => ipcRenderer.invoke('api-check-server')

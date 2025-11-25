@@ -3,6 +3,9 @@
  * Electron 메인 프로세스에서 직접 SQLite 연결
  * 로컬 파일 기반 데이터베이스 (서버 불필요)
  * sql.js 사용 (순수 JavaScript, 네이티브 빌드 불필요)
+ * 
+ * 현재는 로컬 모드만 지원하며, 나중에 서버 모드로 전환 가능하도록 구조화됨
+ * config.database.mode를 'local' 또는 'server'로 설정하여 전환 가능
  */
 
 const initSqlJs = require('sql.js');
@@ -165,6 +168,38 @@ function createTables() {
       created_by TEXT,
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
       FOREIGN KEY (parent_id) REFERENCES objects(id) ON DELETE CASCADE
+    )`,
+
+    // Page Objects 테이블 (POM 지원)
+    `CREATE TABLE IF NOT EXISTS page_objects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      url_patterns TEXT,
+      framework TEXT NOT NULL CHECK(framework IN ('pytest', 'playwright', 'selenium', 'appium')),
+      language TEXT NOT NULL CHECK(language IN ('python', 'javascript', 'typescript')),
+      code TEXT NOT NULL,
+      status TEXT DEFAULT 'active' CHECK(status IN ('active', 'deprecated')),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      created_by TEXT,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      UNIQUE(project_id, name)
+    )`,
+
+    // Page Object Methods 테이블
+    `CREATE TABLE IF NOT EXISTS page_object_methods (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      page_object_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      parameters TEXT,
+      code TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (page_object_id) REFERENCES page_objects(id) ON DELETE CASCADE,
+      UNIQUE(page_object_id, name)
     )`
   ];
 
@@ -183,7 +218,10 @@ function createTables() {
       'CREATE INDEX IF NOT EXISTS idx_objects_project_id ON objects(project_id)',
       'CREATE INDEX IF NOT EXISTS idx_objects_parent_id ON objects(parent_id)',
       'CREATE INDEX IF NOT EXISTS idx_objects_type ON objects(type)',
-      'CREATE INDEX IF NOT EXISTS idx_objects_name ON objects(name)'
+      'CREATE INDEX IF NOT EXISTS idx_objects_name ON objects(name)',
+      'CREATE INDEX IF NOT EXISTS idx_page_objects_project_id ON page_objects(project_id)',
+      'CREATE INDEX IF NOT EXISTS idx_page_objects_name ON page_objects(name)',
+      'CREATE INDEX IF NOT EXISTS idx_page_object_methods_page_object_id ON page_object_methods(page_object_id)'
     ];
 
     // 쿼리 실행
@@ -204,6 +242,79 @@ function createTables() {
   } catch (error) {
     console.error('❌ 테이블 생성 실패:', error);
     throw error;
+  }
+
+  // 기존 테이블 마이그레이션 (컬럼 추가)
+  migrateTables();
+}
+
+/**
+ * 실행 결과 정리 (최근 N개만 보관)
+ * @param {number} keepCount - 보관할 결과 개수 (기본값: 100)
+ */
+function cleanupOldResults(keepCount = 100) {
+  try {
+    ensureInitialized();
+    
+    // 최근 N개의 ID 조회
+    const keepResults = all(
+      `SELECT id FROM test_results 
+       ORDER BY executed_at DESC 
+       LIMIT ?`,
+      [keepCount]
+    );
+    
+    if (keepResults.length > 0) {
+      const keepIds = keepResults.map(r => r.id);
+      const placeholders = keepIds.map(() => '?').join(',');
+      
+      // 나머지 삭제
+      const deleted = run(
+        `DELETE FROM test_results 
+         WHERE id NOT IN (${placeholders})`,
+        keepIds
+      );
+      
+      if (deleted.changes > 0) {
+        console.log(`✅ 오래된 실행 결과 ${deleted.changes}개 삭제 (최근 ${keepCount}개만 보관)`);
+        saveDatabase();
+      }
+    }
+  } catch (error) {
+    console.warn('⚠️ 실행 결과 정리 실패:', error.message);
+  }
+}
+
+/**
+ * 기존 테이블 마이그레이션 (컬럼 추가)
+ */
+function migrateTables() {
+  try {
+    // test_cases 테이블에 tc_number 컬럼이 있는지 확인
+    const tableInfo = db.exec("PRAGMA table_info(test_cases)");
+    if (tableInfo && tableInfo.length > 0) {
+      // sql.js는 결과를 {columns: [...], values: [[...], ...]} 형태로 반환
+      const result = tableInfo[0];
+      const columnNames = result.values.map(row => row[1]); // 컬럼 이름은 두 번째 컬럼 (cid, name, type, ...)
+      
+      // tc_number 컬럼이 없으면 추가
+      if (!columnNames.includes('tc_number')) {
+        console.log('📝 test_cases 테이블에 tc_number 컬럼 추가 중...');
+        try {
+          db.exec('ALTER TABLE test_cases ADD COLUMN tc_number INTEGER');
+          console.log('✅ tc_number 컬럼 추가 완료');
+          saveDatabase();
+        } catch (alterError) {
+          // 이미 컬럼이 있거나 다른 오류
+          console.warn('⚠️ tc_number 컬럼 추가 실패:', alterError.message);
+        }
+      } else {
+        console.log('✅ tc_number 컬럼이 이미 존재합니다.');
+      }
+    }
+  } catch (error) {
+    // 테이블이 없거나 이미 컬럼이 있는 경우 무시
+    console.warn('⚠️ 마이그레이션 경고:', error.message);
   }
 }
 
@@ -363,6 +474,7 @@ module.exports = {
   get,
   all,
   close,
+  cleanupOldResults,
   getConfig,
   backup
 };

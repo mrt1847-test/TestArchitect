@@ -36,3 +36,4 @@ module.exports = {
   type: process.env.DB_TYPE || 'local' // 'local' 또는 'remote'
 };
 
+

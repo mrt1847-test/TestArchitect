@@ -72,6 +72,33 @@ const config = {
     enabled: process.argv.includes('--dev'),
     // DevTools 자동 열기 여부
     autoOpenDevTools: true
+  },
+
+  // 데이터베이스 설정
+  database: {
+    // DB 연결 모드: 'local' (로컬 SQLite) 또는 'server' (서버 DB)
+    // 현재는 로컬 모드 사용, 나중에 서버 도입 시 'server'로 변경
+    mode: process.env.DB_MODE || 'local', // 'local' 또는 'server'
+    
+    // 로컬 모드 설정 (SQLite)
+    local: {
+      // SQLite 파일은 dbService.js에서 자동으로 생성됨
+      // 사용자 데이터 디렉토리에 저장
+    },
+    
+    // 서버 모드 설정 (추후 사용)
+    server: {
+      // 서버 URL (서버 모드일 때만 사용)
+      url: process.env.SERVER_URL || 'http://localhost:3001',
+      // WebSocket URL (서버 모드일 때만 사용)
+      wsUrl: process.env.WS_URL || 'ws://localhost:3001',
+      // 연결 타임아웃 (밀리초)
+      timeout: 5000,
+      // 재연결 시도 횟수
+      reconnectAttempts: 3,
+      // 재연결 지연 시간 (밀리초)
+      reconnectDelay: 1000
+    }
   }
 };
 

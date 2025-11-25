@@ -58,7 +58,16 @@ class PytestService {
 
         // 단일 파일 또는 여러 파일 처리
         const files = Array.isArray(testFiles) ? testFiles : [testFiles];
-        const testPaths = files.map(file => this._getTestPath(file));
+        
+        // 실행 옵션 병합 (기본값 + 사용자 옵션)
+        const execOptions = {
+          ...config.pytest.defaultOptions,
+          ...options
+        };
+        
+        // 실행 디렉토리 (옵션에서 지정 가능, 기본값은 scripts 디렉토리)
+        const execCwd = execOptions.cwd || config.paths.scripts;
+        const testPaths = files.map(file => this._getTestPath(file, execCwd));
 
         // 모든 테스트 파일 존재 확인
         for (const testPath of testPaths) {
@@ -72,16 +81,10 @@ class PytestService {
           }
         }
 
-        // 실행 옵션 병합 (기본값 + 사용자 옵션)
-        const execOptions = {
-          ...config.pytest.defaultOptions,
-          ...options
-        };
-
         // 리포트 파일 경로 생성
-        const reportFile = this._getReportFilePath();
+        const reportFile = this._getReportFilePath(execCwd);
         const htmlReportFile = execOptions.htmlReport 
-          ? this._getHtmlReportFilePath() 
+          ? this._getHtmlReportFilePath(execCwd) 
           : null;
 
         // Pytest 명령어 구성 (런타임 정보 사용)
@@ -94,7 +97,7 @@ class PytestService {
         exec(
           command,
           {
-            cwd: config.paths.scripts,
+            cwd: execCwd,
             timeout: config.python.timeout,
             maxBuffer: 10 * 1024 * 1024, // 10MB
             env: playwrightEnv // Playwright 브라우저 경로 포함
@@ -171,13 +174,14 @@ class PytestService {
    * @param {string} testFile - 테스트 파일명
    * @returns {string} 전체 파일 경로
    */
-  static _getTestPath(testFile) {
+  static _getTestPath(testFile, baseDir = null) {
     // 이미 전체 경로인 경우
     if (path.isAbsolute(testFile)) {
       return testFile;
     }
-    // 상대 경로인 경우 scripts 디렉토리 기준
-    return path.join(config.paths.scripts, testFile);
+    // 상대 경로인 경우 baseDir 또는 scripts 디렉토리 기준
+    const base = baseDir || config.paths.scripts;
+    return path.join(base, testFile);
   }
 
   /**
@@ -204,9 +208,9 @@ class PytestService {
    * @private
    * @returns {string} 리포트 파일 경로
    */
-  static _getReportFilePath() {
+  static _getReportFilePath(baseDir = config.pytest.reportDir) {
     const timestamp = Date.now();
-    const reportDir = config.pytest.reportDir;
+    const reportDir = path.join(baseDir, '.pytest-reports');
     
     // 리포트 디렉토리가 없으면 생성
     if (!fs.existsSync(reportDir)) {
@@ -286,16 +290,16 @@ class PytestService {
    * @private
    * @returns {string} HTML 리포트 파일 경로
    */
-  static _getHtmlReportFilePath() {
+  static _getHtmlReportFilePath(baseDir = config.pytest.htmlReportDir) {
     const timestamp = Date.now();
-    const reportDir = config.pytest.htmlReportDir;
+    const htmlReportDir = path.join(baseDir, '.pytest-reports', 'html');
     
     // 리포트 디렉토리가 없으면 생성
-    if (!fs.existsSync(reportDir)) {
-      fs.mkdirSync(reportDir, { recursive: true });
+    if (!fs.existsSync(htmlReportDir)) {
+      fs.mkdirSync(htmlReportDir, { recursive: true });
     }
 
-    return path.join(reportDir, `pytest-report-${timestamp}.html`);
+    return path.join(htmlReportDir, `pytest-report-${timestamp}.html`);
   }
 
   /**

@@ -291,25 +291,63 @@ export function generateKeywordCode(keywordName, params, framework = 'pytest') {
 }
 
 /**
- * 키워드 스텝 배열로부터 전체 코드 생성
+ * 키워드 스텝 배열로부터 전체 코드 생성 (POM 지원)
  * @param {Array} steps - 키워드 스텝 배열
  * @param {Object} options - 옵션
  * @param {string} options.language - 언어 (python)
  * @param {string} options.framework - 프레임워크 (playwright, selenium, pytest)
  * @param {string} options.testName - 테스트 함수 이름
  * @param {string} options.testDescription - 테스트 설명
- * @returns {string} 생성된 전체 코드
+ * @param {Function} options.findPageObjectByUrl - URL로 Page Object 찾기 함수 (선택적)
+ * @param {number} options.projectId - 프로젝트 ID (Page Object 조회용)
+ * @returns {Promise<string>} 생성된 전체 코드
  */
-export function generateCodeFromSteps(steps, options = {}) {
+export async function generateCodeFromSteps(steps, options = {}) {
   const {
     language = 'python',
     framework = 'pytest',
     testName = 'test_example',
-    testDescription = 'Test'
+    testDescription = 'Test',
+    findPageObjectByUrl = null,
+    projectId = null
   } = options;
 
   if (language !== 'python') {
     return `# ${language} 언어는 아직 지원하지 않습니다.`;
+  }
+
+  // 사용된 Page Object 수집
+  const usedPageObjects = new Set();
+  let currentPageObject = null;
+
+  // 1단계: Steps 분석하여 사용된 Page Object 찾기
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    
+    // goto/open 키워드로 URL 기반 Page Object 자동 인식
+    if ((step.action === 'goto' || step.action === 'open') && findPageObjectByUrl && projectId) {
+      const url = step.target || step.value;
+      if (url) {
+        try {
+          const result = await findPageObjectByUrl(url, projectId);
+          if (result.success && result.data) {
+            currentPageObject = result.data;
+            usedPageObjects.add(currentPageObject.name);
+          } else {
+            currentPageObject = null;
+          }
+        } catch (error) {
+          console.warn('Page Object 찾기 실패:', error);
+          currentPageObject = null;
+        }
+      }
+    }
+    
+    // Page Object 타입 스텝
+    if (step.type === 'page_object' && step.page_object) {
+      usedPageObjects.add(step.page_object);
+      currentPageObject = { name: step.page_object };
+    }
   }
 
   // 프레임워크별 import 문
@@ -334,6 +372,16 @@ import pytest
 `
   };
 
+  // Page Object import 문 추가
+  let pageObjectImports = '';
+  if (usedPageObjects.size > 0) {
+    usedPageObjects.forEach(poName => {
+      const moduleName = poName.toLowerCase();
+      pageObjectImports += `from page_objects.${moduleName} import ${poName}\n`;
+    });
+    pageObjectImports += '\n';
+  }
+
   // 테스트 함수 시그니처
   const functionSignatures = {
     playwright: `@pytest.mark.playwright
@@ -356,26 +404,83 @@ def ${testName}(page_playwright: Page):
   const driverVar = framework === 'selenium' ? 'driver' : 'page';
 
   let code = imports[framework] || imports.pytest;
+  code += pageObjectImports;
   code += functionSignatures[framework] || functionSignatures.pytest;
 
-  // 각 스텝을 코드로 변환
-  steps.forEach((step, index) => {
-    const { action, target, value, description } = step;
-    
-    if (!action) {
-      return;
-    }
+  // Page Object 인스턴스 변수 선언
+  const pageObjectInstances = new Map();
+  if (usedPageObjects.size > 0) {
+    usedPageObjects.forEach(poName => {
+      const varName = poName.toLowerCase().replace(/page$/, '') + '_page';
+      pageObjectInstances.set(poName, varName);
+    });
+  }
 
-    // 키워드 코드 생성
-    const keywordCode = generateKeywordCode(action, { target, value }, framework);
+  // 현재 페이지 컨텍스트 추적
+  currentPageObject = null;
+
+  // 각 스텝을 코드로 변환
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    
+    // goto/open 키워드로 URL 기반 Page Object 자동 인식
+    if ((step.action === 'goto' || step.action === 'open') && findPageObjectByUrl && projectId) {
+      const url = step.target || step.value;
+      if (url) {
+        try {
+          const result = await findPageObjectByUrl(url, projectId);
+          if (result.success && result.data) {
+            currentPageObject = result.data;
+            const varName = pageObjectInstances.get(currentPageObject.name);
+            if (varName) {
+              // Page Object 인스턴스 생성 코드 추가
+              code += `    ${varName} = ${currentPageObject.name}(${driverVar})\n`;
+            }
+          } else {
+            currentPageObject = null;
+          }
+        } catch (error) {
+          console.warn('Page Object 찾기 실패:', error);
+          currentPageObject = null;
+        }
+      }
+    }
     
     // 설명이 있으면 주석 추가
-    if (description) {
-      code += `    # ${description}\n`;
+    if (step.description) {
+      code += `    # ${step.description}\n`;
     }
     
-    code += `    ${keywordCode}\n`;
-  });
+    // Page Object 타입 스텝 처리
+    if (step.type === 'page_object' && step.page_object && step.method) {
+      const varName = pageObjectInstances.get(step.page_object);
+      if (varName) {
+        // Page Object 인스턴스가 없으면 생성
+        if (!code.includes(`${varName} = ${step.page_object}(`)) {
+          code += `    ${varName} = ${step.page_object}(${driverVar})\n`;
+        }
+        
+        // 메서드 호출
+        const params = step.params || {};
+        const paramStr = Object.entries(params)
+          .map(([k, v]) => {
+            if (typeof v === 'string') {
+              return `${k}="${v}"`;
+            }
+            return `${k}=${v}`;
+          })
+          .join(', ');
+        
+        code += `    ${varName}.${step.method}(${paramStr})\n`;
+      } else {
+        code += `    # Page Object 인스턴스 생성 필요: ${step.page_object}\n`;
+      }
+    } else if (step.action) {
+      // 일반 키워드 코드 생성
+      const keywordCode = generateKeywordCode(step.action, { target: step.target, value: step.value }, framework);
+      code += `    ${keywordCode}\n`;
+    }
+  }
 
   // Selenium의 경우 finally 블록 추가
   if (framework === 'selenium') {

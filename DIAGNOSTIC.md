@@ -152,3 +152,4 @@ curl http://localhost:3001/api/health
 - `server/config/database.js` 설정 (비밀번호 제외)
 - MySQL 버전 및 상태
 
+

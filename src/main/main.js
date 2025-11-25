@@ -63,22 +63,39 @@ app.whenReady().then(async () => {
   // 스크립트 디렉토리 초기화
   ScriptManager.initializeScriptsDirectory();
 
-  // 데이터베이스 초기화 (로컬 SQLite 파일)
-  // sql.js는 비동기 초기화가 필요함
-  DbService.init().then(() => {
-    const config = DbService.getConfig();
-    if (config && config.connected) {
-      console.log('✅ 로컬 SQLite 데이터베이스 연결 완료');
-      console.log(`📁 데이터베이스 위치: ${config.path}`);
-    } else {
-      console.warn('⚠️ 데이터베이스 초기화는 완료되었지만 연결 상태를 확인할 수 없습니다.');
-    }
-  }).catch((error) => {
-    console.error('❌ 데이터베이스 연결 실패:', error.message);
-    console.error('💡 데이터베이스 파일 생성에 실패했습니다.');
-    console.error('💡 상세 오류:', error);
-    // 초기화 실패해도 앱은 계속 실행
-  });
+  // 데이터베이스 초기화
+  // config.database.mode에 따라 로컬 또는 서버 모드로 동작
+  const dbMode = config.database.mode || 'local';
+  
+  if (dbMode === 'local') {
+    // 로컬 SQLite 모드 (현재 기본 모드)
+    // sql.js는 비동기 초기화가 필요함
+    DbService.init().then(() => {
+      const dbConfig = DbService.getConfig();
+      if (dbConfig && dbConfig.connected) {
+        console.log('✅ 로컬 SQLite 데이터베이스 연결 완료');
+        console.log(`📁 데이터베이스 위치: ${dbConfig.path}`);
+        console.log(`🔧 DB 모드: 로컬 (SQLite)`);
+      } else {
+        console.warn('⚠️ 데이터베이스 초기화는 완료되었지만 연결 상태를 확인할 수 없습니다.');
+      }
+    }).catch((error) => {
+      console.error('❌ 데이터베이스 연결 실패:', error.message);
+      console.error('💡 데이터베이스 파일 생성에 실패했습니다.');
+      console.error('💡 상세 오류:', error);
+      // 초기화 실패해도 앱은 계속 실행
+    });
+  } else if (dbMode === 'server') {
+    // 서버 모드 (추후 구현)
+    console.log('🔧 DB 모드: 서버');
+    console.log(`📡 서버 URL: ${config.database.server.url}`);
+    console.warn('⚠️ 서버 모드는 아직 구현되지 않았습니다. 로컬 모드를 사용합니다.');
+    console.warn('⚠️ config.database.mode를 "local"로 변경하거나 서버 모드를 구현해주세요.');
+    // TODO: 서버 모드 구현 시 ApiService를 통해 서버에 연결
+  } else {
+    console.error(`❌ 알 수 없는 DB 모드: ${dbMode}`);
+    console.error('💡 config.database.mode는 "local" 또는 "server"여야 합니다.');
+  }
 
   // 메인 윈도우 생성
   createWindow();
@@ -91,9 +108,11 @@ app.whenReady().then(async () => {
   });
 });
 
-// 앱 종료 시 데이터베이스 연결 종료
+// 앱 종료 시 데이터베이스 연결 종료 및 정리
 app.on('before-quit', () => {
   try {
+    // 실행 결과 정리 (최근 100개만 보관)
+    DbService.cleanupOldResults(100);
     DbService.close();
   } catch (error) {
     console.error('데이터베이스 연결 종료 실패:', error);
@@ -134,6 +153,114 @@ ipcMain.handle('run-python-script', async (event, testFile, args = [], options =
     return result;
   } catch (error) {
     // 에러를 일관된 형식으로 반환
+    return {
+      success: false,
+      error: error.error || error.message || '알 수 없는 오류가 발생했습니다.',
+      stderr: error.stderr || '',
+      stdout: error.stdout || ''
+    };
+  }
+});
+
+/**
+ * 여러 스크립트를 임시 파일로 생성하여 실행
+ * DB에서 코드를 가져와 임시 파일 생성 → 실행 → 삭제
+ */
+ipcMain.handle('run-python-scripts', async (event, scripts, args = [], options = {}) => {
+  const fs = require('fs').promises;
+  const path = require('path');
+  const tempDir = path.join(config.paths.scripts, 'temp');
+  const pageObjectsDir = path.join(tempDir, 'page_objects');
+  
+  try {
+    // 1. 임시 디렉토리 생성
+    await fs.mkdir(tempDir, { recursive: true });
+    await fs.mkdir(pageObjectsDir, { recursive: true });
+    
+    // 2. 사용된 Page Object 수집 및 파일 생성
+    const usedPageObjects = new Set();
+    const pageObjectCodes = {};
+    
+    // 스크립트 코드에서 import 문 분석하여 Page Object 찾기
+    for (const script of scripts) {
+      const importMatches = script.code.match(/from\s+page_objects\.(\w+)\s+import\s+(\w+)/g);
+      if (importMatches) {
+        importMatches.forEach(match => {
+          const poName = match.match(/page_objects\.(\w+)/)[1];
+          usedPageObjects.add(poName);
+        });
+      }
+    }
+    
+    // DB에서 Page Object 코드 조회 및 파일 생성
+    if (usedPageObjects.size > 0 && scripts.length > 0) {
+      // 프로젝트 ID 가져오기 (첫 번째 스크립트의 TC에서)
+      const firstScript = scripts[0];
+      const tc = DbService.get('SELECT project_id FROM test_cases WHERE id = ?', [firstScript.tcId]);
+      
+      if (tc) {
+        for (const poName of usedPageObjects) {
+          const po = DbService.get(
+            'SELECT * FROM page_objects WHERE name = ? AND project_id = ?',
+            [poName, tc.project_id]
+          );
+          
+          if (po) {
+            pageObjectCodes[poName] = po.code;
+            const fileName = `${poName.toLowerCase()}.py`;
+            await fs.writeFile(
+              path.join(pageObjectsDir, fileName),
+              po.code,
+              'utf-8'
+            );
+          }
+        }
+      }
+    }
+    
+    // 3. __init__.py 생성
+    await fs.writeFile(
+      path.join(pageObjectsDir, '__init__.py'),
+      '',
+      'utf-8'
+    );
+    
+    // 4. TC 스크립트 파일 생성
+    const testFiles = [];
+    for (const script of scripts) {
+      const extension = script.language === 'python' ? 'py' : 
+                       script.language === 'typescript' ? 'ts' : 'js';
+      const sanitizedName = script.name.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+      const filename = `test_tc${script.tcId}_${sanitizedName}.${extension}`;
+      const filePath = path.join(tempDir, filename);
+      
+      await fs.writeFile(filePath, script.code, 'utf-8');
+      testFiles.push(filename);
+    }
+    
+    // 5. pytest 실행 (temp 디렉토리에서)
+    // 파일명만 전달 (상대 경로)
+    const result = await PytestService.runTests(testFiles, args, {
+      ...options,
+      cwd: tempDir  // 임시 디렉토리에서 실행
+    });
+    
+    // 6. 임시 파일 삭제
+    try {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    } catch (cleanupError) {
+      console.warn('임시 파일 삭제 실패:', cleanupError);
+    }
+    
+    return result;
+  } catch (error) {
+    // 에러 발생 시에도 임시 파일 삭제 시도
+    try {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    } catch (cleanupError) {
+      console.warn('임시 파일 삭제 실패:', cleanupError);
+    }
+    
     return {
       success: false,
       error: error.error || error.message || '알 수 없는 오류가 발생했습니다.',
@@ -477,6 +604,29 @@ ipcMain.handle('api-create-test-case', async (event, data) => {
       return { success: false, error: '프로젝트 ID와 이름은 필수입니다' };
     }
     
+    // 부모 검증: 폴더는 폴더나 null만 부모로 가질 수 있고, 테스트케이스는 폴더나 null만 부모로 가질 수 있음
+    let validatedParentId = null;
+    if (parent_id) {
+      const parent = DbService.get('SELECT type FROM test_cases WHERE id = ?', [parent_id]);
+      if (!parent) {
+        return { success: false, error: '부모 항목을 찾을 수 없습니다' };
+      }
+      
+      if (type === 'folder') {
+        // 폴더는 폴더나 null만 부모로 가질 수 있음 (테스트케이스 하위에 폴더 생성 불가)
+        if (parent.type !== 'folder') {
+          return { success: false, error: '폴더는 다른 폴더나 루트에만 생성할 수 있습니다' };
+        }
+        validatedParentId = parent_id;
+      } else if (type === 'test_case') {
+        // 테스트케이스는 폴더나 null만 부모로 가질 수 있음 (테스트케이스 하위에 테스트케이스 생성 불가)
+        if (parent.type !== 'folder') {
+          return { success: false, error: '테스트케이스는 폴더나 루트에만 생성할 수 있습니다' };
+        }
+        validatedParentId = parent_id;
+      }
+    }
+    
     // tc_number 자동 할당 (test_case인 경우만)
     let tc_number = null;
     if (type === 'test_case') {
@@ -498,7 +648,7 @@ ipcMain.handle('api-create-test-case', async (event, data) => {
       [
         project_id,
         tc_number,
-        parent_id || null,
+        validatedParentId,
         name,
         description || null,
         type || 'test_case',
@@ -519,8 +669,38 @@ ipcMain.handle('api-update-test-case', async (event, id, data) => {
   try {
     const { name, description, steps, tags, status, order_index, parent_id } = data;
     
+    // 현재 항목 정보 조회
+    const currentItem = DbService.get('SELECT type FROM test_cases WHERE id = ?', [id]);
+    if (!currentItem) {
+      return { success: false, error: '테스트케이스를 찾을 수 없습니다' };
+    }
+    
     // parent_id 업데이트 포함
+    let validatedParentId = null;
     if (parent_id !== undefined) {
+      if (parent_id === null) {
+        validatedParentId = null; // 루트로 이동
+      } else {
+        // 부모 검증
+        const parent = DbService.get('SELECT type FROM test_cases WHERE id = ?', [parent_id]);
+        if (!parent) {
+          return { success: false, error: '부모 항목을 찾을 수 없습니다' };
+        }
+        
+        if (currentItem.type === 'folder') {
+          // 폴더는 폴더나 null만 부모로 가질 수 있음
+          if (parent.type !== 'folder') {
+            return { success: false, error: '폴더는 다른 폴더나 루트에만 위치할 수 있습니다' };
+          }
+        } else if (currentItem.type === 'test_case') {
+          // 테스트케이스는 폴더나 null만 부모로 가질 수 있음
+          if (parent.type !== 'folder') {
+            return { success: false, error: '테스트케이스는 폴더나 루트에만 위치할 수 있습니다' };
+          }
+        }
+        validatedParentId = parent_id;
+      }
+      
       DbService.run(
         `UPDATE test_cases 
          SET name = COALESCE(?, name), 
@@ -539,7 +719,7 @@ ipcMain.handle('api-update-test-case', async (event, id, data) => {
           tags || null,
           status || null,
           order_index !== undefined ? order_index : null,
-          parent_id,
+          validatedParentId,
           id
         ]
       );
@@ -615,38 +795,8 @@ ipcMain.handle('api-create-script', async (event, data) => {
       return { success: false, error: '이름, 프레임워크, 언어, 코드는 필수입니다' };
     }
 
-    // 파일 경로 생성 (test_case_id가 있는 경우)
-    let finalFilePath = file_path;
-    if (!finalFilePath && test_case_id) {
-      const fs = require('fs').promises;
-      const path = require('path');
-      const scriptsDir = config.paths.scripts;
-      const extension = language === 'python' ? 'py' : language === 'typescript' ? 'ts' : 'js';
-      
-      // pytest 형식으로 파일명 생성 (test_*.py)
-      let filename;
-      if (language === 'python' && framework === 'pytest') {
-        // pytest 형식: test_tc{id}_{name}.py
-        const sanitizedName = name.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
-        filename = `test_tc${test_case_id}_${sanitizedName}.${extension}`;
-      } else {
-        // 기존 형식: {name}_{timestamp}.{ext}
-        filename = `${name.replace(/\s+/g, '_')}_${Date.now()}.${extension}`;
-      }
-      
-      finalFilePath = path.join(scriptsDir, filename);
-
-      // 파일 저장
-      try {
-        await fs.mkdir(scriptsDir, { recursive: true });
-        await fs.writeFile(finalFilePath, code, 'utf-8');
-      } catch (fileError) {
-        console.warn('파일 저장 실패:', fileError);
-        // 파일 저장 실패해도 DB에는 저장
-        finalFilePath = null;
-      }
-    }
-
+    // 파일 경로는 더 이상 저장하지 않음 (실행 시 임시 파일로 생성)
+    // DB에만 코드 저장
     const result = DbService.run(
       `INSERT INTO test_scripts (test_case_id, name, framework, language, code, file_path, status)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -656,7 +806,7 @@ ipcMain.handle('api-create-script', async (event, data) => {
         framework,
         language,
         code,
-        finalFilePath,
+        null, // file_path는 더 이상 사용하지 않음
         status || 'active'
       ]
     );
@@ -677,23 +827,14 @@ ipcMain.handle('api-update-script', async (event, id, data) => {
       return { success: false, error: '스크립트를 찾을 수 없습니다' };
     }
 
-    // 파일 업데이트 (code가 있고 file_path가 있는 경우)
-    if (code && existing.file_path) {
-      try {
-        const fs = require('fs').promises;
-        await fs.writeFile(existing.file_path, code, 'utf-8');
-      } catch (fileError) {
-        console.warn('파일 업데이트 실패:', fileError);
-      }
-    }
-
+    // 파일 경로는 더 이상 저장하지 않음 (실행 시 임시 파일로 생성)
+    // DB에만 코드 저장
     DbService.run(
       `UPDATE test_scripts 
        SET name = COALESCE(?, name), 
            framework = COALESCE(?, framework), 
            language = COALESCE(?, language), 
            code = COALESCE(?, code), 
-           file_path = COALESCE(?, file_path), 
            status = COALESCE(?, status), 
            updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
@@ -702,7 +843,6 @@ ipcMain.handle('api-update-script', async (event, id, data) => {
         framework || null,
         language || null,
         code || null,
-        file_path || null,
         status || null,
         id
       ]
@@ -784,6 +924,222 @@ ipcMain.handle('api-get-test-case-full', async (event, id) => {
 /**
  * 객체 레퍼지토리 IPC 핸들러 (로컬 SQLite 직접 연결)
  */
+
+// ============================================================================
+// Page Object 관리 IPC 핸들러
+// ============================================================================
+
+ipcMain.handle('api-get-page-objects', async (event, projectId) => {
+  try {
+    const pageObjects = DbService.all(
+      'SELECT * FROM page_objects WHERE project_id = ? ORDER BY name',
+      [projectId]
+    );
+    
+    // url_patterns JSON 파싱
+    const parsed = pageObjects.map(po => {
+      const result = { ...po };
+      try {
+        result.url_patterns = po.url_patterns ? JSON.parse(po.url_patterns) : [];
+      } catch (e) {
+        result.url_patterns = [];
+      }
+      return result;
+    });
+    
+    return { success: true, data: parsed };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('api-get-page-object', async (event, id) => {
+  try {
+    const pageObject = DbService.get('SELECT * FROM page_objects WHERE id = ?', [id]);
+    if (!pageObject) {
+      return { success: false, error: 'Page Object를 찾을 수 없습니다' };
+    }
+    
+    // url_patterns JSON 파싱
+    try {
+      pageObject.url_patterns = pageObject.url_patterns ? JSON.parse(pageObject.url_patterns) : [];
+    } catch (e) {
+      pageObject.url_patterns = [];
+    }
+    
+    // 메서드 조회
+    const methods = DbService.all(
+      'SELECT * FROM page_object_methods WHERE page_object_id = ? ORDER BY name',
+      [id]
+    );
+    
+    // parameters JSON 파싱
+    const parsedMethods = methods.map(m => {
+      const result = { ...m };
+      try {
+        result.parameters = m.parameters ? JSON.parse(m.parameters) : [];
+      } catch (e) {
+        result.parameters = [];
+      }
+      return result;
+    });
+    
+    return { success: true, data: { ...pageObject, methods: parsedMethods } };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('api-create-page-object', async (event, data) => {
+  try {
+    const { project_id, name, description, url_patterns, framework, language, code, status } = data;
+    if (!project_id || !name || !framework || !language || !code) {
+      return { success: false, error: '프로젝트 ID, 이름, 프레임워크, 언어, 코드는 필수입니다' };
+    }
+    
+    const result = DbService.run(
+      `INSERT INTO page_objects (project_id, name, description, url_patterns, framework, language, code, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        project_id,
+        name,
+        description || null,
+        url_patterns ? JSON.stringify(url_patterns) : null,
+        framework,
+        language,
+        code,
+        status || 'active'
+      ]
+    );
+    
+    const newPageObject = DbService.get('SELECT * FROM page_objects WHERE id = ?', [result.lastID]);
+    
+    // url_patterns JSON 파싱
+    try {
+      newPageObject.url_patterns = newPageObject.url_patterns ? JSON.parse(newPageObject.url_patterns) : [];
+    } catch (e) {
+      newPageObject.url_patterns = [];
+    }
+    
+    return { success: true, data: newPageObject };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('api-update-page-object', async (event, id, data) => {
+  try {
+    const { name, description, url_patterns, framework, language, code, status } = data;
+    
+    const existing = DbService.get('SELECT * FROM page_objects WHERE id = ?', [id]);
+    if (!existing) {
+      return { success: false, error: 'Page Object를 찾을 수 없습니다' };
+    }
+    
+    DbService.run(
+      `UPDATE page_objects 
+       SET name = COALESCE(?, name), 
+           description = COALESCE(?, description), 
+           url_patterns = COALESCE(?, url_patterns), 
+           framework = COALESCE(?, framework), 
+           language = COALESCE(?, language), 
+           code = COALESCE(?, code), 
+           status = COALESCE(?, status), 
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [
+        name || null,
+        description || null,
+        url_patterns ? JSON.stringify(url_patterns) : null,
+        framework || null,
+        language || null,
+        code || null,
+        status || null,
+        id
+      ]
+    );
+    
+    const updatedPageObject = DbService.get('SELECT * FROM page_objects WHERE id = ?', [id]);
+    
+    // url_patterns JSON 파싱
+    try {
+      updatedPageObject.url_patterns = updatedPageObject.url_patterns ? JSON.parse(updatedPageObject.url_patterns) : [];
+    } catch (e) {
+      updatedPageObject.url_patterns = [];
+    }
+    
+    return { success: true, data: updatedPageObject };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('api-delete-page-object', async (event, id) => {
+  try {
+    DbService.run('DELETE FROM page_objects WHERE id = ?', [id]);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('api-find-page-object-by-url', async (event, url, projectId) => {
+  try {
+    const pageObjects = DbService.all(
+      'SELECT * FROM page_objects WHERE project_id = ? AND status = ?',
+      [projectId, 'active']
+    );
+    
+    // URL 패턴 매칭
+    for (const po of pageObjects) {
+      let urlPatterns = [];
+      try {
+        urlPatterns = po.url_patterns ? JSON.parse(po.url_patterns) : [];
+      } catch (e) {
+        continue;
+      }
+      
+      for (const pattern of urlPatterns) {
+        // 정확한 매칭
+        if (url === pattern) {
+          return { success: true, data: po };
+        }
+        
+        // 상대 경로 매칭
+        if (pattern.startsWith('/')) {
+          try {
+            const urlPath = new URL(url).pathname;
+            if (urlPath === pattern || urlPath.startsWith(pattern)) {
+              return { success: true, data: po };
+            }
+          } catch (e) {
+            // URL 파싱 실패 시 무시
+          }
+        }
+        
+        // 정규식 매칭 (regex: 접두사)
+        if (pattern.startsWith('regex:')) {
+          try {
+            const regex = new RegExp(pattern.substring(6));
+            if (regex.test(url)) {
+              return { success: true, data: po };
+            }
+          } catch (e) {
+            // 정규식 파싱 실패 시 무시
+          }
+        }
+      }
+    }
+    
+    return { success: false, data: null };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// ============================================================================
+// 객체 레포지토리 IPC 핸들러
+// ============================================================================
 
 ipcMain.handle('api-get-objects', async (event, projectId) => {
   try {

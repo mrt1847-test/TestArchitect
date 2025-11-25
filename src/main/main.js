@@ -483,13 +483,55 @@ ipcMain.handle('api-create-test-case', async (event, data) => {
 
 ipcMain.handle('api-update-test-case', async (event, id, data) => {
   try {
-    const { name, description, steps, tags, status, order_index } = data;
-    DbService.run(
-      `UPDATE test_cases 
-       SET name = ?, description = ?, steps = ?, tags = ?, status = ?, order_index = ?, updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
-      [name, description || null, steps || null, tags || null, status, order_index || 0, id]
-    );
+    const { name, description, steps, tags, status, order_index, parent_id } = data;
+    
+    // parent_id 업데이트 포함
+    if (parent_id !== undefined) {
+      DbService.run(
+        `UPDATE test_cases 
+         SET name = COALESCE(?, name), 
+             description = COALESCE(?, description), 
+             steps = COALESCE(?, steps), 
+             tags = COALESCE(?, tags), 
+             status = COALESCE(?, status), 
+             order_index = COALESCE(?, order_index),
+             parent_id = ?,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [
+          name || null,
+          description || null,
+          steps || null,
+          tags || null,
+          status || null,
+          order_index !== undefined ? order_index : null,
+          parent_id,
+          id
+        ]
+      );
+    } else {
+      DbService.run(
+        `UPDATE test_cases 
+         SET name = COALESCE(?, name), 
+             description = COALESCE(?, description), 
+             steps = COALESCE(?, steps), 
+             tags = COALESCE(?, tags), 
+             status = COALESCE(?, status), 
+             order_index = COALESCE(?, order_index),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [
+          name || null,
+          description || null,
+          steps || null,
+          tags || null,
+          status || null,
+          order_index !== undefined ? order_index : null,
+          id
+        ]
+      );
+    }
+    
     const updatedTestCase = DbService.get('SELECT * FROM test_cases WHERE id = ?', [id]);
     return { success: true, data: updatedTestCase };
   } catch (error) {
@@ -538,6 +580,39 @@ ipcMain.handle('api-create-script', async (event, data) => {
     if (!name || !framework || !language || !code) {
       return { success: false, error: '이름, 프레임워크, 언어, 코드는 필수입니다' };
     }
+
+    // 파일 경로 생성 (test_case_id가 있는 경우)
+    let finalFilePath = file_path;
+    if (!finalFilePath && test_case_id) {
+      const fs = require('fs').promises;
+      const path = require('path');
+      const scriptsDir = config.paths.scripts;
+      const extension = language === 'python' ? 'py' : language === 'typescript' ? 'ts' : 'js';
+      
+      // pytest 형식으로 파일명 생성 (test_*.py)
+      let filename;
+      if (language === 'python' && framework === 'pytest') {
+        // pytest 형식: test_tc{id}_{name}.py
+        const sanitizedName = name.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+        filename = `test_tc${test_case_id}_${sanitizedName}.${extension}`;
+      } else {
+        // 기존 형식: {name}_{timestamp}.{ext}
+        filename = `${name.replace(/\s+/g, '_')}_${Date.now()}.${extension}`;
+      }
+      
+      finalFilePath = path.join(scriptsDir, filename);
+
+      // 파일 저장
+      try {
+        await fs.mkdir(scriptsDir, { recursive: true });
+        await fs.writeFile(finalFilePath, code, 'utf-8');
+      } catch (fileError) {
+        console.warn('파일 저장 실패:', fileError);
+        // 파일 저장 실패해도 DB에는 저장
+        finalFilePath = null;
+      }
+    }
+
     const result = DbService.run(
       `INSERT INTO test_scripts (test_case_id, name, framework, language, code, file_path, status)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -547,7 +622,7 @@ ipcMain.handle('api-create-script', async (event, data) => {
         framework,
         language,
         code,
-        file_path || null,
+        finalFilePath,
         status || 'active'
       ]
     );
@@ -561,11 +636,42 @@ ipcMain.handle('api-create-script', async (event, data) => {
 ipcMain.handle('api-update-script', async (event, id, data) => {
   try {
     const { name, framework, language, code, file_path, status } = data;
+    
+    // 기존 스크립트 조회
+    const existing = DbService.get('SELECT * FROM test_scripts WHERE id = ?', [id]);
+    if (!existing) {
+      return { success: false, error: '스크립트를 찾을 수 없습니다' };
+    }
+
+    // 파일 업데이트 (code가 있고 file_path가 있는 경우)
+    if (code && existing.file_path) {
+      try {
+        const fs = require('fs').promises;
+        await fs.writeFile(existing.file_path, code, 'utf-8');
+      } catch (fileError) {
+        console.warn('파일 업데이트 실패:', fileError);
+      }
+    }
+
     DbService.run(
       `UPDATE test_scripts 
-       SET name = ?, framework = ?, language = ?, code = ?, file_path = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+       SET name = COALESCE(?, name), 
+           framework = COALESCE(?, framework), 
+           language = COALESCE(?, language), 
+           code = COALESCE(?, code), 
+           file_path = COALESCE(?, file_path), 
+           status = COALESCE(?, status), 
+           updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
-      [name, framework, language, code, file_path || null, status || 'active', id]
+      [
+        name || null,
+        framework || null,
+        language || null,
+        code || null,
+        file_path || null,
+        status || null,
+        id
+      ]
     );
     const updatedScript = DbService.get('SELECT * FROM test_scripts WHERE id = ?', [id]);
     return { success: true, data: updatedScript };
@@ -576,6 +682,23 @@ ipcMain.handle('api-update-script', async (event, id, data) => {
 
 ipcMain.handle('api-delete-script', async (event, id) => {
   try {
+    // 기존 스크립트 조회
+    const existing = DbService.get('SELECT * FROM test_scripts WHERE id = ?', [id]);
+    if (!existing) {
+      return { success: false, error: '스크립트를 찾을 수 없습니다' };
+    }
+
+    // 파일 삭제 (있는 경우)
+    if (existing.file_path) {
+      try {
+        const fs = require('fs').promises;
+        await fs.unlink(existing.file_path);
+      } catch (fileError) {
+        console.warn('파일 삭제 실패:', fileError);
+        // 파일 삭제 실패해도 DB에서는 삭제
+      }
+    }
+
     DbService.run('DELETE FROM test_scripts WHERE id = ?', [id]);
     return { success: true };
   } catch (error) {
@@ -619,6 +742,163 @@ ipcMain.handle('api-get-test-case-full', async (event, id) => {
         results
       }
     };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+/**
+ * 객체 레퍼지토리 IPC 핸들러 (로컬 SQLite 직접 연결)
+ */
+
+ipcMain.handle('api-get-objects', async (event, projectId) => {
+  try {
+    const objects = DbService.all(
+      'SELECT * FROM objects WHERE project_id = ? ORDER BY parent_id, priority, name',
+      [projectId]
+    );
+    // selectors JSON 파싱
+    const parsed = objects.map(obj => {
+      const result = { ...obj };
+      try {
+        result.selectors = obj.selectors ? JSON.parse(obj.selectors) : [];
+      } catch (e) {
+        result.selectors = [];
+      }
+      return result;
+    });
+    return { success: true, data: parsed };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('api-get-object-tree', async (event, projectId) => {
+  try {
+    const objects = DbService.all(
+      'SELECT * FROM objects WHERE project_id = ? ORDER BY parent_id, priority, name',
+      [projectId]
+    );
+    
+    // 트리 구조로 변환
+    function buildTree(items, parentId) {
+      const parentIdValue = parentId === null ? null : parentId;
+      return items
+        .filter(item => {
+          if (parentIdValue === null) {
+            return item.parent_id === null;
+          }
+          return item.parent_id === parentIdValue;
+        })
+        .map(item => {
+          const node = { ...item };
+          try {
+            node.selectors = item.selectors ? JSON.parse(item.selectors) : [];
+          } catch (e) {
+            node.selectors = [];
+          }
+          const children = buildTree(items, item.id);
+          if (children.length > 0) {
+            node.children = children;
+          }
+          return node;
+        })
+        .sort((a, b) => (a.priority || 0) - (b.priority || 0));
+    }
+    
+    const tree = buildTree(objects, null);
+    return { success: true, data: tree };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('api-get-object', async (event, id) => {
+  try {
+    const object = DbService.get('SELECT * FROM objects WHERE id = ?', [id]);
+    if (!object) {
+      return { success: false, error: '객체를 찾을 수 없습니다' };
+    }
+    try {
+      object.selectors = object.selectors ? JSON.parse(object.selectors) : [];
+    } catch (e) {
+      object.selectors = [];
+    }
+    return { success: true, data: object };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('api-create-object', async (event, data) => {
+  try {
+    const { project_id, parent_id, name, description, type, selectors, priority } = data;
+    if (!project_id || !name) {
+      return { success: false, error: 'project_id와 name은 필수입니다' };
+    }
+    if (!selectors || !Array.isArray(selectors) || selectors.length === 0) {
+      return { success: false, error: 'selectors는 배열 형태로 최소 1개 이상 필요합니다' };
+    }
+    const result = DbService.run(
+      `INSERT INTO objects (project_id, parent_id, name, description, type, selectors, priority)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        project_id,
+        parent_id || null,
+        name,
+        description || null,
+        type || 'element',
+        JSON.stringify(selectors),
+        priority || 0
+      ]
+    );
+    const newObject = DbService.get('SELECT * FROM objects WHERE id = ?', [result.lastID]);
+    try {
+      newObject.selectors = newObject.selectors ? JSON.parse(newObject.selectors) : [];
+    } catch (e) {
+      newObject.selectors = [];
+    }
+    return { success: true, data: newObject };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('api-update-object', async (event, id, data) => {
+  try {
+    const { name, description, selectors, priority } = data;
+    DbService.run(
+      `UPDATE objects 
+       SET name = COALESCE(?, name), 
+           description = COALESCE(?, description), 
+           selectors = COALESCE(?, selectors), 
+           priority = COALESCE(?, priority), 
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [
+        name || null,
+        description !== undefined ? description : null,
+        selectors ? JSON.stringify(selectors) : null,
+        priority !== undefined ? priority : null,
+        id
+      ]
+    );
+    const updatedObject = DbService.get('SELECT * FROM objects WHERE id = ?', [id]);
+    try {
+      updatedObject.selectors = updatedObject.selectors ? JSON.parse(updatedObject.selectors) : [];
+    } catch (e) {
+      updatedObject.selectors = [];
+    }
+    return { success: true, data: updatedObject };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('api-delete-object', async (event, id) => {
+  try {
+    DbService.run('DELETE FROM objects WHERE id = ?', [id]);
+    return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
   }

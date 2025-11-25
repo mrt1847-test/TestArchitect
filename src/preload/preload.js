@@ -121,6 +121,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getSyncStatus: () => ipcRenderer.invoke('api-get-sync-status'),
     getTestCaseFull: (id) => ipcRenderer.invoke('api-get-test-case-full', id),
     
+    // 객체 레퍼지토리
+    getObjects: (projectId) => ipcRenderer.invoke('api-get-objects', projectId),
+    getObject: (id) => ipcRenderer.invoke('api-get-object', id),
+    getObjectTree: (projectId) => ipcRenderer.invoke('api-get-object-tree', projectId),
+    createObject: (data) => ipcRenderer.invoke('api-create-object', data),
+    updateObject: (id, data) => ipcRenderer.invoke('api-update-object', id, data),
+    deleteObject: (id) => ipcRenderer.invoke('api-delete-object', id),
+    
     // 서버 상태
     checkServer: () => ipcRenderer.invoke('api-check-server')
   },

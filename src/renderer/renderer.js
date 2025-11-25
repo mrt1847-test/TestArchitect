@@ -3,6 +3,11 @@
  * TestRail 스타일 TC 관리 및 실행 (탭 기반 UI)
  */
 
+// 키워드 라이브러리 및 객체 레퍼지토리 import
+import { generateCodeFromSteps, getKeywordSuggestions, KEYWORDS } from './utils/keywordLibrary.js';
+import { validateSteps, normalizeSteps } from './utils/keywordValidator.js';
+import { ObjectRepository, SelectorUtils } from './utils/objectRepository.js';
+
 // ============================================================================
 // 전역 변수
 // ============================================================================
@@ -326,6 +331,52 @@ function createTreeItem(item, level) {
   div.dataset.tcType = item.type;
   div.style.paddingLeft = `${level * 20 + 8}px`;
 
+  // 드래그 가능 설정 (test_case만)
+  if (item.type === 'test_case') {
+    div.draggable = true;
+    div.addEventListener('dragstart', (e) => {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', JSON.stringify({
+        id: item.id,
+        type: item.type,
+        name: item.name
+      }));
+      div.classList.add('dragging');
+    });
+    div.addEventListener('dragend', () => {
+      div.classList.remove('dragging');
+      document.querySelectorAll('.tc-tree-item.drag-over').forEach(el => {
+        el.classList.remove('drag-over');
+      });
+    });
+  }
+
+  // 드롭 영역 설정 (폴더만)
+  if (item.type === 'folder') {
+    div.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      div.classList.add('drag-over');
+    });
+    div.addEventListener('dragleave', () => {
+      div.classList.remove('drag-over');
+    });
+    div.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      div.classList.remove('drag-over');
+      
+      try {
+        const data = JSON.parse(e.dataTransfer.getData('text/plain'));
+        if (data.type === 'test_case') {
+          await moveTCToFolder(data.id, item.id);
+        }
+      } catch (error) {
+        console.error('드롭 처리 실패:', error);
+        addLog('error', `이동 실패: ${error.message}`);
+      }
+    });
+  }
+
   // 체크박스 (폴더는 제외, test_case만)
   if (item.type === 'test_case') {
     const checkbox = document.createElement('input');
@@ -348,6 +399,10 @@ function createTreeItem(item, level) {
   const icon = document.createElement('span');
   icon.className = 'tc-tree-item-icon';
   icon.textContent = item.type === 'folder' ? '📁' : '📄';
+  icon.style.cursor = item.type === 'folder' ? 'pointer' : 'default';
+  if (item.type === 'folder') {
+    icon.title = '클릭하여 확장/축소';
+  }
   div.appendChild(icon);
 
   // 이름
@@ -386,11 +441,32 @@ function createTreeItem(item, level) {
   }
   div.appendChild(status);
 
-  // 클릭 이벤트 (상세 정보 표시)
-  div.addEventListener('click', (e) => {
-    if (e.target.type !== 'checkbox') {
-      selectTC(item);
+  // 폴더 확장/축소 함수
+  const toggleFolder = () => {
+    const children = div.querySelector('.tree-children');
+    if (children) {
+      const isHidden = children.style.display === 'none';
+      children.style.display = isHidden ? 'block' : 'none';
+      icon.textContent = isHidden ? '📂' : '📁';
     }
+  };
+
+  // 클릭 이벤트 처리
+  div.addEventListener('click', (e) => {
+    // 체크박스 클릭은 무시
+    if (e.target.type === 'checkbox') {
+      return;
+    }
+    
+    // 폴더 아이콘 클릭 시 확장/축소
+    if (item.type === 'folder' && (e.target === icon || e.target.closest('.tc-tree-item-icon'))) {
+      e.stopPropagation();
+      toggleFolder();
+      return;
+    }
+    
+    // 그 외 클릭은 선택
+    selectTC(item);
   });
 
   // 우클릭 이벤트 (컨텍스트 메뉴)
@@ -399,14 +475,17 @@ function createTreeItem(item, level) {
     showContextMenu(e.pageX, e.pageY, item);
   });
 
-  // 폴더 확장/축소
+  // 폴더 더블클릭 (이름 영역) - 확장/축소
   if (item.type === 'folder') {
-    div.addEventListener('dblclick', () => {
-      const children = div.querySelector('.tree-children');
-      if (children) {
-        children.style.display = children.style.display === 'none' ? 'block' : 'none';
-        icon.textContent = children.style.display === 'none' ? '📁' : '📂';
-      }
+    name.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      toggleFolder();
+    });
+    
+    // 폴더 아이콘 더블클릭도 확장/축소
+    icon.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      toggleFolder();
     });
   }
 
@@ -441,7 +520,7 @@ function selectTC(tc) {
   }
 
   // 버튼 활성화
-  editTCBtn.disabled = tc.type === 'folder';
+  editTCBtn.disabled = false; // 폴더와 TC 모두 편집 가능
   createScriptBtn.disabled = tc.type === 'folder';
 }
 
@@ -455,22 +534,33 @@ function displayTCDetail(tc) {
       </div>
     `;
   } else {
+    // steps 파싱 (JSON 문자열인 경우)
+    let steps = tc.steps;
+    if (typeof steps === 'string') {
+      try {
+        steps = JSON.parse(steps);
+      } catch (e) {
+        steps = null;
+      }
+    }
+    
     tcDetailContent.innerHTML = `
       <div class="tc-detail-info">
         <h4>${tc.name}</h4>
         ${tc.description ? `<p>${tc.description}</p>` : ''}
         <div>
-          <strong>상태:</strong> ${tc.status} | 
+          <strong>상태:</strong> ${getStatusLabel(tc.status)} | 
           <strong>스크립트:</strong> ${tc.hasScript ? '✅ 있음' : '❌ 없음'}
         </div>
-        ${tc.steps && tc.steps.length > 0 ? `
+        ${steps && Array.isArray(steps) && steps.length > 0 ? `
           <div class="tc-steps">
             <h5>테스트 단계:</h5>
-            ${tc.steps.map((step, idx) => `
+            ${steps.map((step, idx) => `
               <div class="step-item">
-                <strong>${idx + 1}. ${step.action || step.type}</strong>
+                <strong>${idx + 1}. ${step.action || step.type || 'N/A'}</strong>
                 ${step.target ? `<div>대상: ${step.target}</div>` : ''}
                 ${step.value ? `<div>값: ${step.value}</div>` : ''}
+                ${step.description ? `<div>설명: ${step.description}</div>` : ''}
               </div>
             `).join('')}
           </div>
@@ -478,6 +568,18 @@ function displayTCDetail(tc) {
       </div>
     `;
   }
+}
+
+/**
+ * 상태 레이블 반환
+ */
+function getStatusLabel(status) {
+  const labels = {
+    'draft': '초안',
+    'active': '활성',
+    'deprecated': '사용 안 함'
+  };
+  return labels[status] || status;
 }
 
 // ============================================================================
@@ -798,16 +900,48 @@ function updateKeywordView() {
 function createKeywordRow(index, step) {
   const tr = document.createElement('tr');
   
+  // Action 드롭다운 생성
+  let actionSelect;
+  try {
+    actionSelect = document.createElement('select');
+    actionSelect.className = 'keyword-action';
+    actionSelect.innerHTML = '<option value="">선택...</option>';
+    
+    // 키워드 목록 추가
+    if (typeof KEYWORDS !== 'undefined') {
+      Object.values(KEYWORDS).forEach(keyword => {
+        const option = document.createElement('option');
+        option.value = keyword.name;
+        option.textContent = `${keyword.name} - ${keyword.description}`;
+        if (step.action === keyword.name) {
+          option.selected = true;
+        }
+        actionSelect.appendChild(option);
+      });
+    }
+  } catch (error) {
+    console.error('키워드 목록 로드 실패:', error);
+    // 폴백: 일반 input
+    actionSelect = document.createElement('input');
+    actionSelect.type = 'text';
+    actionSelect.className = 'keyword-action';
+    actionSelect.value = step.action || '';
+  }
+  
   tr.innerHTML = `
     <td>${index}</td>
-    <td><input type="text" value="${step.action || ''}" class="keyword-action"></td>
-    <td><input type="text" value="${step.target || ''}" class="keyword-target"></td>
-    <td><input type="text" value="${step.value || ''}" class="keyword-value"></td>
-    <td><textarea class="keyword-description">${step.description || ''}</textarea></td>
+    <td></td>
+    <td><input type="text" value="${step.target || ''}" class="keyword-target" placeholder="선택자 또는 객체 이름"></td>
+    <td><input type="text" value="${step.value || ''}" class="keyword-value" placeholder="값"></td>
+    <td><textarea class="keyword-description" placeholder="설명">${step.description || ''}</textarea></td>
     <td>
       <button class="btn-icon delete-keyword" title="삭제">🗑️</button>
     </td>
   `;
+  
+  // Action 셀에 드롭다운 추가
+  const actionCell = tr.querySelector('td:nth-child(2)');
+  actionCell.appendChild(actionSelect);
 
   // 삭제 버튼
   tr.querySelector('.delete-keyword').addEventListener('click', () => {
@@ -816,13 +950,70 @@ function createKeywordRow(index, step) {
   });
 
   // 입력 변경 감지
-  tr.querySelectorAll('input, textarea').forEach(input => {
+  tr.querySelectorAll('input, textarea, select').forEach(input => {
     input.addEventListener('change', () => {
       updateKeywordTable();
     });
   });
+  
+  // Target 자동완성 (객체 레퍼지토리)
+  const targetInput = tr.querySelector('.keyword-target');
+  if (targetInput && currentProject) {
+    setupTargetAutocomplete(targetInput, currentProject.id);
+  }
 
   return tr;
+}
+
+/**
+ * Target 입력 필드 자동완성 설정
+ */
+async function setupTargetAutocomplete(input, projectId) {
+  let suggestions = [];
+  let currentFocus = -1;
+  
+  // 자동완성 목록 생성
+  const autocompleteList = document.createElement('div');
+  autocompleteList.className = 'autocomplete-items';
+  input.parentElement.appendChild(autocompleteList);
+  
+  input.addEventListener('input', async () => {
+    const query = input.value;
+    if (query.length < 1) {
+      autocompleteList.innerHTML = '';
+      return;
+    }
+    
+    try {
+      // 객체 레퍼지토리에서 검색
+      suggestions = await ObjectRepository.getObjectSuggestions(projectId, query);
+      
+      // 키워드 제안도 추가 (선택사항)
+      // const keywordSuggestions = getKeywordSuggestions(query);
+      
+      autocompleteList.innerHTML = '';
+      suggestions.slice(0, 5).forEach(obj => {
+        const item = document.createElement('div');
+        item.className = 'autocomplete-item';
+        item.innerHTML = `<strong>${obj.name}</strong> ${obj.description || ''}`;
+        item.addEventListener('click', () => {
+          input.value = obj.name;
+          autocompleteList.innerHTML = '';
+          updateKeywordTable();
+        });
+        autocompleteList.appendChild(item);
+      });
+    } catch (error) {
+      console.error('자동완성 실패:', error);
+    }
+  });
+  
+  // 외부 클릭 시 목록 숨김
+  document.addEventListener('click', (e) => {
+    if (!input.contains(e.target) && !autocompleteList.contains(e.target)) {
+      autocompleteList.innerHTML = '';
+    }
+  });
 }
 
 function updateKeywordTable() {
@@ -853,6 +1044,22 @@ function updateKeywordTable() {
 }
 
 function generateCodeFromKeywords(steps) {
+  // 키워드 라이브러리 사용
+  try {
+    const language = scriptLanguage.value;
+    const framework = scriptFramework.value === 'pytest' ? 'pytest' : scriptFramework.value;
+    
+    return generateCodeFromSteps(steps, {
+      language,
+      framework,
+      testName: `test_${currentTC?.id || 'example'}`,
+      testDescription: currentTC?.name || 'Test'
+    });
+  } catch (error) {
+    console.error('키워드 라이브러리 사용 실패, 기본 코드 생성:', error);
+  }
+  
+  // 폴백: 기본 코드 생성
   const language = scriptLanguage.value;
   const framework = scriptFramework.value;
   
@@ -1307,13 +1514,15 @@ function setupEventListeners() {
     console.error('newTCBtn 요소를 찾을 수 없습니다. HTML을 확인하세요.');
   }
 
-  // TC 편집 버튼
+  // TC/폴더 편집 버튼
   if (editTCBtn) {
     editTCBtn.addEventListener('click', () => {
-      if (currentTC && currentTC.type === 'test_case') {
-        // 편집 모드로 전환 (향후 구현)
-        addLog('info', `TC 편집: ${currentTC.name}`);
-        showMessageDialog('알림', 'TC 편집 기능은 향후 구현 예정입니다.');
+      if (currentTC) {
+        if (currentTC.type === 'test_case') {
+          editTestCase(currentTC);
+        } else if (currentTC.type === 'folder') {
+          editFolder(currentTC);
+        }
       }
     });
   }
@@ -1512,6 +1721,8 @@ function handleContextMenuAction(action) {
       if (contextMenuTarget.type === 'test_case') {
         selectTC(contextMenuTarget);
         editTCBtn.click();
+      } else if (contextMenuTarget.type === 'folder') {
+        editFolder(contextMenuTarget);
       }
       break;
     case 'duplicate':
@@ -1524,8 +1735,7 @@ function handleContextMenuAction(action) {
       }
       break;
     case 'new-folder':
-      addLog('info', '새 폴더 생성');
-      alert('새 폴더 기능은 향후 구현 예정입니다.');
+      createNewFolder(contextMenuTarget);
       break;
   }
 }
@@ -1575,6 +1785,360 @@ function addLog(type, message) {
 
   // 콘솔에도 출력
   console.log(`[${type.toUpperCase()}] ${message}`);
+}
+
+// ============================================================================
+// TC 편집
+// ============================================================================
+
+/**
+ * TC 편집 모달 표시
+ */
+function editTestCase(tc) {
+  if (!tc || tc.type === 'folder') {
+    showMessageDialog('알림', '테스트케이스를 선택하세요.');
+    return;
+  }
+
+  // 기존 다이얼로그 제거
+  const existing = document.getElementById('edit-tc-dialog');
+  if (existing) {
+    existing.remove();
+  }
+
+  // steps 파싱 (JSON 문자열인 경우)
+  let steps = tc.steps;
+  if (typeof steps === 'string') {
+    try {
+      steps = JSON.parse(steps);
+    } catch (e) {
+      steps = [];
+    }
+  }
+  if (!Array.isArray(steps)) {
+    steps = [];
+  }
+
+  // 다이얼로그 생성
+  const dialog = document.createElement('div');
+  dialog.id = 'edit-tc-dialog';
+  dialog.className = 'modal-dialog';
+  
+  const dialogContent = document.createElement('div');
+  dialogContent.className = 'modal-content';
+  dialogContent.style.maxWidth = '700px';
+  dialogContent.style.width = '90%';
+  
+  // 헤더
+  const header = document.createElement('div');
+  header.className = 'modal-header';
+  header.innerHTML = `<h3>테스트케이스 편집</h3>`;
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'modal-close';
+  closeBtn.textContent = '×';
+  closeBtn.addEventListener('click', () => dialog.remove());
+  header.appendChild(closeBtn);
+  
+  // 바디
+  const body = document.createElement('div');
+  body.className = 'modal-body';
+  
+  // 이름 입력
+  const nameLabel = document.createElement('label');
+  nameLabel.textContent = '이름 *';
+  nameLabel.style.display = 'block';
+  nameLabel.style.marginBottom = '5px';
+  nameLabel.style.fontWeight = 'bold';
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.className = 'modal-input';
+  nameInput.value = tc.name || '';
+  nameInput.placeholder = '테스트케이스 이름';
+  nameInput.style.marginBottom = '15px';
+  
+  // 설명 입력
+  const descLabel = document.createElement('label');
+  descLabel.textContent = '설명';
+  descLabel.style.display = 'block';
+  descLabel.style.marginBottom = '5px';
+  descLabel.style.fontWeight = 'bold';
+  const descTextarea = document.createElement('textarea');
+  descTextarea.className = 'modal-input';
+  descTextarea.value = tc.description || '';
+  descTextarea.placeholder = '테스트케이스 설명';
+  descTextarea.rows = 3;
+  descTextarea.style.marginBottom = '15px';
+  descTextarea.style.resize = 'vertical';
+  
+  // 상태 선택
+  const statusLabel = document.createElement('label');
+  statusLabel.textContent = '상태';
+  statusLabel.style.display = 'block';
+  statusLabel.style.marginBottom = '5px';
+  statusLabel.style.fontWeight = 'bold';
+  const statusSelect = document.createElement('select');
+  statusSelect.className = 'modal-input';
+  statusSelect.style.marginBottom = '15px';
+  statusSelect.innerHTML = `
+    <option value="draft" ${tc.status === 'draft' ? 'selected' : ''}>초안</option>
+    <option value="active" ${tc.status === 'active' ? 'selected' : ''}>활성</option>
+    <option value="deprecated" ${tc.status === 'deprecated' ? 'selected' : ''}>사용 안 함</option>
+  `;
+  
+  // 스텝 편집 영역
+  const stepsLabel = document.createElement('label');
+  stepsLabel.textContent = '테스트 단계 (키워드)';
+  stepsLabel.style.display = 'block';
+  stepsLabel.style.marginBottom = '5px';
+  stepsLabel.style.fontWeight = 'bold';
+  
+  const stepsContainer = document.createElement('div');
+  stepsContainer.style.marginBottom = '15px';
+  stepsContainer.style.maxHeight = '300px';
+  stepsContainer.style.overflowY = 'auto';
+  stepsContainer.style.border = '1px solid #ddd';
+  stepsContainer.style.borderRadius = '4px';
+  stepsContainer.style.padding = '10px';
+  
+  const stepsTable = document.createElement('table');
+  stepsTable.style.width = '100%';
+  stepsTable.style.borderCollapse = 'collapse';
+  stepsTable.innerHTML = `
+    <thead>
+      <tr style="background: #f5f5f5; border-bottom: 2px solid #ddd;">
+        <th style="padding: 8px; text-align: left; width: 40px;">#</th>
+        <th style="padding: 8px; text-align: left;">Action</th>
+        <th style="padding: 8px; text-align: left;">Target</th>
+        <th style="padding: 8px; text-align: left;">Value</th>
+        <th style="padding: 8px; text-align: left;">Description</th>
+        <th style="padding: 8px; text-align: center; width: 60px;">삭제</th>
+      </tr>
+    </thead>
+    <tbody id="edit-tc-steps-body"></tbody>
+  `;
+  
+  const stepsBody = stepsTable.querySelector('#edit-tc-steps-body');
+  
+  // 기존 스텝 추가
+  if (steps.length > 0) {
+    steps.forEach((step, index) => {
+      const row = createEditStepRow(index + 1, step);
+      stepsBody.appendChild(row);
+    });
+  }
+  
+  // 스텝 추가 버튼
+  const addStepBtn = document.createElement('button');
+  addStepBtn.type = 'button';
+  addStepBtn.className = 'btn btn-secondary btn-sm';
+  addStepBtn.textContent = '+ 스텝 추가';
+  addStepBtn.style.marginTop = '10px';
+  addStepBtn.addEventListener('click', () => {
+    const newRow = createEditStepRow(stepsBody.children.length + 1, {
+      action: '',
+      target: '',
+      value: '',
+      description: ''
+    });
+    stepsBody.appendChild(newRow);
+  });
+  
+  stepsContainer.appendChild(stepsTable);
+  stepsContainer.appendChild(addStepBtn);
+  
+  body.appendChild(nameLabel);
+  body.appendChild(nameInput);
+  body.appendChild(descLabel);
+  body.appendChild(descTextarea);
+  body.appendChild(statusLabel);
+  body.appendChild(statusSelect);
+  body.appendChild(stepsLabel);
+  body.appendChild(stepsContainer);
+  
+  // 푸터
+  const footer = document.createElement('div');
+  footer.className = 'modal-footer';
+  footer.style.display = 'flex';
+  footer.style.justifyContent = 'flex-end';
+  footer.style.gap = '10px';
+  
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'btn btn-secondary';
+  cancelBtn.textContent = '취소';
+  cancelBtn.addEventListener('click', () => dialog.remove());
+  
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'btn btn-primary';
+  saveBtn.textContent = '저장';
+  saveBtn.addEventListener('click', async () => {
+    await saveEditedTestCase(tc.id, {
+      name: nameInput.value.trim(),
+      description: descTextarea.value.trim(),
+      status: statusSelect.value,
+      steps: getStepsFromTable(stepsBody)
+    }, dialog);
+  });
+  
+  footer.appendChild(cancelBtn);
+  footer.appendChild(saveBtn);
+  
+  dialogContent.appendChild(header);
+  dialogContent.appendChild(body);
+  dialogContent.appendChild(footer);
+  dialog.appendChild(dialogContent);
+  
+  document.body.appendChild(dialog);
+  nameInput.focus();
+  nameInput.select();
+}
+
+/**
+ * 편집용 스텝 행 생성
+ */
+function createEditStepRow(index, step) {
+  const tr = document.createElement('tr');
+  tr.style.borderBottom = '1px solid #eee';
+  
+  // Action 드롭다운
+  let actionSelect;
+  try {
+    actionSelect = document.createElement('select');
+    actionSelect.className = 'keyword-action';
+    actionSelect.style.width = '100%';
+    actionSelect.style.padding = '5px';
+    actionSelect.innerHTML = '<option value="">선택...</option>';
+    
+    if (typeof KEYWORDS !== 'undefined') {
+      Object.values(KEYWORDS).forEach(keyword => {
+        const option = document.createElement('option');
+        option.value = keyword.name;
+        option.textContent = `${keyword.name} - ${keyword.description}`;
+        if (step.action === keyword.name) {
+          option.selected = true;
+        }
+        actionSelect.appendChild(option);
+      });
+    }
+  } catch (error) {
+    actionSelect = document.createElement('input');
+    actionSelect.type = 'text';
+    actionSelect.className = 'keyword-action';
+    actionSelect.value = step.action || '';
+    actionSelect.style.width = '100%';
+    actionSelect.style.padding = '5px';
+  }
+  
+  const escapeHtml = (text) => {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  };
+  
+  tr.innerHTML = `
+    <td style="padding: 8px; text-align: center;">${index}</td>
+    <td style="padding: 8px;"></td>
+    <td style="padding: 8px;"><input type="text" class="step-target" value="${escapeHtml(step.target || '')}" style="width: 100%; padding: 5px; box-sizing: border-box;" placeholder="선택자 또는 객체 이름"></td>
+    <td style="padding: 8px;"><input type="text" class="step-value" value="${escapeHtml(step.value || '')}" style="width: 100%; padding: 5px; box-sizing: border-box;" placeholder="값"></td>
+    <td style="padding: 8px;"><input type="text" class="step-description" value="${escapeHtml(step.description || '')}" style="width: 100%; padding: 5px; box-sizing: border-box;" placeholder="설명"></td>
+    <td style="padding: 8px; text-align: center;">
+      <button type="button" class="btn-icon delete-step" title="삭제" style="background: none; border: none; cursor: pointer; font-size: 16px;">🗑️</button>
+    </td>
+  `;
+  
+  // Action 셀에 드롭다운 추가
+  const actionCell = tr.querySelector('td:nth-child(2)');
+  actionCell.appendChild(actionSelect);
+  
+  // 삭제 버튼
+  tr.querySelector('.delete-step').addEventListener('click', () => {
+    tr.remove();
+    // 번호 재정렬
+    const rows = tr.parentElement.querySelectorAll('tr');
+    rows.forEach((row, idx) => {
+      row.querySelector('td:first-child').textContent = idx + 1;
+    });
+  });
+  
+  return tr;
+}
+
+/**
+ * 테이블에서 스텝 데이터 추출
+ */
+function getStepsFromTable(stepsBody) {
+  const steps = [];
+  stepsBody.querySelectorAll('tr').forEach((row) => {
+    const action = row.querySelector('.keyword-action')?.value || '';
+    const target = row.querySelector('.step-target')?.value || '';
+    const value = row.querySelector('.step-value')?.value || '';
+    const description = row.querySelector('.step-description')?.value || '';
+    
+    if (action) {
+      steps.push({
+        action: action.trim(),
+        target: target.trim(),
+        value: value.trim(),
+        description: description.trim()
+      });
+    }
+  });
+  return steps;
+}
+
+/**
+ * 편집된 TC 저장
+ */
+async function saveEditedTestCase(tcId, data, dialog) {
+  try {
+    if (!data.name || !data.name.trim()) {
+      showMessageDialog('오류', '이름은 필수입니다.');
+      return;
+    }
+
+    addLog('info', `TC 편집 저장 중: ${data.name}`);
+    
+    // steps를 JSON 문자열로 변환 (DB 저장용)
+    const updateData = {
+      name: data.name.trim(),
+      description: data.description || null,
+      status: data.status || 'draft',
+      steps: data.steps && data.steps.length > 0 ? JSON.stringify(data.steps) : null
+    };
+    
+    const response = await window.electronAPI.api.updateTestCase(tcId, updateData);
+    
+    if (response && response.success) {
+      addLog('success', `TC 편집 완료: ${data.name}`);
+      dialog.remove();
+      
+      // TC 트리 새로고침
+      if (currentProject) {
+        await loadTCTree(currentProject.id);
+      }
+      
+      // 편집된 TC 다시 선택
+      if (response.data) {
+        // steps 파싱
+        if (typeof response.data.steps === 'string') {
+          try {
+            response.data.steps = JSON.parse(response.data.steps);
+          } catch (e) {
+            response.data.steps = null;
+          }
+        }
+        selectTC(response.data);
+      }
+      
+      showMessageDialog('성공', '테스트케이스가 업데이트되었습니다.');
+    } else {
+      throw new Error(response?.error || '업데이트 실패');
+    }
+  } catch (error) {
+    console.error('TC 편집 저장 실패:', error);
+    addLog('error', `TC 편집 저장 실패: ${error.message}`);
+    showMessageDialog('오류', `TC 편집 저장 실패: ${error.message}`);
+  }
 }
 
 // ============================================================================
@@ -1881,6 +2445,241 @@ async function createProject(name) {
     }
     
     showMessageDialog('오류', userMessage);
+  }
+}
+
+// ============================================================================
+// 폴더 관리
+// ============================================================================
+
+/**
+ * 새 폴더 생성
+ */
+async function createNewFolder(parentItem = null) {
+  try {
+    if (!currentProject) {
+      showMessageDialog('알림', '먼저 프로젝트를 선택하세요.');
+      return;
+    }
+
+    const name = await showInputDialog('새 폴더', '폴더 이름을 입력하세요:');
+    if (name && name.trim()) {
+      const folderData = {
+        project_id: currentProject.id,
+        parent_id: parentItem ? parentItem.id : null,
+        name: name.trim(),
+        type: 'folder',
+        status: 'active'
+      };
+
+      const response = await window.electronAPI.api.createTestCase(folderData);
+      
+      if (response && response.success) {
+        addLog('success', `폴더 생성 완료: ${name.trim()}`);
+        
+        // TC 트리 새로고침
+        if (currentProject) {
+          await loadTCTree(currentProject.id);
+        }
+        
+        showMessageDialog('성공', `폴더 '${name.trim()}'이(가) 생성되었습니다.`);
+      } else {
+        throw new Error(response?.error || '폴더 생성 실패');
+      }
+    }
+  } catch (error) {
+    console.error('폴더 생성 실패:', error);
+    addLog('error', `폴더 생성 실패: ${error.message}`);
+    showMessageDialog('오류', `폴더 생성 실패: ${error.message}`);
+  }
+}
+
+/**
+ * 폴더 편집
+ */
+function editFolder(folder) {
+  if (!folder || folder.type !== 'folder') {
+    showMessageDialog('알림', '폴더를 선택하세요.');
+    return;
+  }
+
+  // 기존 다이얼로그 제거
+  const existing = document.getElementById('edit-folder-dialog');
+  if (existing) {
+    existing.remove();
+  }
+
+  // 다이얼로그 생성
+  const dialog = document.createElement('div');
+  dialog.id = 'edit-folder-dialog';
+  dialog.className = 'modal-dialog';
+  
+  const dialogContent = document.createElement('div');
+  dialogContent.className = 'modal-content';
+  dialogContent.style.maxWidth = '500px';
+  
+  // 헤더
+  const header = document.createElement('div');
+  header.className = 'modal-header';
+  header.innerHTML = `<h3>폴더 편집</h3>`;
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'modal-close';
+  closeBtn.textContent = '×';
+  closeBtn.addEventListener('click', () => dialog.remove());
+  header.appendChild(closeBtn);
+  
+  // 바디
+  const body = document.createElement('div');
+  body.className = 'modal-body';
+  
+  // 이름 입력
+  const nameLabel = document.createElement('label');
+  nameLabel.textContent = '이름 *';
+  nameLabel.style.display = 'block';
+  nameLabel.style.marginBottom = '5px';
+  nameLabel.style.fontWeight = 'bold';
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.className = 'modal-input';
+  nameInput.value = folder.name || '';
+  nameInput.placeholder = '폴더 이름';
+  nameInput.style.marginBottom = '15px';
+  
+  // 설명 입력
+  const descLabel = document.createElement('label');
+  descLabel.textContent = '설명';
+  descLabel.style.display = 'block';
+  descLabel.style.marginBottom = '5px';
+  descLabel.style.fontWeight = 'bold';
+  const descTextarea = document.createElement('textarea');
+  descTextarea.className = 'modal-input';
+  descTextarea.value = folder.description || '';
+  descTextarea.placeholder = '폴더 설명';
+  descTextarea.rows = 3;
+  descTextarea.style.marginBottom = '15px';
+  descTextarea.style.resize = 'vertical';
+  
+  body.appendChild(nameLabel);
+  body.appendChild(nameInput);
+  body.appendChild(descLabel);
+  body.appendChild(descTextarea);
+  
+  // 푸터
+  const footer = document.createElement('div');
+  footer.className = 'modal-footer';
+  footer.style.display = 'flex';
+  footer.style.justifyContent = 'flex-end';
+  footer.style.gap = '10px';
+  
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'btn btn-secondary';
+  cancelBtn.textContent = '취소';
+  cancelBtn.addEventListener('click', () => dialog.remove());
+  
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'btn btn-primary';
+  saveBtn.textContent = '저장';
+  saveBtn.addEventListener('click', async () => {
+    await saveEditedFolder(folder.id, {
+      name: nameInput.value.trim(),
+      description: descTextarea.value.trim()
+    }, dialog);
+  });
+  
+  footer.appendChild(cancelBtn);
+  footer.appendChild(saveBtn);
+  
+  dialogContent.appendChild(header);
+  dialogContent.appendChild(body);
+  dialogContent.appendChild(footer);
+  dialog.appendChild(dialogContent);
+  
+  document.body.appendChild(dialog);
+  nameInput.focus();
+  nameInput.select();
+}
+
+/**
+ * 편집된 폴더 저장
+ */
+async function saveEditedFolder(folderId, data, dialog) {
+  try {
+    if (!data.name || !data.name.trim()) {
+      showMessageDialog('오류', '이름은 필수입니다.');
+      return;
+    }
+
+    addLog('info', `폴더 편집 저장 중: ${data.name}`);
+    
+    const updateData = {
+      name: data.name.trim(),
+      description: data.description || null
+    };
+    
+    const response = await window.electronAPI.api.updateTestCase(folderId, updateData);
+    
+    if (response && response.success) {
+      addLog('success', `폴더 편집 완료: ${data.name}`);
+      dialog.remove();
+      
+      // TC 트리 새로고침
+      if (currentProject) {
+        await loadTCTree(currentProject.id);
+      }
+      
+      showMessageDialog('성공', '폴더가 업데이트되었습니다.');
+    } else {
+      throw new Error(response?.error || '업데이트 실패');
+    }
+  } catch (error) {
+    console.error('폴더 편집 저장 실패:', error);
+    addLog('error', `폴더 편집 저장 실패: ${error.message}`);
+    showMessageDialog('오류', `폴더 편집 저장 실패: ${error.message}`);
+  }
+}
+
+/**
+ * TC를 폴더로 이동
+ */
+async function moveTCToFolder(tcId, folderId) {
+  try {
+    addLog('info', `TC #${tcId}를 폴더로 이동 중...`);
+    
+    // 현재 TC 정보 가져오기
+    const tcResponse = await window.electronAPI.api.getTestCase(tcId);
+    if (!tcResponse || !tcResponse.success) {
+      throw new Error('TC를 찾을 수 없습니다.');
+    }
+    
+    const tc = tcResponse.data;
+    
+    // parent_id 업데이트
+    const updateData = {
+      name: tc.name,
+      description: tc.description,
+      steps: tc.steps,
+      tags: tc.tags,
+      status: tc.status,
+      order_index: tc.order_index,
+      parent_id: folderId
+    };
+    
+    const response = await window.electronAPI.api.updateTestCase(tcId, updateData);
+    
+    if (response && response.success) {
+      addLog('success', `TC #${tcId} 이동 완료`);
+      
+      // TC 트리 새로고침
+      if (currentProject) {
+        await loadTCTree(currentProject.id);
+      }
+    } else {
+      throw new Error(response?.error || '이동 실패');
+    }
+  } catch (error) {
+    console.error('TC 이동 실패:', error);
+    addLog('error', `TC 이동 실패: ${error.message}`);
+    showMessageDialog('오류', `TC 이동 실패: ${error.message}`);
   }
 }
 

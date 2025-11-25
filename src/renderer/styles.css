@@ -297,6 +297,27 @@ body {
     padding-left: 24px;
 }
 
+/* 드래그 앤 드롭 스타일 */
+.tc-tree-item[draggable="true"] {
+    cursor: move;
+}
+
+.tc-tree-item.dragging {
+    opacity: 0.5;
+    background: #e3f2fd;
+}
+
+.tc-tree-item.folder.drag-over {
+    background: #c8e6c9;
+    border: 2px dashed #4caf50;
+    border-radius: 4px;
+}
+
+.tc-tree-item.folder.drag-over .tc-tree-item-icon {
+    transform: scale(1.2);
+    transition: transform 0.2s;
+}
+
 .tc-tree-item input[type="checkbox"] {
     margin-right: 6px;
     cursor: pointer;

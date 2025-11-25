@@ -146,6 +146,23 @@ function createTables() {
       executed_by TEXT,
       FOREIGN KEY (test_case_id) REFERENCES test_cases(id) ON DELETE SET NULL,
       FOREIGN KEY (test_script_id) REFERENCES test_scripts(id) ON DELETE SET NULL
+    )`,
+
+    // 객체 레포지토리 테이블
+    `CREATE TABLE IF NOT EXISTS objects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL,
+      parent_id INTEGER,
+      name TEXT NOT NULL,
+      description TEXT,
+      type TEXT DEFAULT 'element' CHECK(type IN ('page', 'element')),
+      selectors TEXT NOT NULL,
+      priority INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      created_by TEXT,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (parent_id) REFERENCES objects(id) ON DELETE CASCADE
     )`
   ];
 
@@ -160,7 +177,11 @@ function createTables() {
       'CREATE INDEX IF NOT EXISTS idx_test_scripts_test_case_id ON test_scripts(test_case_id)',
       'CREATE INDEX IF NOT EXISTS idx_test_scripts_framework ON test_scripts(framework)',
       'CREATE INDEX IF NOT EXISTS idx_test_results_test_case_id ON test_results(test_case_id)',
-      'CREATE INDEX IF NOT EXISTS idx_test_results_executed_at ON test_results(executed_at)'
+      'CREATE INDEX IF NOT EXISTS idx_test_results_executed_at ON test_results(executed_at)',
+      'CREATE INDEX IF NOT EXISTS idx_objects_project_id ON objects(project_id)',
+      'CREATE INDEX IF NOT EXISTS idx_objects_parent_id ON objects(parent_id)',
+      'CREATE INDEX IF NOT EXISTS idx_objects_type ON objects(type)',
+      'CREATE INDEX IF NOT EXISTS idx_objects_name ON objects(name)'
     ];
 
     // 쿼리 실행

@@ -115,6 +115,27 @@ async function createTables() {
       FOREIGN KEY (test_script_id) REFERENCES test_scripts(id) ON DELETE SET NULL,
       INDEX idx_test_results_test_case_id (test_case_id),
       INDEX idx_test_results_executed_at (executed_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
+    // 객체 레포지토리 테이블
+    `CREATE TABLE IF NOT EXISTS objects (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      project_id INT NOT NULL,
+      parent_id INT NULL,
+      name VARCHAR(255) NOT NULL,
+      description TEXT,
+      type ENUM('page', 'element') DEFAULT 'element',
+      selectors TEXT NOT NULL,
+      priority INT DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      created_by VARCHAR(255),
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (parent_id) REFERENCES objects(id) ON DELETE CASCADE,
+      INDEX idx_objects_project_id (project_id),
+      INDEX idx_objects_parent_id (parent_id),
+      INDEX idx_objects_type (type),
+      INDEX idx_objects_name (name)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
   ];
 

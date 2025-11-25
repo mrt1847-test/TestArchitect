@@ -43,12 +43,27 @@ const config = {
     command: 'pytest',
     // JSON 리포트 디렉토리
     reportDir: path.join(__dirname, '../../.pytest-reports'),
+    // HTML 리포트 디렉토리
+    htmlReportDir: path.join(__dirname, '../../.pytest-reports/html'),
+    // 스크린샷 디렉토리
+    screenshotDir: path.join(__dirname, '../../.pytest-reports/screenshots'),
     // pytest 실행 옵션
     options: [
       '--json-report',           // JSON 리포트 생성
       '-v',                       // 상세 출력
       '--tb=short'                // 짧은 트레이스백
-    ]
+    ],
+    // 기본 실행 옵션
+    defaultOptions: {
+      parallel: false,            // 병렬 실행 여부
+      workers: 'auto',             // 병렬 워커 수 ('auto' 또는 숫자)
+      reruns: 0,                  // 실패 시 재시도 횟수
+      rerunsDelay: 0,             // 재시도 전 대기 시간(초)
+      maxFailures: null,          // 최대 실패 허용 수 (null = 무제한)
+      timeout: 300,               // 테스트 타임아웃(초)
+      captureScreenshots: true,    // 스크린샷 자동 캡처 여부
+      htmlReport: true            // HTML 리포트 생성 여부
+    }
   },
 
   // 개발 모드 설정

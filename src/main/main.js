@@ -128,9 +128,9 @@ app.on('window-all-closed', () => {
  * // 렌더러에서 호출
  * const result = await window.electronAPI.runPythonScript('test_example.py', ['-k', 'test_login']);
  */
-ipcMain.handle('run-python-script', async (event, testFile, args = []) => {
+ipcMain.handle('run-python-script', async (event, testFile, args = [], options = {}) => {
   try {
-    const result = await PytestService.runTests(testFile, args);
+    const result = await PytestService.runTests(testFile, args, options);
     return result;
   } catch (error) {
     // 에러를 일관된 형식으로 반환

@@ -36,34 +36,56 @@ class PytestService {
   }
 
   /**
-   * Pytest로 테스트 실행
-   * @param {string} testFile - 실행할 테스트 파일명 (또는 경로)
+   * Pytest로 테스트 실행 (단일 파일 또는 여러 파일)
+   * @param {string|string[]} testFiles - 실행할 테스트 파일명(들) (또는 경로)
    * @param {string[]} args - 추가 pytest 인자 배열
+   * @param {Object} options - 실행 옵션
+   * @param {boolean} options.parallel - 병렬 실행 여부
+   * @param {string|number} options.workers - 병렬 워커 수 ('auto' 또는 숫자)
+   * @param {number} options.reruns - 실패 시 재시도 횟수
+   * @param {number} options.rerunsDelay - 재시도 전 대기 시간(초)
+   * @param {number|null} options.maxFailures - 최대 실패 허용 수
+   * @param {number} options.timeout - 테스트 타임아웃(초)
+   * @param {boolean} options.captureScreenshots - 스크린샷 자동 캡처 여부
+   * @param {boolean} options.htmlReport - HTML 리포트 생성 여부
    * @returns {Promise<PytestExecutionResult>} 실행 결과
    */
-  static async runTests(testFile, args = []) {
+  static async runTests(testFiles, args = [], options = {}) {
     return new Promise(async (resolve, reject) => {
       try {
         // Python 런타임 가져오기
         const runtime = await this._getRuntime();
 
-        const testPath = this._getTestPath(testFile);
+        // 단일 파일 또는 여러 파일 처리
+        const files = Array.isArray(testFiles) ? testFiles : [testFiles];
+        const testPaths = files.map(file => this._getTestPath(file));
 
-        // 테스트 파일 존재 확인
-        if (!this._validateTestFile(testPath)) {
-          reject({
-            success: false,
-            error: `테스트 파일을 찾을 수 없습니다: ${testFile}`,
-            stderr: ''
-          });
-          return;
+        // 모든 테스트 파일 존재 확인
+        for (const testPath of testPaths) {
+          if (!this._validateTestFile(testPath)) {
+            reject({
+              success: false,
+              error: `테스트 파일을 찾을 수 없습니다: ${testPath}`,
+              stderr: ''
+            });
+            return;
+          }
         }
+
+        // 실행 옵션 병합 (기본값 + 사용자 옵션)
+        const execOptions = {
+          ...config.pytest.defaultOptions,
+          ...options
+        };
 
         // 리포트 파일 경로 생성
         const reportFile = this._getReportFilePath();
+        const htmlReportFile = execOptions.htmlReport 
+          ? this._getHtmlReportFilePath() 
+          : null;
 
         // Pytest 명령어 구성 (런타임 정보 사용)
-        const command = this._buildCommand(testPath, reportFile, args, runtime);
+        const command = this._buildCommand(testPaths, reportFile, htmlReportFile, args, execOptions, runtime);
 
         // Playwright 환경 변수 설정
         const playwrightEnv = PythonRuntime.getPlaywrightEnv(runtime);
@@ -197,14 +219,18 @@ class PytestService {
   /**
    * Pytest 실행 명령어 구성
    * @private
-   * @param {string} testPath - 테스트 파일 경로
-   * @param {string} reportFile - 리포트 파일 경로
+   * @param {string|string[]} testPaths - 테스트 파일 경로(들)
+   * @param {string} reportFile - JSON 리포트 파일 경로
+   * @param {string|null} htmlReportFile - HTML 리포트 파일 경로
    * @param {string[]} args - 추가 인자 배열
+   * @param {Object} options - 실행 옵션
    * @param {PythonRuntimeInfo} runtime - Python 런타임 정보
    * @returns {string} 실행 명령어
    */
-  static _buildCommand(testPath, reportFile, args = [], runtime) {
-    const escapedPath = `"${testPath}"`;
+  static _buildCommand(testPaths, reportFile, htmlReportFile, args = [], options = {}, runtime) {
+    // 여러 파일을 배열로 처리
+    const paths = Array.isArray(testPaths) ? testPaths : [testPaths];
+    const escapedPaths = paths.map(p => `"${p}"`);
     const escapedReportFile = `"${reportFile}"`;
     
     // pytest 실행 경로 (번들된 경우 전체 경로, 시스템의 경우 명령어만)
@@ -220,10 +246,56 @@ class PytestService {
       '--tb=short'
     ];
 
-    // 추가 인자와 합치기
-    const allArgs = [...baseOptions, ...args, escapedPath];
+    // HTML 리포트 옵션 추가
+    if (options.htmlReport && htmlReportFile) {
+      baseOptions.push('--html', `"${htmlReportFile}"`, '--self-contained-html');
+    }
+
+    // 병렬 실행 옵션 추가 (pytest-xdist)
+    if (options.parallel) {
+      const workers = options.workers === 'auto' ? 'auto' : String(options.workers || 'auto');
+      baseOptions.push('-n', workers);
+    }
+
+    // 재시도 옵션 추가 (pytest-rerunfailures)
+    if (options.reruns > 0) {
+      baseOptions.push('--reruns', String(options.reruns));
+      if (options.rerunsDelay > 0) {
+        baseOptions.push('--reruns-delay', String(options.rerunsDelay));
+      }
+    }
+
+    // 최대 실패 허용 수 옵션 추가
+    if (options.maxFailures !== null && options.maxFailures !== undefined) {
+      baseOptions.push('--maxfail', String(options.maxFailures));
+    }
+
+    // 타임아웃 옵션 추가 (pytest-timeout)
+    if (options.timeout > 0) {
+      baseOptions.push('--timeout', String(options.timeout));
+    }
+
+    // 추가 인자와 합치기 (여러 파일 경로 포함)
+    const allArgs = [...baseOptions, ...args, ...escapedPaths];
     
     return `${pytestCmd} ${allArgs.join(' ')}`;
+  }
+
+  /**
+   * HTML 리포트 파일 경로 생성
+   * @private
+   * @returns {string} HTML 리포트 파일 경로
+   */
+  static _getHtmlReportFilePath() {
+    const timestamp = Date.now();
+    const reportDir = config.pytest.htmlReportDir;
+    
+    // 리포트 디렉토리가 없으면 생성
+    if (!fs.existsSync(reportDir)) {
+      fs.mkdirSync(reportDir, { recursive: true });
+    }
+
+    return path.join(reportDir, `pytest-report-${timestamp}.html`);
   }
 
   /**

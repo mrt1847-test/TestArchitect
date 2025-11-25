@@ -11,6 +11,8 @@ pytest-json-report>=1.5.0
 pytest-html>=3.2.0          # HTML 리포트 생성
 pytest-cov>=4.1.0            # 코드 커버리지
 pytest-xdist>=3.3.0          # 병렬 테스트 실행
+pytest-rerunfailures>=12.0   # 실패한 테스트 재시도
+pytest-timeout>=2.2.0       # 테스트 타임아웃 관리
 
 # 웹 자동화 프레임워크
 playwright>=1.40.0           # Playwright (최신 버전)

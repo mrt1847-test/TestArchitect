@@ -82,7 +82,18 @@ router.post('/', async (req, res) => {
     if (test_case_id) {
       const scriptsDir = path.join(__dirname, '../../scripts');
       const extension = language === 'python' ? 'py' : language === 'typescript' ? 'ts' : 'js';
-      const filename = `${name.replace(/\s+/g, '_')}_${Date.now()}.${extension}`;
+      
+      // pytest 형식으로 파일명 생성 (test_*.py)
+      let filename;
+      if (language === 'python' && framework === 'pytest') {
+        // pytest 형식: test_tc{id}_{name}.py
+        const sanitizedName = name.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+        filename = `test_tc${test_case_id}_${sanitizedName}.${extension}`;
+      } else {
+        // 기존 형식: {name}_{timestamp}.{ext}
+        filename = `${name.replace(/\s+/g, '_')}_${Date.now()}.${extension}`;
+      }
+      
       file_path = path.join(scriptsDir, filename);
 
       // 파일 저장

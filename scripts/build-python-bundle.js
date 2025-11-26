@@ -51,19 +51,34 @@ async function buildPythonBundle() {
       const { stdout } = await execAsync(`${pythonCmd} --version`);
       console.log(`시스템 Python 발견: ${stdout.trim()}`);
 
-      // 가상환경 생성
+      // 가상환경 경로
       const venvPath = path.join(BUNDLE_DIR, 'python');
-      console.log(`가상환경 생성 중: ${venvPath}`);
-      
-      await execAsync(`${pythonCmd} -m venv "${venvPath}"`, { timeout: 60000 });
-
-      // pip 업그레이드
+      const pythonVenvCmd = PLATFORM === 'win32'
+        ? path.join(venvPath, 'Scripts', 'python.exe')
+        : path.join(venvPath, 'bin', 'python');
       const pipCmd = PLATFORM === 'win32'
         ? path.join(venvPath, 'Scripts', 'pip.exe')
         : path.join(venvPath, 'bin', 'pip');
+
+      // 가상환경이 이미 존재하는지 확인
+      const venvExists = fs.existsSync(pythonVenvCmd);
       
+      if (!venvExists) {
+        // 가상환경 생성
+        console.log(`가상환경 생성 중: ${venvPath}`);
+        await execAsync(`${pythonCmd} -m venv "${venvPath}"`, { timeout: 60000 });
+      } else {
+        console.log(`기존 가상환경 발견: ${venvPath}`);
+      }
+
+      // pip 업그레이드
       console.log('pip 업그레이드 중...');
-      await execAsync(`"${pipCmd}" install --upgrade pip`, { timeout: 60000 });
+      try {
+        await execAsync(`"${pipCmd}" install --upgrade pip`, { timeout: 60000 });
+      } catch (pipError) {
+        // pip 업그레이드 실패해도 계속 진행
+        console.warn('pip 업그레이드 실패 (계속 진행):', pipError.message);
+      }
 
       // 패키지 설치
       console.log('패키지 설치 중...');
@@ -71,10 +86,6 @@ async function buildPythonBundle() {
       await execAsync(`"${pipCmd}" install -r "${requirementsPath}"`, { timeout: 300000 });
 
       // playwright 브라우저 설치 (번들 디렉토리에 설치)
-      const pythonVenvCmd = PLATFORM === 'win32'
-        ? path.join(venvPath, 'Scripts', 'python.exe')
-        : path.join(venvPath, 'bin', 'python');
-      
       // Playwright 브라우저를 번들 디렉토리에 설치하도록 환경 변수 설정
       const playwrightHome = path.join(BUNDLE_DIR, '.playwright');
       const env = {

@@ -86,6 +86,24 @@ npm run build-python
 
 이 명령어는 Python 가상환경을 생성하고 필요한 패키지(pytest, playwright, selenium 등)를 설치합니다.
 
+> ⚠️ **중요**: `python-bundle/` 디렉토리는 `.gitignore`에 포함되어 있어 Git에 커밋되지 않습니다.  
+> 다른 컴퓨터에서 작업할 때는 다음 중 하나를 수행하세요:
+> 
+> **방법 1 (권장)**: `npm install` 실행 시 자동 설치
+> ```bash
+> npm install
+> ```
+> `postinstall` 스크립트가 자동으로 Python 번들을 생성하고 패키지를 설치합니다.
+> 
+> **방법 2**: 수동 설치
+> ```bash
+> npm run build-python
+> ```
+> 
+> **방법 3**: 기존 번들 복사
+> - 다른 컴퓨터의 `python-bundle/` 디렉토리를 현재 컴퓨터로 복사
+> - 또는 USB/네트워크 드라이브로 전송
+
 **또는 개발 모드 (시스템 Python 사용):**
 ```bash
 pip install -r requirements.txt
@@ -95,6 +113,7 @@ python -m playwright install chromium
 > 📌 **참고**: 
 > - **개발 모드**: 시스템 Python 사용 (Python 설치 필요)
 > - **프로덕션 빌드**: Python이 번들로 포함되어 사용자 설치 불필요
+> - **다른 컴퓨터로 전송**: `npm install` 실행 시 자동으로 번들이 생성됩니다
 
 ### 실행
 

@@ -102,3 +102,4 @@ await window.electronAPI.updateScript(scriptId, {
 - `server/routes/scripts.js`: 스크립트 관리 REST API
 - `src/main/services/scriptManager.js`: 스크립트 파일 관리 유틸리티
 
+

@@ -411,9 +411,8 @@ def ${testName}(driver_selenium):
     driver = driver_selenium
 `,
     pytest: `@pytest.mark.playwright
-def ${testName}(page_playwright: Page):
+def ${testName}(page: Page):
     """${testDescription}"""
-    page = page_playwright
 `
   };
 

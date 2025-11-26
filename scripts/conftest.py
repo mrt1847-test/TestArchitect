@@ -95,8 +95,14 @@ def browser_playwright(browser_type, test_config):
     """Playwright 브라우저 인스턴스 생성"""
     from playwright.sync_api import Browser
     
+    # headless 옵션: test_config에서 가져옴
+    # conftest.py의 기본값이 "false"이고, pytestService.js에서 --headless=false를 전달하므로
+    # test_config["headless"]는 False가 되어야 함
+    # Playwright의 기본값은 headless=True이므로, 명시적으로 False로 설정해야 브라우저가 표시됨
+    headless_mode = test_config.get("headless", False)
+    
     launch_options = {
-        "headless": test_config["headless"]
+        "headless": headless_mode  # False면 브라우저 표시, True면 헤드리스 모드
     }
     
     # Chrome/Edge는 chromium을 사용하되 추가 옵션 설정

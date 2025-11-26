@@ -48,6 +48,7 @@ class PytestService {
    * @param {number} options.timeout - 테스트 타임아웃(초)
    * @param {boolean} options.captureScreenshots - 스크린샷 자동 캡처 여부
    * @param {boolean} options.htmlReport - HTML 리포트 생성 여부
+   * @param {boolean} options.headless - 헤드리스 모드 여부 (기본값: false, 브라우저 표시)
    * @returns {Promise<PytestExecutionResult>} 실행 결과
    */
   static async runTests(testFiles, args = [], options = {}) {
@@ -247,8 +248,11 @@ class PytestService {
       `--json-report-file=${escapedReportFile}`,
       '-v',
       '--tb=short'
-      // --headless 옵션은 conftest.py의 기본값(false)을 사용하므로 명시하지 않음
     ];
+    
+    // headless 옵션 추가 (기본값: false, 브라우저 표시)
+    const headlessValue = options.headless !== undefined ? options.headless : false;
+    baseOptions.push(`--headless=${headlessValue ? 'true' : 'false'}`);
 
     // HTML 리포트 옵션 추가
     if (options.htmlReport && htmlReportFile) {

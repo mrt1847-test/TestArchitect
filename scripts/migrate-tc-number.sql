@@ -40,3 +40,4 @@ ALTER TABLE test_cases ADD COLUMN tc_number INTEGER;
 -- tc_number 컬럼이 자동으로 추가되며, 새로 생성되는 TC에는 자동으로 번호가 할당됩니다.
 -- 기존 TC의 경우, tc_number가 없으면 id를 사용하여 호환성을 유지합니다.
 
+

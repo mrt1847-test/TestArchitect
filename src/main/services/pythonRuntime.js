@@ -190,11 +190,20 @@ class PythonRuntime {
     }
 
     // 번들된 Playwright 브라우저 경로
+    // 개발 모드: python-bundle/.playwright
+    // 프로덕션 모드: resources/.playwright
     const appPath = process.resourcesPath || process.cwd();
-    const playwrightPath = path.join(appPath, '.playwright');
     
-    if (fs.existsSync(playwrightPath)) {
-      return playwrightPath;
+    // 개발 모드에서는 python-bundle/.playwright 확인
+    const devPlaywrightPath = path.join(process.cwd(), 'python-bundle', '.playwright');
+    if (fs.existsSync(devPlaywrightPath)) {
+      return devPlaywrightPath;
+    }
+    
+    // 프로덕션 모드에서는 appPath/.playwright 확인
+    const prodPlaywrightPath = path.join(appPath, '.playwright');
+    if (fs.existsSync(prodPlaywrightPath)) {
+      return prodPlaywrightPath;
     }
     
     return null;

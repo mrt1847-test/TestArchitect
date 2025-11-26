@@ -666,10 +666,28 @@ async function processRecordingData(recordingData) {
   }
 
   // 1. 이벤트를 TC 스텝으로 변환 (키워드 형식)
-  const steps = events.map(event => {
+  const steps = events.map((event, index) => {
+    // 디버깅: 이벤트 구조 로그
+    if (index === 0) {
+      console.log('[Recording] 첫 번째 이벤트 구조:', JSON.stringify(event, null, 2));
+    }
+    
     // 키워드 형식으로 변환: { action, target, value, description }
+    // event.type이 없을 경우 이벤트 구조에서 추론 시도
+    let action = event.type;
+    if (!action) {
+      // 이벤트 구조에서 타입 추론
+      if (event.action) action = event.action;
+      else if (event.eventType) action = event.eventType;
+      else if (event.name) action = event.name;
+      else {
+        console.warn(`[Recording] 이벤트 ${index}에 type이 없습니다:`, event);
+        action = 'unknown';
+      }
+    }
+    
     const step = {
-      action: event.type, // 'click', 'type', 'navigate', 'wait', 'assert' 등
+      action: action, // 'click', 'type', 'navigate', 'wait', 'assert' 등
       target: null,
       value: event.value || null,
       description: null
@@ -681,6 +699,8 @@ async function processRecordingData(recordingData) {
       
       // Selector 우선순위: id > css > xpath > text > name
       let targetSelector = null;
+      
+      // 1. selectors 객체에서 추출
       if (selectors.id) {
         targetSelector = `#${selectors.id.replace(/^#/, '')}`;
       } else if (selectors.css) {
@@ -688,18 +708,31 @@ async function processRecordingData(recordingData) {
       } else if (selectors.xpath) {
         targetSelector = selectors.xpath;
       } else if (selectors.text) {
-        targetSelector = selectors.text;
+        targetSelector = `text:"${selectors.text}"`;
       } else if (selectors.name) {
         targetSelector = `[name="${selectors.name}"]`;
-      } else if (event.target.id) {
-        targetSelector = `#${event.target.id}`;
-      } else if (event.target.className) {
-        const classes = event.target.className.split(/\s+/).filter(c => c).join('.');
-        if (classes) {
-          targetSelector = `.${classes}`;
+      } else if (selectors.dataTestId) {
+        targetSelector = `[data-testid="${selectors.dataTestId}"]`;
+      }
+      
+      // 2. target 객체에서 직접 추출
+      if (!targetSelector) {
+        if (event.target.id) {
+          targetSelector = `#${event.target.id}`;
+        } else if (event.target.className) {
+          const classes = event.target.className.split(/\s+/).filter(c => c).join('.');
+          if (classes) {
+            targetSelector = `.${classes}`;
+          }
+        } else if (event.target.tagName) {
+          targetSelector = event.target.tagName.toLowerCase();
+        } else if (event.target.text) {
+          targetSelector = `text:"${event.target.text}"`;
+        } else if (event.target.selector) {
+          targetSelector = event.target.selector;
+        } else if (event.target.xpath) {
+          targetSelector = event.target.xpath;
         }
-      } else if (event.target.tagName) {
-        targetSelector = event.target.tagName.toLowerCase();
       }
       
       step.target = targetSelector;
@@ -709,9 +742,35 @@ async function processRecordingData(recordingData) {
       if (event.target.tagName) targetInfo.push(`tag:${event.target.tagName}`);
       if (event.target.id) targetInfo.push(`id:${event.target.id}`);
       if (event.target.text) targetInfo.push(`text:"${event.target.text.substring(0, 50)}"`);
+      if (event.target.className) targetInfo.push(`class:${event.target.className}`);
       if (targetInfo.length > 0) {
         step.description = targetInfo.join(', ');
       }
+      
+      // target이 여전히 null이면 경고 및 상세 디버깅
+      if (!step.target) {
+        console.warn(`[Recording] ⚠️ 이벤트 ${index} (${step.action})의 target을 추출할 수 없습니다.`);
+        console.warn(`[Recording] 이벤트 전체 구조:`, JSON.stringify(event, null, 2));
+        console.warn(`[Recording] target 객체:`, event.target);
+        console.warn(`[Recording] selectors 객체:`, selectors);
+      }
+    } else if (event.selector) {
+      // target이 없지만 selector가 직접 있는 경우
+      step.target = event.selector;
+      console.log(`[Recording] selector에서 target 추출: ${step.target}`);
+    } else if (event.xpath) {
+      // xpath가 직접 있는 경우
+      step.target = event.xpath;
+      console.log(`[Recording] xpath에서 target 추출: ${step.target}`);
+    } else if (action === 'navigate') {
+      // navigate의 경우 target이 없을 수 있음 (value가 URL)
+      step.target = event.value || event.url || null;
+    } else if (event.selector) {
+      // target이 없지만 selector가 직접 있는 경우
+      step.target = event.selector;
+    } else if (event.xpath) {
+      // xpath가 직접 있는 경우
+      step.target = event.xpath;
     }
 
     // navigate 이벤트의 경우 target을 URL로 설정
@@ -753,6 +812,15 @@ async function processRecordingData(recordingData) {
     return step;
   });
 
+  // 디버깅: 변환된 steps 확인
+  console.log('[Recording] 변환된 Steps (총 ' + steps.length + '개):');
+  steps.forEach((step, index) => {
+    console.log(`  ${index + 1}. action: ${step.action}, target: ${step.target || '(없음)'}, value: ${step.value || '(없음)'}`);
+    if (!step.action || !step.target) {
+      console.warn(`    ⚠️ Step ${index + 1}에 필수 필드가 누락되었습니다!`);
+    }
+  });
+
   // 2. TC 업데이트 (steps 저장)
   const tcUpdateData = {
     steps: JSON.stringify(steps)
@@ -765,6 +833,23 @@ async function processRecordingData(recordingData) {
 
   if (!tcUpdateResult) {
     throw new Error('TC 업데이트 실패');
+  }
+  
+  // 저장된 데이터 확인
+  const savedTC = DbService.get('SELECT steps FROM test_cases WHERE id = ?', [tcId]);
+  if (savedTC && savedTC.steps) {
+    try {
+      const savedSteps = JSON.parse(savedTC.steps);
+      console.log('[Recording] ✅ 저장된 Steps 확인 (총 ' + savedSteps.length + '개):');
+      savedSteps.forEach((step, index) => {
+        const hasAction = !!step.action;
+        const hasTarget = !!step.target;
+        const status = (hasAction && hasTarget) ? '✅' : '⚠️';
+        console.log(`  ${status} ${index + 1}. action: ${step.action || '(없음)'}, target: ${step.target || '(없음)'}`);
+      });
+    } catch (e) {
+      console.error('[Recording] 저장된 Steps 파싱 오류:', e.message);
+    }
   }
 
   // 3. 코드가 있으면 스크립트 생성/업데이트

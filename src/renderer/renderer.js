@@ -1734,6 +1734,21 @@ function createTreeItem(item, level) {
 // ============================================================================
 
 function selectTC(tc) {
+  // steps 파싱 (JSON 문자열인 경우)
+  if (tc && tc.steps && typeof tc.steps === 'string') {
+    try {
+      tc.steps = JSON.parse(tc.steps);
+    } catch (e) {
+      console.warn('Steps 파싱 실패:', e);
+      tc.steps = null;
+    }
+  }
+  
+  // steps가 배열이 아닌 경우 빈 배열로 설정
+  if (tc && tc.steps && !Array.isArray(tc.steps)) {
+    tc.steps = null;
+  }
+  
   currentTC = tc;
 
   // 모든 선택 해제
@@ -1754,6 +1769,11 @@ function selectTC(tc) {
     loadScripts(tc.id);
   } else if (activeTab === 'result') {
     loadResultDetail(tc.id);
+  }
+
+  // 키워드 뷰 업데이트 (스크립트 탭의 키워드 뷰)
+  if (activeTab === 'script') {
+    updateKeywordView();
   }
 
   // 버튼 활성화

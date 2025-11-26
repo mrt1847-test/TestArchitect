@@ -27,6 +27,7 @@ const bodyParser = require('body-parser');
 const { spawn } = require('child_process');
 const os = require('os');
 const fs = require('fs');
+const WebSocket = require('ws');
 const config = require('./config/config');
 const PytestService = require('./services/pytestService');
 const ScriptManager = require('./services/scriptManager');
@@ -41,6 +42,12 @@ let mainWindow;
 
 /** @type {http.Server} 녹화 데이터 수신용 HTTP 서버 */
 let recordingServer = null;
+
+/** @type {WebSocket.Server} Extension 통신용 WebSocket 서버 */
+let recordingWebSocketServer = null;
+
+/** @type {Set<WebSocket>} 연결된 Extension 클라이언트 */
+const extensionClients = new Set();
 
 /**
  * 녹화 데이터 수신용 HTTP 서버 시작
@@ -67,6 +74,12 @@ function startRecordingServer() {
         tcId: recordingData.tcId,
         eventsCount: recordingData.events?.length || 0
       });
+      
+      // 디버깅: events 데이터 구조 확인
+      if (recordingData.events && recordingData.events.length > 0) {
+        console.log('📋 첫 번째 이벤트 샘플:', JSON.stringify(recordingData.events[0], null, 2));
+        console.log('📋 이벤트 타입들:', recordingData.events.map(e => e.type || '(type 없음)'));
+      }
 
       // 녹화 데이터를 메인 프로세스로 전달
       if (mainWindow && mainWindow.webContents) {
@@ -143,19 +156,225 @@ function startRecordingServer() {
           </div>
         </div>
         <script>
-          // 크롬 확장 프로그램이 이 페이지를 감지하도록 메시지 전송
-          window.postMessage({
-            type: 'TESTARCHITECT_RECORDING_START',
-            tcId: '${tcId}',
-            projectId: '${projectId}',
-            sessionId: '${sessionId}'
-          }, '*');
-          
-          console.log('TestArchitect 녹화 시작:', {
-            tcId: '${tcId}',
-            projectId: '${projectId}',
-            sessionId: '${sessionId}'
-          });
+          // 크롬 확장 프로그램에 팝업 열기 메시지 전송
+          (function() {
+            const params = {
+              type: 'OPEN_POPUP',
+              tcId: '${tcId}',
+              projectId: '${projectId}',
+              sessionId: '${sessionId}',
+              source: 'testarchitect',
+              timestamp: Date.now()
+            };
+            
+            let attemptCount = 0;
+            const maxAttempts = 8;
+            let messageReceived = false;
+            let ws = null;
+            let wsConnected = false;
+            
+            // WebSocket 연결 (Extension Background와 직접 통신)
+            function connectWebSocket() {
+              try {
+                const wsUrl = 'ws://localhost:3000';
+                ws = new WebSocket(wsUrl);
+                
+                ws.onopen = () => {
+                  wsConnected = true;
+                  console.log('[TestArchitect] ✅ WebSocket 연결 성공');
+                  
+                  // Extension에 팝업 열기 요청 전송
+                  sendWebSocketMessage({
+                    type: 'OPEN_POPUP',
+                    tcId: params.tcId,
+                    projectId: params.projectId,
+                    sessionId: params.sessionId
+                  });
+                };
+                
+                ws.onmessage = (event) => {
+                  try {
+                    const data = JSON.parse(event.data);
+                    console.log('[TestArchitect] 📨 WebSocket 메시지 수신:', data);
+                    
+                    if (data.type === 'popup_opened' || data.type === 'OPEN_POPUP_RESPONSE') {
+                      messageReceived = true;
+                      const p = document.querySelector('p');
+                      if (p) {
+                        p.textContent = '✅ 팝업 열기 요청이 확장 프로그램에 전달되었습니다!';
+                        p.style.color = '#4ade80';
+                      }
+                    }
+                  } catch (error) {
+                    console.error('[TestArchitect] WebSocket 메시지 파싱 오류:', error);
+                  }
+                };
+                
+                ws.onerror = (error) => {
+                  console.warn('[TestArchitect] ⚠️ WebSocket 연결 오류:', error);
+                  wsConnected = false;
+                };
+                
+                ws.onclose = () => {
+                  console.log('[TestArchitect] WebSocket 연결 종료');
+                  wsConnected = false;
+                };
+              } catch (error) {
+                console.error('[TestArchitect] WebSocket 생성 오류:', error);
+              }
+            }
+            
+            function sendWebSocketMessage(message) {
+              if (ws && wsConnected && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(message));
+                console.log('[TestArchitect] 📤 WebSocket 메시지 전송:', message);
+              }
+            }
+            
+            // 확장 프로그램으로부터 응답을 받는 리스너 (Content Script용)
+            window.addEventListener('message', function(event) {
+              // 보안: 같은 윈도우에서 온 메시지만 처리
+              if (event.source !== window) return;
+              
+              // 확장 프로그램으로부터의 응답 확인
+              if (event.data && event.data.type === 'OPEN_POPUP_RESPONSE' && event.data.source === 'testarchitect-extension') {
+                messageReceived = true;
+                console.log('[TestArchitect] ✅ 확장 프로그램으로부터 응답 수신:', event.data);
+                
+                const p = document.querySelector('p');
+                if (p) {
+                  if (event.data.success) {
+                    p.textContent = '✅ 팝업 열기 요청이 확장 프로그램에 전달되었습니다!';
+                    p.style.color = '#4ade80';
+                  } else {
+                    p.textContent = '⚠️ 확장 프로그램 응답: ' + (event.data.error || '알 수 없는 오류');
+                    p.style.color = '#fbbf24';
+                  }
+                }
+              }
+            });
+            
+            function sendMessage() {
+              if (attemptCount >= maxAttempts) {
+                if (!messageReceived) {
+                  console.warn('[TestArchitect] ⚠️ 메시지 전송 최대 시도 횟수 도달 - 확장 프로그램이 응답하지 않음');
+                  
+                  // URL 파라미터를 전역 변수로도 노출 (확장 프로그램이 읽을 수 있도록)
+                  window.testArchitectParams = params;
+                  
+                  const p = document.querySelector('p');
+                  if (p) {
+                    p.innerHTML = '❌ 확장 프로그램이 메시지에 응답하지 않습니다.<br><br>' +
+                      '💡 <strong>확인 사항:</strong><br>' +
+                      '1. 확장 프로그램이 설치되어 있고 활성화되어 있는지<br>' +
+                      '2. 확장 프로그램의 Background Script가 WebSocket에 연결되어 있는지<br>' +
+                      '3. 현재 URL: <code>' + window.location.href + '</code><br>' +
+                      '4. WebSocket 연결 상태: ' + (wsConnected ? '✅ 연결됨' : '❌ 연결 안 됨');
+                    p.style.color = '#ef4444';
+                    p.style.textAlign = 'left';
+                    p.style.fontSize = '0.9em';
+                  }
+                }
+                return;
+              }
+              
+              try {
+                // 방법 1: WebSocket (우선순위 높음)
+                if (wsConnected) {
+                  sendWebSocketMessage({
+                    type: 'OPEN_POPUP',
+                    tcId: params.tcId,
+                    projectId: params.projectId,
+                    sessionId: params.sessionId
+                  });
+                }
+                
+                // 방법 2: window.postMessage (Content Script용)
+                window.postMessage(params, '*');
+                
+                // 방법 3: 커스텀 이벤트
+                const customEvent = new CustomEvent('testarchitect-open-popup', {
+                  detail: params,
+                  bubbles: true,
+                  cancelable: true
+                });
+                document.dispatchEvent(customEvent);
+                window.dispatchEvent(customEvent);
+                
+                // 방법 4: 전역 변수 노출
+                window.testArchitectParams = params;
+                
+                attemptCount++;
+                console.log('[TestArchitect] 📤 팝업 열기 메시지 전송 (시도 ' + attemptCount + '/' + maxAttempts + '):', {
+                  type: params.type,
+                  tcId: params.tcId,
+                  projectId: params.projectId,
+                  sessionId: params.sessionId,
+                  websocket: wsConnected ? '✅' : '❌'
+                });
+                
+                // 메시지 전송 확인을 위한 피드백
+                const p = document.querySelector('p');
+                if (p && !messageReceived) {
+                  const methods = [];
+                  if (wsConnected) methods.push('WebSocket');
+                  methods.push('postMessage', 'CustomEvent', '전역변수');
+                  p.textContent = '📤 확장 프로그램에 팝업 열기 요청 전송 중... (시도: ' + attemptCount + '/' + maxAttempts + ')\\n💡 사용 방법: ' + methods.join(', ');
+                  p.style.whiteSpace = 'pre-line';
+                }
+                
+                // 다음 재시도 스케줄링 (점진적으로 간격 증가)
+                if (attemptCount < maxAttempts && !messageReceived) {
+                  const delays = [0, 200, 500, 1000, 1500, 2000, 3000, 5000];
+                  const delay = delays[attemptCount] || 5000;
+                  setTimeout(() => sendMessage(), delay);
+                }
+              } catch (error) {
+                console.error('[TestArchitect] ❌ 메시지 전송 오류:', error);
+              }
+            }
+            
+            // 페이지 로드 완료 후 메시지 전송 시작
+            function init() {
+              console.log('[TestArchitect] 🚀 페이지 초기화 시작');
+              console.log('[TestArchitect] 📋 파라미터:', params);
+              
+              // WebSocket 연결 시도 (Extension Background와 직접 통신)
+              connectWebSocket();
+              
+              // 기존 방식도 함께 시도
+              setTimeout(() => sendMessage(), 200);
+            }
+            
+            if (document.readyState === 'loading') {
+              document.addEventListener('DOMContentLoaded', () => {
+                console.log('[TestArchitect] 📄 DOMContentLoaded 이벤트 발생');
+                setTimeout(init, 100);
+              });
+            } else {
+              console.log('[TestArchitect] 📄 DOM 이미 로드됨');
+              setTimeout(init, 100);
+            }
+            
+            // window.load 이벤트에서도 한 번 더 시도
+            window.addEventListener('load', () => {
+              console.log('[TestArchitect] ✅ window.load 이벤트 발생');
+              if (!messageReceived && !wsConnected) {
+                // WebSocket 재연결 시도
+                connectWebSocket();
+              }
+              if (!messageReceived) {
+                setTimeout(() => sendMessage(), 300);
+              }
+            });
+            
+            // 페이지 언로드 시 WebSocket 정리
+            window.addEventListener('beforeunload', () => {
+              if (ws) {
+                ws.close();
+              }
+            });
+          })();
         </script>
       </body>
       </html>
@@ -186,25 +405,250 @@ function startRecordingServer() {
     }
   });
 
+  // Extension 팝업 열기 요청 엔드포인트
+  recordingApp.post('/api/extension/open-popup', (req, res) => {
+    try {
+      const { tcId, projectId, sessionId } = req.body;
+      
+      if (!tcId || !projectId) {
+        return res.status(400).json({
+          success: false,
+          error: 'tcId와 projectId가 필요합니다'
+        });
+      }
+      
+      console.log('📤 Extension 팝업 열기 요청:', { tcId, projectId, sessionId });
+      
+      // Extension에 WebSocket으로 메시지 전송
+      broadcastToExtensions({
+        type: 'OPEN_POPUP',
+        tcId: tcId,
+        projectId: projectId,
+        sessionId: sessionId || `session-${Date.now()}`,
+        timestamp: Date.now()
+      });
+      
+      res.json({
+        success: true,
+        message: 'Extension에 팝업 열기 요청을 전송했습니다',
+        tcId,
+        projectId,
+        sessionId
+      });
+    } catch (error) {
+      console.error('❌ Extension 팝업 열기 요청 오류:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message || '팝업 열기 요청 처리 중 오류가 발생했습니다'
+      });
+    }
+  });
+
   // Health check
   recordingApp.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+    res.json({ 
+      status: 'ok', 
+      timestamp: new Date().toISOString(),
+      server: {
+        port: PORT,
+        running: recordingServer !== null && recordingServer.listening
+      },
+      websocket: {
+        enabled: recordingWebSocketServer !== null,
+        clients: extensionClients.size,
+        url: `ws://localhost:${PORT}`
+      }
+    });
+  });
+  
+  // 서버 상태 확인 (Extension용)
+  recordingApp.get('/api/server-status', (req, res) => {
+    res.json({
+      running: recordingServer !== null && recordingServer.listening,
+      port: PORT,
+      websocket: {
+        enabled: recordingWebSocketServer !== null,
+        clients: extensionClients.size,
+        url: `ws://localhost:${PORT}`
+      },
+      timestamp: Date.now()
+    });
   });
 
   const PORT = 3000;
   recordingServer = http.createServer(recordingApp);
   
+  // WebSocket 서버 생성 (Extension Background와 통신)
+  recordingWebSocketServer = new WebSocket.Server({ server: recordingServer });
+  
+  // Extension 클라이언트 연결 관리
+  recordingWebSocketServer.on('connection', (ws, req) => {
+    const clientIp = req.socket.remoteAddress;
+    console.log(`🔌 Extension WebSocket 클라이언트 연결: ${clientIp}`);
+    extensionClients.add(ws);
+    
+    // 연결 확인 메시지 전송
+    ws.send(JSON.stringify({
+      type: 'connected',
+      message: 'TestArchitect 서버에 연결되었습니다',
+      timestamp: Date.now()
+    }));
+    
+    // 메시지 수신 처리
+    ws.on('message', (message) => {
+      try {
+        const data = JSON.parse(message.toString());
+        handleExtensionMessage(ws, data);
+      } catch (error) {
+        console.error('[Extension] 메시지 파싱 오류:', error.message);
+        console.error('[Extension] 원본 메시지:', message.toString().substring(0, 200));
+        ws.send(JSON.stringify({
+          type: 'error',
+          message: '메시지 파싱 실패',
+          error: error.message
+        }));
+      }
+    });
+    
+    // 연결 종료 처리
+    ws.on('close', () => {
+      console.log(`🔌 Extension WebSocket 클라이언트 연결 해제: ${clientIp}`);
+      extensionClients.delete(ws);
+    });
+    
+    // 에러 처리
+    ws.on('error', (error) => {
+      console.error('❌ Extension WebSocket 오류:', error);
+      extensionClients.delete(ws);
+    });
+  });
+  
   recordingServer.listen(PORT, () => {
-    console.log(`✅ 녹화 데이터 수신 서버 시작: http://localhost:${PORT}`);
+    console.log(`[Server] 녹화 데이터 수신 서버 시작: http://localhost:${PORT}`);
+    console.log(`[Server] Extension WebSocket 서버 시작: ws://localhost:${PORT}`);
+    console.log(`[Server] 서버 준비 완료 - Extension 연결 대기 중...`);
   });
 
   recordingServer.on('error', (error) => {
     if (error.code === 'EADDRINUSE') {
-      console.warn(`⚠️ 포트 ${PORT}가 이미 사용 중입니다. 녹화 서버를 시작할 수 없습니다.`);
+      console.warn(`[Server] 포트 ${PORT}가 이미 사용 중입니다. 녹화 서버를 시작할 수 없습니다.`);
+      console.warn(`[Server] 다른 프로세스가 포트 ${PORT}를 사용 중일 수 있습니다.`);
     } else {
-      console.error('❌ 녹화 서버 오류:', error);
+      console.error('[Server] 녹화 서버 오류:', error);
     }
   });
+  
+  // 서버 시작 확인용 Promise 반환 (선택사항)
+  return new Promise((resolve, reject) => {
+    recordingServer.on('listening', () => {
+      console.log(`[Server] 서버가 포트 ${PORT}에서 리스닝 중입니다.`);
+      resolve(recordingServer);
+    });
+    
+    recordingServer.on('error', (error) => {
+      if (error.code === 'EADDRINUSE') {
+        reject(new Error(`포트 ${PORT}가 이미 사용 중입니다.`));
+      } else {
+        reject(error);
+      }
+    });
+  });
+}
+
+/**
+ * Extension으로부터 받은 메시지 처리
+ * @param {WebSocket} ws - WebSocket 연결
+ * @param {Object} data - 메시지 데이터
+ */
+function handleExtensionMessage(ws, data) {
+  const messageType = data.type || 'unknown';
+  console.log('[Extension] 메시지 수신:', messageType);
+  
+  // 디버깅: 전체 메시지 로그 (개발 모드)
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[Extension] 전체 메시지:', JSON.stringify(data, null, 2));
+  }
+  
+  switch (messageType) {
+    case 'ping':
+      // 연결 확인
+      ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
+      break;
+      
+    case 'register':
+      // Extension 등록 (Background Script)
+      console.log('[Extension] 등록:', data.extensionId || 'unknown');
+      ws.extensionId = data.extensionId;
+      ws.send(JSON.stringify({
+        type: 'registered',
+        success: true,
+        message: 'Extension registered'
+      }));
+      break;
+      
+    case 'popup_opened':
+      // 팝업이 열렸다는 알림
+      console.log('[Extension] 팝업 열림:', {
+        tcId: data.tcId,
+        projectId: data.projectId,
+        sessionId: data.sessionId
+      });
+      if (mainWindow && mainWindow.webContents) {
+        mainWindow.webContents.send('extension-popup-opened', data);
+      }
+      break;
+      
+    case 'recording_status':
+      // 녹화 상태 업데이트
+      console.log('[Extension] 녹화 상태:', data.status);
+      if (mainWindow && mainWindow.webContents) {
+        mainWindow.webContents.send('extension-recording-status', data);
+      }
+      break;
+      
+    case 'ERROR':
+    case 'error':
+      // 에러 메시지 처리
+      console.error('[Extension] 에러 메시지:', data.message || data.error || 'Unknown error');
+      if (data.details) {
+        console.error('[Extension] 에러 상세:', data.details);
+      }
+      break;
+      
+    default:
+      console.warn('[Extension] 알 수 없는 메시지 타입:', messageType);
+      console.warn('[Extension] 전체 메시지:', JSON.stringify(data, null, 2));
+      ws.send(JSON.stringify({
+        type: 'error',
+        message: 'Unknown message type',
+        receivedType: messageType
+      }));
+  }
+}
+
+/**
+ * Extension에 메시지 브로드캐스트
+ * @param {Object} message - 전송할 메시지
+ */
+function broadcastToExtensions(message) {
+  const messageStr = JSON.stringify(message);
+  let sentCount = 0;
+  
+  extensionClients.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(messageStr);
+        sentCount++;
+      } catch (error) {
+        console.error('❌ Extension 메시지 전송 실패:', error);
+        extensionClients.delete(ws);
+      }
+    }
+  });
+  
+  if (sentCount > 0) {
+    console.log(`📤 Extension에 메시지 브로드캐스트: ${sentCount}개 클라이언트`);
+  }
 }
 
 /**
@@ -221,31 +665,89 @@ async function processRecordingData(recordingData) {
     throw new Error('필수 데이터가 누락되었습니다 (tcId, events)');
   }
 
-  // 1. 이벤트를 TC 스텝으로 변환
+  // 1. 이벤트를 TC 스텝으로 변환 (키워드 형식)
   const steps = events.map(event => {
+    // 키워드 형식으로 변환: { action, target, value, description }
     const step = {
-      action: event.type,
-      target: event.target ? {
-        tagName: event.target.tagName,
-        id: event.target.id,
-        className: event.target.className,
-        selectors: event.target.selectors || {}
-      } : null,
+      action: event.type, // 'click', 'type', 'navigate', 'wait', 'assert' 등
+      target: null,
       value: event.value || null,
-      url: event.url || null,
-      timestamp: event.timestamp || null
+      description: null
     };
+
+    // Target 추출 및 정규화
+    if (event.target) {
+      const selectors = event.target.selectors || {};
+      
+      // Selector 우선순위: id > css > xpath > text > name
+      let targetSelector = null;
+      if (selectors.id) {
+        targetSelector = `#${selectors.id.replace(/^#/, '')}`;
+      } else if (selectors.css) {
+        targetSelector = selectors.css;
+      } else if (selectors.xpath) {
+        targetSelector = selectors.xpath;
+      } else if (selectors.text) {
+        targetSelector = selectors.text;
+      } else if (selectors.name) {
+        targetSelector = `[name="${selectors.name}"]`;
+      } else if (event.target.id) {
+        targetSelector = `#${event.target.id}`;
+      } else if (event.target.className) {
+        const classes = event.target.className.split(/\s+/).filter(c => c).join('.');
+        if (classes) {
+          targetSelector = `.${classes}`;
+        }
+      } else if (event.target.tagName) {
+        targetSelector = event.target.tagName.toLowerCase();
+      }
+      
+      step.target = targetSelector;
+      
+      // Description 생성 (디버깅용)
+      const targetInfo = [];
+      if (event.target.tagName) targetInfo.push(`tag:${event.target.tagName}`);
+      if (event.target.id) targetInfo.push(`id:${event.target.id}`);
+      if (event.target.text) targetInfo.push(`text:"${event.target.text.substring(0, 50)}"`);
+      if (targetInfo.length > 0) {
+        step.description = targetInfo.join(', ');
+      }
+    }
+
+    // navigate 이벤트의 경우 target을 URL로 설정
+    if (event.type === 'navigate' && event.value) {
+      step.target = event.value;
+      step.value = null;
+    }
 
     // wait 이벤트의 경우 조건 추가
     if (event.type === 'wait') {
       step.condition = event.condition || 'visible';
       step.timeout = event.timeout || 5000;
+      if (!step.target && event.target) {
+        // wait의 경우 target이 selector여야 함
+        const selectors = event.target.selectors || {};
+        step.target = selectors.css || selectors.xpath || selectors.id || null;
+      }
     }
 
     // assert 이벤트의 경우 검증 정보 추가
     if (event.type === 'assert') {
       step.assertion = event.assertion || 'text';
       step.expected = event.expected || null;
+      if (!step.target && event.target) {
+        const selectors = event.target.selectors || {};
+        step.target = selectors.css || selectors.xpath || selectors.id || null;
+      }
+    }
+
+    // URL 정보는 description에 추가 (선택사항)
+    if (event.url && event.url !== step.target) {
+      if (step.description) {
+        step.description += ` | url:${event.url}`;
+      } else {
+        step.description = `url:${event.url}`;
+      }
     }
 
     return step;
@@ -425,12 +927,26 @@ app.on('before-quit', () => {
   globalShortcut.unregisterAll();
   
   // 녹화 서버 종료
-  if (recordingServer) {
-    recordingServer.close(() => {
-      console.log('✅ 녹화 서버 종료');
-    });
-    recordingServer = null;
-  }
+    if (recordingServer) {
+      // WebSocket 서버 종료
+      if (recordingWebSocketServer) {
+        extensionClients.forEach((ws) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.close();
+          }
+        });
+        extensionClients.clear();
+        recordingWebSocketServer.close(() => {
+          console.log('✅ Extension WebSocket 서버 종료');
+        });
+        recordingWebSocketServer = null;
+      }
+      
+      recordingServer.close(() => {
+        console.log('✅ 녹화 서버 종료');
+      });
+      recordingServer = null;
+    }
   
   try {
     // 실행 결과 정리 (최근 100개만 보관)

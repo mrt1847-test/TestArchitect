@@ -297,3 +297,10 @@ sendRecordingData(recordingData);
 4. **셀렉터 우선순위**: ID > CSS > XPath > 텍스트 순으로 우선순위 적용
 5. **에러 처리**: 네트워크 오류나 서버 오류 시 재시도 로직 구현 권장
 
+
+
+
+
+
+
+

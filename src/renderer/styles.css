@@ -1,5 +1,5 @@
 /* ============================================================================
-   기본 스타일
+   VS Code 스타일 다크 테마
    ============================================================================ */
 
 * {
@@ -8,129 +8,256 @@
     box-sizing: border-box;
 }
 
+:root {
+    /* VS Code 다크 테마 색상 */
+    --vscode-bg: #1e1e1e;
+    --vscode-sidebar: #252526;
+    --vscode-activity-bar: #2d2d30;
+    --vscode-title-bar: #3c3c3c;
+    --vscode-tab-bg: #1e1e1e;
+    --vscode-tab-active: #2d2d30;
+    --vscode-tab-border: #007acc;
+    --vscode-border: #3e3e42;
+    --vscode-text: #cccccc;
+    --vscode-text-secondary: #858585;
+    --vscode-hover: #2a2d2e;
+    --vscode-selection: #264f78;
+    --vscode-primary: #007acc;
+    --vscode-primary-hover: #1a8cd8;
+    --vscode-input-bg: #3c3c3c;
+    --vscode-input-border: #454545;
+}
+
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-    background: #f5f5f5;
+    font-family: 'Segoe UI', 'SF Pro Display', -apple-system, BlinkMacSystemFont, Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    background: var(--vscode-bg);
+    color: var(--vscode-text);
     overflow: hidden;
+    font-size: 13px;
 }
 
 .app-container {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     height: 100vh;
-    background: white;
+    background: var(--vscode-bg);
+    overflow: hidden;
+}
+
+/* Activity Bar는 왼쪽에 고정 */
+.activity-bar {
+    flex-shrink: 0;
+}
+
+/* 오른쪽 영역 (Title Bar + 메인 콘텐츠) */
+.right-section {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-height: 0;
+}
+
+/* Title Bar는 오른쪽 영역 상단에 */
+.title-bar {
+    flex-shrink: 0;
+}
+
+/* 메인 콘텐츠는 Title Bar 아래 */
+.main-content-wrapper {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 300px 1fr;
+    gap: 0;
+    overflow: hidden;
+    min-height: 0;
+    border-top: 1px solid var(--vscode-border);
+}
+
+
+/* ============================================================================
+   Activity Bar (VS Code 스타일)
+   ============================================================================ */
+
+.activity-bar {
+    width: 48px;
+    background: var(--vscode-activity-bar);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 8px 0;
+    border-right: 1px solid var(--vscode-border);
+    flex-shrink: 0;
+}
+
+.activity-bar-item {
+    width: 48px;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--vscode-text-secondary);
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+}
+
+.activity-bar-item:hover {
+    color: var(--vscode-text);
+    background: var(--vscode-hover);
+}
+
+.activity-bar-item.active {
+    color: var(--vscode-text);
+}
+
+.activity-bar-item.active::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: var(--vscode-primary);
+}
+
+.activity-bar-item svg {
+    width: 20px;
+    height: 20px;
 }
 
 /* ============================================================================
-   헤더
+   Title Bar (VS Code 스타일)
    ============================================================================ */
 
-.app-header {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-    padding: 0;
+.title-bar {
+    height: 35px;
+    background: var(--vscode-title-bar);
+    border-bottom: 1px solid var(--vscode-border);
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
     flex-shrink: 0;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    width: 100%;
 }
 
-.header-top {
-    padding: 15px 25px;
-}
-
-.app-header h1 {
-    font-size: 1.5em;
-    margin-bottom: 3px;
-    font-weight: 700;
-}
-
-.subtitle {
-    font-size: 0.85em;
-    opacity: 0.9;
-}
-
-/* 상단 툴바 (Katalon 스타일) */
-.toolbar {
-    background: rgba(255, 255, 255, 0.1);
-    padding: 10px 25px;
+.title-bar-content {
     display: flex;
+    align-items: center;
     justify-content: space-between;
-    align-items: center;
-    gap: 15px;
-    border-top: 1px solid rgba(255, 255, 255, 0.2);
+    width: 100%;
 }
 
-.toolbar-group {
+.app-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--vscode-text);
+    margin-right: 16px;
+}
+
+.title-bar-actions {
     display: flex;
-    gap: 10px;
     align-items: center;
+    gap: 8px;
 }
 
-.search-input {
-    padding: 6px 12px;
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    border-radius: 4px;
-    background: rgba(255, 255, 255, 0.2);
-    color: white;
-    font-size: 0.9em;
-    width: 200px;
-}
-
-.search-input::placeholder {
-    color: rgba(255, 255, 255, 0.7);
-}
-
-/* 헤더 툴바의 select (흰색 텍스트) */
-.toolbar .select-sm {
-    padding: 6px 10px;
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    border-radius: 4px;
-    background: rgba(255, 255, 255, 0.2);
-    color: white;
-    font-size: 0.9em;
+.title-bar-select {
+    padding: 4px 8px;
+    background: var(--vscode-input-bg);
+    border: 1px solid var(--vscode-input-border);
+    border-radius: 3px;
+    color: var(--vscode-text);
+    font-size: 12px;
     cursor: pointer;
 }
 
-/* 헤더 툴바의 드롭다운 옵션 (배경이 흰색이므로 검은색 텍스트) */
-.toolbar .select-sm option {
-    background: white;
-    color: #333;
-    padding: 8px;
+.title-bar-select:hover {
+    background: var(--vscode-hover);
 }
 
-.toolbar .select-sm:hover {
-    background: rgba(255, 255, 255, 0.3);
+.title-bar-select:focus {
+    outline: 1px solid var(--vscode-primary);
+    outline-offset: -1px;
 }
 
-.toolbar .select-sm:focus {
-    outline: 2px solid rgba(255, 255, 255, 0.5);
-    outline-offset: 2px;
+.title-bar-select option {
+    background: var(--vscode-input-bg);
+    color: var(--vscode-text);
 }
 
-/* 일반 영역의 select-sm (검은색 텍스트) */
+.title-bar-btn {
+    padding: 4px 12px;
+    background: var(--vscode-primary);
+    border: none;
+    border-radius: 3px;
+    color: white;
+    font-size: 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.title-bar-btn:hover {
+    background: var(--vscode-primary-hover);
+}
+
+.title-bar-btn-secondary {
+    background: var(--vscode-input-bg);
+    color: var(--vscode-text);
+    border: 1px solid var(--vscode-input-border);
+    padding: 4px 8px;
+    font-size: 14px;
+}
+
+.title-bar-btn-secondary:hover {
+    background: var(--vscode-hover);
+    border-color: var(--vscode-primary);
+}
+
+.title-bar-search {
+    padding: 4px 8px;
+    background: var(--vscode-input-bg);
+    border: 1px solid var(--vscode-input-border);
+    border-radius: 3px;
+    color: var(--vscode-text);
+    font-size: 12px;
+    width: 200px;
+}
+
+.title-bar-search::placeholder {
+    color: var(--vscode-text-secondary);
+}
+
+.title-bar-search:focus {
+    outline: 1px solid var(--vscode-primary);
+    outline-offset: -1px;
+}
+
+/* 일반 영역의 select-sm (VS Code 스타일) */
 .select-sm {
-    padding: 6px 10px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    background: white;
-    color: #333;
-    font-size: 0.9em;
+    padding: 4px 8px;
+    border: 1px solid var(--vscode-input-border);
+    border-radius: 3px;
+    background: var(--vscode-input-bg);
+    color: var(--vscode-text);
+    font-size: 12px;
     cursor: pointer;
 }
 
 .select-sm option {
-    background: white;
-    color: #333;
+    background: var(--vscode-input-bg);
+    color: var(--vscode-text);
     padding: 8px;
 }
 
 .select-sm:hover {
-    border-color: #667eea;
+    background: var(--vscode-hover);
 }
 
 .select-sm:focus {
-    outline: 2px solid #667eea;
-    outline-offset: 2px;
-    border-color: #667eea;
+    outline: 1px solid var(--vscode-primary);
+    outline-offset: -1px;
 }
 
 .btn-sm {
@@ -142,67 +269,66 @@ body {
    메인 컨텐츠 레이아웃
    ============================================================================ */
 
-.main-content {
-    flex: 1;
-    display: grid;
-    grid-template-columns: 300px 1fr 400px;
-    gap: 1px;
-    background: #e0e0e0;
-    overflow: hidden;
-    min-height: 0;
-}
-
-.app-container {
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-    background: white;
-    overflow: hidden;
-}
 
 /* ============================================================================
-   좌측 사이드바 (TC 트리 - 고정)
+   좌측 사이드바 (TC 트리 - 고정, VS Code 스타일)
    ============================================================================ */
 
 .sidebar {
-    background: white;
+    background: var(--vscode-sidebar);
     display: flex;
     flex-direction: column;
     overflow: hidden;
     width: 300px;
     flex-shrink: 0;
+    border-right: 1px solid var(--vscode-border);
 }
 
 .project-selector {
-    padding: 15px;
-    border-bottom: 1px solid #e0e0e0;
+    padding: 8px;
+    border-bottom: 1px solid var(--vscode-border);
     display: flex;
     gap: 8px;
     align-items: center;
     flex-shrink: 0;
 }
 
-.project-selector label {
-    font-weight: 600;
-    font-size: 0.9em;
-    white-space: nowrap;
-}
-
 .project-selector select {
     flex: 1;
-    padding: 8px 12px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    font-size: 14px;
-    background: white;
-    color: #333;
+    padding: 6px 8px;
+    border: 1px solid var(--vscode-input-border);
+    border-radius: 3px;
+    font-size: 12px;
+    background: var(--vscode-input-bg);
+    color: var(--vscode-text);
     cursor: pointer;
 }
 
+.project-selector select:hover {
+    background: var(--vscode-hover);
+}
+
+.project-selector select:focus {
+    outline: 1px solid var(--vscode-primary);
+    outline-offset: -1px;
+}
+
 .project-selector select option {
-    background: white;
-    color: #333;
+    background: var(--vscode-input-bg);
+    color: var(--vscode-text);
     padding: 8px;
+}
+
+.project-selector .btn-icon {
+    color: var(--vscode-text-secondary);
+    padding: 4px;
+    min-width: 24px;
+    min-height: 24px;
+}
+
+.project-selector .btn-icon:hover {
+    color: var(--vscode-text);
+    background: var(--vscode-hover);
 }
 
 .tc-tree-container {
@@ -214,19 +340,21 @@ body {
 }
 
 .tree-header {
-    padding: 12px 15px;
-    border-bottom: 1px solid #e0e0e0;
+    padding: 8px;
+    border-bottom: 1px solid var(--vscode-border);
     display: flex;
     justify-content: space-between;
     align-items: center;
-    background: #f8f9fa;
+    background: transparent;
     flex-shrink: 0;
 }
 
-.tree-header h3 {
-    font-size: 0.95em;
+.tree-header h4 {
+    font-size: 11px;
     font-weight: 600;
-    color: #333;
+    color: var(--vscode-text);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
 }
 
 .tree-actions {
@@ -237,29 +365,29 @@ body {
 .tc-tree {
     flex: 1;
     overflow-y: auto;
-    padding: 8px;
+    padding: 4px;
 }
 
 .tree-placeholder {
-    color: #999;
+    color: var(--vscode-text-secondary);
     text-align: center;
-    padding: 40px 20px;
+    padding: 20px;
     font-style: italic;
-    font-size: 0.9em;
+    font-size: 12px;
 }
 
 .tree-footer {
-    padding: 15px;
-    border-top: 1px solid #e0e0e0;
-    background: #f8f9fa;
+    padding: 8px;
+    border-top: 1px solid var(--vscode-border);
+    background: transparent;
     flex-shrink: 0;
 }
 
 .selected-count {
-    font-size: 0.9em;
-    color: #666;
+    font-size: 11px;
+    color: var(--vscode-text-secondary);
     font-weight: 600;
-    margin-bottom: 10px;
+    margin-bottom: 8px;
 }
 
 .btn-block {
@@ -273,26 +401,26 @@ body {
     flex-direction: column;
 }
 
-/* TestRail 스타일 TC 트리 아이템 */
+/* TC 트리 아이템 (VS Code 스타일, 체크박스 유지) */
 .tc-tree-item {
-    padding: 6px 8px;
-    margin: 2px 0;
-    border-radius: 4px;
+    padding: 4px 8px;
+    margin: 1px 0;
+    border-radius: 3px;
     cursor: pointer;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     user-select: none;
-    transition: background 0.2s;
+    transition: background 0.15s;
+    font-size: 13px;
 }
 
 .tc-tree-item:hover {
-    background: #f0f0f0;
+    background: var(--vscode-hover);
 }
 
 .tc-tree-item.selected {
-    background: #e3f2fd;
-    border-left: 3px solid #2196f3;
+    background: var(--vscode-selection);
 }
 
 .tc-tree-item.folder {
@@ -300,7 +428,15 @@ body {
 }
 
 .tc-tree-item.test-case {
-    padding-left: 24px;
+    padding-left: 20px;
+}
+
+.tc-tree-item input[type="checkbox"] {
+    margin-right: 4px;
+    cursor: pointer;
+    width: 14px;
+    height: 14px;
+    accent-color: var(--vscode-primary);
 }
 
 /* 트리 자식 컨테이너 */
@@ -342,28 +478,28 @@ body {
 }
 
 .tree-expand-icon {
-    font-size: 0.85em;
-    color: #666;
+    font-size: 12px;
+    color: var(--vscode-text-secondary);
     user-select: none;
-    transition: color 0.2s;
-    display: inline-block;
     width: 16px;
     text-align: center;
+    cursor: pointer;
 }
 
 .tree-expand-icon:hover {
-    color: #2196f3;
+    color: var(--vscode-text);
 }
 
 .tc-tree-item-icon {
-    font-size: 1em;
-    width: 18px;
+    font-size: 14px;
+    width: 16px;
     text-align: center;
 }
 
 .tc-tree-item-name {
     flex: 1;
-    font-size: 0.9em;
+    font-size: 13px;
+    color: var(--vscode-text);
 }
 
 .tc-tree-item-status {
@@ -420,7 +556,7 @@ body {
     50% { opacity: 0.6; }
 }
 
-/* 프로젝트 탐색기 (Katalon 스타일) */
+/* 프로젝트 탐색기 (VS Code 스타일) */
 .project-explorer {
     flex: 1;
     overflow-y: auto;
@@ -428,47 +564,50 @@ body {
 }
 
 .explorer-section {
-    border-bottom: 1px solid #e0e0e0;
+    border-bottom: 1px solid var(--vscode-border);
 }
 
 .section-header {
-    padding: 10px 15px;
-    background: #f8f9fa;
+    padding: 6px 8px;
+    background: transparent;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     cursor: pointer;
     user-select: none;
-    transition: background 0.2s;
+    transition: background 0.15s;
 }
 
 .section-header:hover {
-    background: #f0f0f0;
+    background: var(--vscode-hover);
 }
 
 .section-icon {
-    font-size: 1em;
+    font-size: 14px;
 }
 
 .section-title {
     flex: 1;
     font-weight: 600;
-    font-size: 0.9em;
-    color: #333;
+    font-size: 11px;
+    color: var(--vscode-text);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
 }
 
 .section-toggle {
     background: none;
     border: none;
     cursor: pointer;
-    font-size: 0.8em;
-    color: #666;
+    font-size: 10px;
+    color: var(--vscode-text-secondary);
     padding: 0;
-    width: 20px;
+    width: 16px;
+    transition: transform 0.2s;
 }
 
 .section-content {
-    max-height: 500px;
+    max-height: 1000px;
     overflow-y: auto;
     transition: max-height 0.3s;
 }
@@ -479,84 +618,85 @@ body {
 }
 
 .profile-list {
-    padding: 8px;
+    padding: 4px;
 }
 
 .profile-item {
-    padding: 8px 12px;
+    padding: 6px 8px;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     cursor: pointer;
-    border-radius: 4px;
-    transition: background 0.2s;
+    border-radius: 3px;
+    transition: background 0.15s;
 }
 
 .profile-item:hover {
-    background: #f0f0f0;
+    background: var(--vscode-hover);
 }
 
 .profile-item.active {
-    background: #e3f2fd;
-    border-left: 3px solid #2196f3;
+    background: var(--vscode-selection);
 }
 
 .profile-icon {
-    font-size: 1em;
+    font-size: 14px;
 }
 
 .profile-name {
-    font-size: 0.9em;
-    color: #333;
+    font-size: 13px;
+    color: var(--vscode-text);
 }
 
 /* ============================================================================
-   중앙 영역 (탭 기반)
+   중앙 영역 (탭 기반, VS Code 스타일)
    ============================================================================ */
 
 .content-area {
-    background: white;
+    background: var(--vscode-bg);
     display: flex;
     flex-direction: column;
     overflow: hidden;
 }
 
-/* 탭 헤더 */
+/* 탭 헤더 (VS Code 스타일) */
 .tabs-header {
     display: flex;
-    background: #f8f9fa;
-    border-bottom: 1px solid #e0e0e0;
+    background: var(--vscode-tab-bg);
+    border-bottom: 1px solid var(--vscode-border);
     flex-shrink: 0;
+    height: 35px;
 }
 
 .tab-btn {
-    padding: 12px 20px;
+    padding: 0 16px;
     border: none;
     background: transparent;
     cursor: pointer;
     display: flex;
     align-items: center;
-    gap: 8px;
-    font-size: 0.9em;
-    font-weight: 600;
-    color: #666;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 400;
+    color: var(--vscode-text-secondary);
     border-bottom: 2px solid transparent;
-    transition: all 0.2s;
+    transition: all 0.15s;
+    height: 100%;
 }
 
 .tab-btn:hover {
-    background: #f0f0f0;
-    color: #333;
+    background: var(--vscode-hover);
+    color: var(--vscode-text);
 }
 
 .tab-btn.active {
-    color: #667eea;
-    border-bottom-color: #667eea;
-    background: white;
+    color: var(--vscode-text);
+    background: var(--vscode-tab-active);
+    border-bottom-color: var(--vscode-primary);
 }
 
 .tab-icon {
-    font-size: 1.1em;
+    font-size: 14px;
 }
 
 /* 탭 컨텐츠 */
@@ -580,9 +720,10 @@ body {
 
 .tab-content-body {
     flex: 1;
-    padding: 20px;
+    padding: 16px;
     overflow-y: auto;
     min-height: 0;
+    background: var(--vscode-bg);
 }
 
 /* 스크립트 탭은 패딩 제거 */
@@ -591,19 +732,19 @@ body {
 }
 
 .panel-header {
-    padding: 12px 20px;
-    border-bottom: 1px solid #e0e0e0;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--vscode-border);
     display: flex;
     justify-content: space-between;
     align-items: center;
-    background: #f8f9fa;
+    background: var(--vscode-tab-active);
     flex-shrink: 0;
 }
 
 .panel-header h3 {
-    font-size: 0.95em;
+    font-size: 13px;
     font-weight: 600;
-    color: #333;
+    color: var(--vscode-text);
 }
 
 .header-actions {
@@ -613,10 +754,11 @@ body {
 }
 
 .placeholder {
-    color: #999;
+    color: var(--vscode-text-secondary);
     text-align: center;
     padding: 40px 20px;
     font-style: italic;
+    font-size: 13px;
 }
 
 /* ============================================================================
@@ -740,7 +882,7 @@ body {
 .code-editor-wrapper {
     flex: 1;
     overflow: hidden;
-    border: 1px solid #ddd;
+    border: 1px solid var(--vscode-border);
     min-height: 400px;
     position: relative;
 }
@@ -749,7 +891,18 @@ body {
     height: 100%;
     min-height: 400px;
     font-size: 14px;
-    font-family: 'Courier New', monospace;
+    font-family: 'Consolas', 'Courier New', monospace;
+    background: var(--vscode-bg);
+    color: var(--vscode-text);
+}
+
+.code-editor-wrapper .CodeMirror-gutters {
+    background: var(--vscode-sidebar);
+    border-right: 1px solid var(--vscode-border);
+}
+
+.code-editor-wrapper .CodeMirror-linenumber {
+    color: var(--vscode-text-secondary);
 }
 
 .code-editor-wrapper .CodeMirror-scroll {
@@ -874,28 +1027,29 @@ body {
 .script-view-toggle {
     display: flex;
     gap: 0;
-    border: 1px solid #ddd;
-    border-radius: 4px;
+    border: 1px solid var(--vscode-input-border);
+    border-radius: 3px;
     overflow: hidden;
 }
 
 .view-btn {
-    padding: 6px 12px;
+    padding: 4px 12px;
     border: none;
-    background: #f8f9fa;
+    background: var(--vscode-input-bg);
     cursor: pointer;
-    font-size: 0.9em;
-    font-weight: 600;
-    color: #666;
-    transition: all 0.2s;
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--vscode-text-secondary);
+    transition: all 0.15s;
 }
 
 .view-btn:hover {
-    background: #e9ecef;
+    background: var(--vscode-hover);
+    color: var(--vscode-text);
 }
 
 .view-btn.active {
-    background: #667eea;
+    background: var(--vscode-primary);
     color: white;
 }
 
@@ -910,49 +1064,58 @@ body {
 .keyword-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.9em;
+    font-size: 13px;
 }
 
 .keyword-table thead {
-    background: #f8f9fa;
+    background: var(--vscode-tab-active);
     position: sticky;
     top: 0;
     z-index: 10;
 }
 
 .keyword-table th {
-    padding: 10px;
+    padding: 8px;
     text-align: left;
     font-weight: 600;
-    color: #333;
-    border-bottom: 2px solid #ddd;
+    color: var(--vscode-text);
+    border-bottom: 1px solid var(--vscode-border);
 }
 
 .keyword-table td {
-    padding: 8px 10px;
-    border-bottom: 1px solid #e0e0e0;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--vscode-border);
+    color: var(--vscode-text);
 }
 
 .keyword-table tbody tr {
-    transition: background 0.2s;
+    transition: background 0.15s;
 }
 
 .keyword-table tbody tr:hover {
-    background: #f8f9fa;
+    background: var(--vscode-hover);
 }
 
 .keyword-table tbody tr.editing {
-    background: #fff3cd;
+    background: rgba(220, 220, 170, 0.2);
 }
 
 .keyword-table input,
 .keyword-table textarea {
     width: 100%;
     padding: 4px 8px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    font-size: 0.9em;
+    border: 1px solid var(--vscode-input-border);
+    border-radius: 3px;
+    font-size: 12px;
     font-family: inherit;
+    background: var(--vscode-input-bg);
+    color: var(--vscode-text);
+}
+
+.keyword-table input:focus,
+.keyword-table textarea:focus {
+    outline: 1px solid var(--vscode-primary);
+    outline-offset: -1px;
 }
 
 .keyword-table textarea {
@@ -961,9 +1124,9 @@ body {
 }
 
 .keyword-actions {
-    padding: 10px;
-    border-top: 1px solid #e0e0e0;
-    background: #f8f9fa;
+    padding: 8px;
+    border-top: 1px solid var(--vscode-border);
+    background: var(--vscode-tab-active);
 }
 
 .btn-sm {
@@ -1043,18 +1206,27 @@ body {
 }
 
 .select-small {
-    padding: 6px 10px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    font-size: 0.9em;
-    background: white;
-    color: #333;
+    padding: 4px 8px;
+    border: 1px solid var(--vscode-input-border);
+    border-radius: 3px;
+    font-size: 12px;
+    background: var(--vscode-input-bg);
+    color: var(--vscode-text);
     cursor: pointer;
 }
 
+.select-small:hover {
+    background: var(--vscode-hover);
+}
+
+.select-small:focus {
+    outline: 1px solid var(--vscode-primary);
+    outline-offset: -1px;
+}
+
 .select-small option {
-    background: white;
-    color: #333;
+    background: var(--vscode-input-bg);
+    color: var(--vscode-text);
     padding: 8px;
 }
 
@@ -1088,80 +1260,79 @@ body {
 }
 
 .results-summary {
-    padding: 15px;
-    background: #f8f9fa;
-    border-bottom: 1px solid #e0e0e0;
+    padding: 12px;
+    background: transparent;
+    border-bottom: 1px solid var(--vscode-border);
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 10px;
+    gap: 8px;
     flex-shrink: 0;
 }
 
 .summary-item {
-    padding: 10px;
-    background: white;
-    border-radius: 4px;
+    padding: 8px;
+    background: var(--vscode-input-bg);
+    border-radius: 3px;
     text-align: center;
+    border-left: 3px solid var(--vscode-border);
 }
 
 .summary-item.passed {
-    border-left: 3px solid #28a745;
+    border-left-color: #4ec9b0;
 }
 
 .summary-item.failed {
-    border-left: 3px solid #dc3545;
+    border-left-color: #f48771;
 }
 
 .summary-item.error {
-    border-left: 3px solid #ffc107;
+    border-left-color: #dcdcaa;
 }
 
 .summary-label {
     display: block;
-    font-size: 0.85em;
-    color: #666;
-    margin-bottom: 5px;
+    font-size: 11px;
+    color: var(--vscode-text-secondary);
+    margin-bottom: 4px;
 }
 
 .summary-value {
     display: block;
-    font-size: 1.5em;
-    font-weight: 700;
-    color: #333;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--vscode-text);
 }
 
 .results-list {
     flex: 1;
     overflow-y: auto;
-    padding: 15px;
+    padding: 8px;
 }
 
 .result-item {
-    padding: 12px;
-    margin-bottom: 10px;
-    border-radius: 6px;
-    border-left: 4px solid #ddd;
+    padding: 8px;
+    margin-bottom: 6px;
+    border-radius: 3px;
+    border-left: 3px solid var(--vscode-border);
     cursor: pointer;
-    transition: transform 0.2s;
+    transition: background 0.15s;
+    background: var(--vscode-input-bg);
 }
 
 .result-item:hover {
-    transform: translateX(-2px);
+    background: var(--vscode-hover);
 }
 
 .result-item.passed {
-    background: #d4edda;
-    border-left-color: #28a745;
+    border-left-color: #4ec9b0;
 }
 
 .result-item.failed {
-    background: #f8d7da;
-    border-left-color: #dc3545;
+    border-left-color: #f48771;
 }
 
 .result-item.error {
-    background: #fff3cd;
-    border-left-color: #ffc107;
+    border-left-color: #dcdcaa;
 }
 
 .result-header {
@@ -1173,8 +1344,8 @@ body {
 
 .result-name {
     font-weight: 600;
-    color: #333;
-    font-size: 0.95em;
+    color: var(--vscode-text);
+    font-size: 13px;
 }
 
 .result-status {
@@ -1216,31 +1387,31 @@ body {
 }
 
 .btn-primary {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: var(--vscode-primary);
     color: white;
 }
 
 .btn-primary:hover:not(:disabled) {
-    transform: translateY(-1px);
-    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+    background: var(--vscode-primary-hover);
 }
 
 .btn-secondary {
-    background: #6c757d;
-    color: white;
+    background: var(--vscode-input-bg);
+    color: var(--vscode-text);
+    border: 1px solid var(--vscode-input-border);
 }
 
 .btn-secondary:hover:not(:disabled) {
-    background: #5a6268;
+    background: var(--vscode-hover);
 }
 
 .btn-danger {
-    background: #dc3545;
+    background: #c72525;
     color: white;
 }
 
 .btn-danger:hover:not(:disabled) {
-    background: #c82333;
+    background: #d32f2f;
 }
 
 .btn:disabled {
@@ -1252,154 +1423,273 @@ body {
     background: none;
     border: none;
     cursor: pointer;
-    font-size: 1.1em;
+    font-size: 14px;
     padding: 4px;
-    transition: all 0.2s;
+    transition: all 0.15s;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    border-radius: 4px;
+    border-radius: 3px;
+    color: var(--vscode-text-secondary);
 }
 
 .btn-icon:hover {
-    transform: scale(1.1);
-    background: rgba(0, 0, 0, 0.05);
+    color: var(--vscode-text);
+    background: var(--vscode-hover);
 }
 
-/* 프로젝트 선택 영역의 버튼 */
-.project-selector .btn-icon {
-    color: #667eea;
-    font-size: 1.2em;
-    padding: 6px;
-    min-width: 28px;
-    min-height: 28px;
-    z-index: 10;
-    position: relative;
-}
+/* ============================================================================
+   로그 오버레이 패널 (VS Code 스타일)
+   ============================================================================ */
 
-.project-selector .btn-icon:hover {
-    background: rgba(102, 126, 234, 0.1);
-    color: #764ba2;
-}
-
-.project-selector .btn-icon:active {
-    transform: scale(0.95);
-}
-
-/* 하단 패널 (Katalon 스타일) */
-.bottom-panel {
-    background: white;
-    border-top: 1px solid #e0e0e0;
+.log-overlay {
+    position: fixed;
+    bottom: 0;
+    left: 48px; /* Activity Bar 너비 */
+    right: 0;
+    height: 0;
+    background: var(--vscode-sidebar);
+    border-top: 1px solid var(--vscode-border);
     display: flex;
     flex-direction: column;
-    max-height: 300px;
-    transition: max-height 0.3s;
-    flex-shrink: 0;
+    z-index: 1000;
+    transition: height 0.3s ease-out;
+    box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
+    overflow: hidden;
 }
 
-.bottom-panel.collapsed {
-    max-height: 40px;
+.log-overlay.show {
+    height: 400px; /* 기본 높이 */
 }
 
-.panel-tabs {
+.log-overlay-header {
     display: flex;
-    background: #f8f9fa;
-    border-bottom: 1px solid #e0e0e0;
-    padding: 0;
-}
-
-.panel-tab {
-    padding: 8px 16px;
-    border: none;
-    background: transparent;
-    cursor: pointer;
-    font-size: 0.85em;
-    font-weight: 600;
-    color: #666;
-    border-bottom: 2px solid transparent;
-    transition: all 0.2s;
-}
-
-.panel-tab:hover {
-    background: #f0f0f0;
-    color: #333;
-}
-
-.panel-tab.active {
-    color: #667eea;
-    border-bottom-color: #667eea;
-    background: white;
-}
-
-.panel-toggle {
-    margin-left: auto;
+    align-items: center;
+    justify-content: space-between;
     padding: 8px 12px;
-    border: none;
-    background: transparent;
-    cursor: pointer;
-    font-size: 0.9em;
-    color: #666;
+    background: var(--vscode-tab-active);
+    border-bottom: 1px solid var(--vscode-border);
+    flex-shrink: 0;
+    height: 35px;
 }
 
-.panel-content {
+.log-overlay-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--vscode-text);
+}
+
+.log-icon {
+    font-size: 14px;
+}
+
+.log-overlay-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.log-overlay-btn {
+    background: none;
+    border: none;
+    color: var(--vscode-text-secondary);
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 3px;
+    font-size: 14px;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.log-overlay-btn:hover {
+    background: var(--vscode-hover);
+    color: var(--vscode-text);
+}
+
+.log-overlay-content {
     flex: 1;
     overflow: hidden;
-    position: relative;
+    display: flex;
+    flex-direction: column;
 }
 
-.panel-tab-content {
-    display: none;
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
+.log-content {
+    flex: 1;
     overflow-y: auto;
-    padding: 10px 15px;
-    font-family: 'Courier New', monospace;
-    font-size: 0.85em;
-}
-
-.panel-tab-content.active {
-    display: block;
-}
-
-.log-content, .result-content, .console-content, .error-content {
+    padding: 8px 12px;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 12px;
     white-space: pre-wrap;
     word-wrap: break-word;
 }
 
 .log-entry {
-    padding: 4px 0;
-    border-bottom: 1px solid #f0f0f0;
+    padding: 2px 0;
+    border-bottom: 1px solid var(--vscode-border);
+    line-height: 1.5;
 }
 
 .log-entry.info {
-    color: #333;
+    color: var(--vscode-text);
 }
 
 .log-entry.success {
-    color: #28a745;
+    color: #4ec9b0;
 }
 
 .log-entry.warning {
-    color: #ffc107;
+    color: #dcdcaa;
 }
 
 .log-entry.error {
-    color: #dc3545;
+    color: #f48771;
     font-weight: 600;
 }
 
-/* 컨텍스트 메뉴 */
+/* ============================================================================
+   실행 결과 오버레이 패널 (VS Code 스타일)
+   ============================================================================ */
+
+.results-overlay {
+    position: fixed;
+    bottom: 0;
+    left: 48px; /* Activity Bar 너비 */
+    right: 0;
+    height: 0;
+    background: var(--vscode-sidebar);
+    border-top: 1px solid var(--vscode-border);
+    display: flex;
+    flex-direction: column;
+    z-index: 1001; /* 로그 오버레이보다 위에 */
+    transition: height 0.3s ease-out;
+    box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
+    overflow: hidden;
+}
+
+.results-overlay.show {
+    height: 500px !important; /* 기본 높이 (로그보다 조금 더 크게) */
+    display: flex !important; /* 강제로 flex 표시 */
+}
+
+.results-overlay-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: var(--vscode-tab-active);
+    border-bottom: 1px solid var(--vscode-border);
+    flex-shrink: 0;
+    min-height: 35px;
+}
+
+.results-overlay-title {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--vscode-text);
+    flex: 1;
+}
+
+.results-icon {
+    font-size: 14px;
+}
+
+.results-summary-inline {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-left: auto;
+    margin-right: 16px;
+}
+
+.summary-item-inline {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    padding: 4px 8px;
+    background: var(--vscode-input-bg);
+    border-radius: 3px;
+    border-left: 3px solid var(--vscode-border);
+}
+
+.summary-item-inline.passed {
+    border-left-color: #4ec9b0;
+}
+
+.summary-item-inline.failed {
+    border-left-color: #f48771;
+}
+
+.summary-item-inline.error {
+    border-left-color: #dcdcaa;
+}
+
+.summary-label {
+    color: var(--vscode-text-secondary);
+    font-weight: 500;
+}
+
+.summary-value {
+    color: var(--vscode-text);
+    font-weight: 600;
+}
+
+.results-overlay-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.results-overlay-btn {
+    background: none;
+    border: none;
+    color: var(--vscode-text-secondary);
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 3px;
+    font-size: 14px;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.results-overlay-btn:hover {
+    background: var(--vscode-hover);
+    color: var(--vscode-text);
+}
+
+.results-overlay-content {
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.results-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 12px;
+    font-size: 12px;
+}
+
+/* 컨텍스트 메뉴 (VS Code 스타일) */
 .context-menu {
     position: fixed;
-    background: white;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    background: var(--vscode-sidebar);
+    border: 1px solid var(--vscode-border);
+    border-radius: 3px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
     padding: 4px 0;
-    min-width: 150px;
+    min-width: 180px;
     z-index: 1000;
     display: none;
 }
@@ -1409,27 +1699,27 @@ body {
 }
 
 .context-menu-item {
-    padding: 8px 16px;
+    padding: 6px 20px;
     cursor: pointer;
-    font-size: 0.9em;
-    color: #333;
-    transition: background 0.2s;
+    font-size: 13px;
+    color: var(--vscode-text);
+    transition: background 0.15s;
 }
 
 .context-menu-item:hover {
-    background: #f0f0f0;
+    background: var(--vscode-hover);
 }
 
 .context-menu-divider {
     height: 1px;
-    background: #e0e0e0;
+    background: var(--vscode-border);
     margin: 4px 0;
 }
 
 /* 실행 중 표시 */
 .tc-tree-item.running {
-    background: #fff3cd;
-    border-left: 3px solid #ffc107;
+    background: rgba(220, 220, 170, 0.2);
+    border-left: 3px solid #dcdcaa;
 }
 
 .tc-tree-item.running .tc-tree-item-icon::after {
@@ -1445,7 +1735,7 @@ body {
 .progress-bar {
     width: 100%;
     height: 4px;
-    background: #e0e0e0;
+    background: var(--vscode-border);
     border-radius: 2px;
     overflow: hidden;
     margin-top: 5px;
@@ -1453,7 +1743,7 @@ body {
 
 .progress-bar-fill {
     height: 100%;
-    background: linear-gradient(90deg, #667eea, #764ba2);
+    background: var(--vscode-primary);
     transition: width 0.3s;
     animation: progress 1s ease-in-out infinite;
 }
@@ -1569,19 +1859,20 @@ body {
 .form-input,
 .form-textarea,
 .form-select {
-  padding: 10px;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  font-size: 0.95em;
+  padding: 6px 8px;
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 3px;
+  font-size: 13px;
   font-family: inherit;
+  background: var(--vscode-input-bg);
+  color: var(--vscode-text);
 }
 
 .form-input:focus,
 .form-textarea:focus,
 .form-select:focus {
-  outline: none;
-  border-color: #667eea;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+  outline: 1px solid var(--vscode-primary);
+  outline-offset: -1px;
 }
 
 .form-textarea {

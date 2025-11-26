@@ -12,45 +12,72 @@
 </head>
 <body>
     <div class="app-container">
-        <!-- 헤더 + 상단 툴바 (Katalon 스타일) -->
-        <header class="app-header">
-            <div class="header-top">
-                <h1>TestArchitect</h1>
-                <p class="subtitle">테스트 자동화 통합 플랫폼</p>
+        <!-- VS Code 스타일 Activity Bar (왼쪽 아이콘 바) -->
+        <div class="activity-bar">
+            <div class="activity-bar-item active" data-view="explorer" title="테스트케이스">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M2 1h12v14H2V1zm1 1v12h10V2H3zm1 1h8v1H4V3zm0 2h8v1H4V5zm0 2h8v1H4V7zm0 2h5v1H4V9z"/>
+                </svg>
             </div>
-            <div class="toolbar">
-                <div class="toolbar-group">
-                    <button id="run-current-btn" class="btn btn-primary btn-sm" title="현재 TC 실행">
-                        <span class="btn-icon">▶️</span>
-                        실행
-                    </button>
-                    <select id="profile-select" class="select-sm" title="프로파일">
-                        <option value="">프로파일</option>
-                        <option value="dev">Dev</option>
-                        <option value="test">Test</option>
-                        <option value="prod">Prod</option>
-                    </select>
-                    <select id="browser-select" class="select-sm" title="브라우저">
-                        <option value="chrome">Chrome</option>
-                        <option value="edge">Edge</option>
-                        <option value="webkit">WebKit</option>
-                    </select>
-                </div>
-                <div class="toolbar-group">
-                    <input type="text" id="search-input" class="search-input" placeholder="🔍 TC 검색...">
-                    <button id="filter-btn" class="btn-icon" title="필터">🔽</button>
-                    <button id="settings-btn" class="btn-icon" title="설정">⚙️</button>
-                </div>
+            <div class="activity-bar-item" data-view="search" title="검색">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/>
+                </svg>
             </div>
-        </header>
+            <div class="activity-bar-item" data-view="results" title="결과">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0zM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0zm4.879-2.773 4.264 2.559a.25.25 0 0 1 0 .428l-4.264 2.559A.25.25 0 0 1 6 10.559V5.442a.25.25 0 0 1 .379-.215z"/>
+                </svg>
+            </div>
+            <div class="activity-bar-item" data-view="log" title="로그">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M3 2.5a.5.5 0 0 1 .5-.5h9a.5.5 0 0 1 .5.5v11a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5v-11zm1 .5v10h8V3H4z"/>
+                    <path d="M5 5.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5zm0 2a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5zm0 2a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 0 1h-3a.5.5 0 0 1-.5-.5z"/>
+                </svg>
+            </div>
+            <div class="activity-bar-item" data-view="settings" title="설정">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492zM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0z"/>
+                    <path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.434-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52l-.094-.319zm-2.633.283c.246-.835 1.428-.835 1.674 0l.094.319a1.873 1.873 0 0 0 2.693 1.115l.292-.16c.764-.415 1.6.42 1.184 1.185l-.159.292a1.873 1.873 0 0 0 1.116 2.692l.318.094c.835.246.835 1.428 0 1.674l-.319.094a1.873 1.873 0 0 0-1.115 2.693l.16.292c.415.764-.42 1.6-1.185 1.184l-.292-.159a1.873 1.873 0 0 0-2.693 1.116l-.094.318c-.246.835-1.428.835-1.674 0l-.094-.319a1.873 1.873 0 0 0-2.692-1.115l-.292.16c-.764.415-1.6-.42-1.184-1.185l.159-.292A1.873 1.873 0 0 0 1.945 8.93l-.319-.094c-.835-.246-.835-1.428 0-1.674l.319-.094A1.873 1.873 0 0 0 3.06 4.377l-.16-.292c-.415-.764.42-1.6 1.185-1.184l.292.159a1.873 1.873 0 0 0 2.692-1.115l.094-.319z"/>
+                </svg>
+            </div>
+        </div>
 
-        <!-- 메인 컨텐츠 -->
-        <main class="main-content">
-            <!-- 좌측 사이드바: 프로젝트 탐색기 (Katalon 스타일) -->
+        <!-- 오른쪽 영역 (Title Bar + 메인 콘텐츠) -->
+        <div class="right-section">
+            <!-- VS Code 스타일 상단바 (간소화) -->
+            <div class="title-bar">
+                <div class="title-bar-content">
+                    <span class="app-title">TestArchitect</span>
+                    <div class="title-bar-actions">
+                        <select id="profile-select" class="title-bar-select" title="프로파일">
+                            <option value="">프로파일</option>
+                            <option value="dev">Dev</option>
+                            <option value="test">Test</option>
+                            <option value="prod">Prod</option>
+                        </select>
+                        <select id="browser-select" class="title-bar-select" title="브라우저">
+                            <option value="chrome">Chrome</option>
+                            <option value="edge">Edge</option>
+                            <option value="webkit">WebKit</option>
+                        </select>
+                        <button id="run-current-btn" class="title-bar-btn" title="현재 TC 실행">
+                            <span>▶</span> 실행
+                        </button>
+                        <button id="devtools-btn" class="title-bar-btn title-bar-btn-secondary" title="개발자 도구 (F12)">
+                            🔧
+                        </button>
+                        <input type="text" id="search-input" class="title-bar-search" placeholder="🔍 TC 검색...">
+                    </div>
+                </div>
+            </div>
+
+            <!-- 메인 컨텐츠 -->
+            <div class="main-content-wrapper">
+            <!-- 좌측 사이드바: 프로젝트 탐색기 (VS Code 스타일, 테스트케이스 영역 고정) -->
             <aside class="sidebar">
                 <!-- 프로젝트 선택 -->
                 <div class="project-selector">
-                    <label for="project-select">프로젝트:</label>
                     <select id="project-select">
                         <option value="">프로젝트를 선택하세요</option>
                     </select>
@@ -144,14 +171,6 @@
                         <span class="tab-icon">💻</span>
                         스크립트
                     </button>
-                    <button class="tab-btn" data-tab="result">
-                        <span class="tab-icon">📊</span>
-                        결과 상세
-                    </button>
-                    <button class="tab-btn" data-tab="recorder">
-                        <span class="tab-icon">🎬</span>
-                        리코더
-                    </button>
                     <button class="tab-btn" data-tab="page-objects">
                         <span class="tab-icon">📄</span>
                         Page Objects
@@ -166,7 +185,10 @@
                             <h3 id="tc-detail-title">테스트케이스 상세</h3>
                             <div class="header-actions">
                                 <button id="edit-tc-btn" class="btn btn-secondary" disabled>편집</button>
-                                <button id="new-tc-btn" class="btn btn-primary">새 TC</button>
+                                <button id="record-btn" class="btn btn-primary" disabled>
+                                    <span class="btn-icon">🔴</span>
+                                    녹화
+                                </button>
                             </div>
                         </div>
                         <div id="tc-detail-content" class="tab-content-body">
@@ -232,19 +254,6 @@
                         </div>
                     </div>
 
-                    <!-- 테스트 결과 상세 탭 -->
-                    <div class="tab-panel" id="tab-result">
-                        <div class="panel-header">
-                            <h3>테스트 결과 상세</h3>
-                            <div class="header-actions">
-                                <button id="refresh-results-btn" class="btn btn-secondary">새로고침</button>
-                            </div>
-                        </div>
-                        <div id="result-detail-content" class="tab-content-body">
-                            <div class="placeholder">테스트케이스를 선택하세요</div>
-                        </div>
-                    </div>
-
                     <!-- Page Objects 탭 -->
                     <div class="tab-panel" id="tab-page-objects">
                         <div class="panel-header">
@@ -305,123 +314,68 @@
                             </div>
                         </div>
                     </div>
-
-                    <!-- 리코더 탭 -->
-                    <div class="tab-panel" id="tab-recorder">
-                        <div class="panel-header">
-                            <h3>리코더</h3>
-                            <div class="header-actions">
-                                <select id="recorder-browser" class="select-small">
-                                    <option value="chrome">Chrome</option>
-                                    <option value="edge">Edge</option>
-                                    <option value="webkit">WebKit</option>
-                                </select>
-                                <button id="start-recording-btn" class="btn btn-primary">
-                                    <span class="btn-icon">🔴</span>
-                                    녹화 시작
-                                </button>
-                                <button id="stop-recording-btn" class="btn btn-danger" disabled>
-                                    <span class="btn-icon">⏹️</span>
-                                    녹화 중지
-                                </button>
-                            </div>
-                        </div>
-                        <div id="recorder-content" class="tab-content-body">
-                            <div class="recorder-container">
-                                <div class="recorder-info">
-                                    <p>리코더를 사용하여 테스트 시나리오를 녹화하고 TC로 변환할 수 있습니다.</p>
-                                    <ol>
-                                        <li>TC를 선택하거나 새 TC를 생성하세요</li>
-                                        <li>브라우저를 선택하고 "녹화 시작"을 클릭하세요</li>
-                                        <li>브라우저에서 테스트를 수행하세요</li>
-                                        <li>"녹화 중지"를 클릭하여 TC에 저장하세요</li>
-                                    </ol>
-                                </div>
-                                <div id="recorder-viewport" class="recorder-viewport">
-                                    <div class="recorder-placeholder">
-                                        <p>녹화를 시작하면 브라우저가 여기에 표시됩니다</p>
-                                    </div>
-                                </div>
-                                <div id="recorder-events" class="recorder-events">
-                                    <h4>캡처된 이벤트</h4>
-                                    <div id="events-list" class="events-list">
-                                        <div class="placeholder">이벤트가 여기에 표시됩니다</div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
                 </div>
             </section>
 
-            <!-- 우측 패널: 전체 실행 결과 (토글 가능) -->
-            <aside class="results-panel" id="results-panel">
-                <div class="panel-header">
-                    <h3>전체 실행 결과</h3>
-                    <div class="header-actions">
-                        <button id="toggle-results-btn" class="btn-icon" title="패널 접기/펼치기">◀</button>
-                        <button id="export-report-btn" class="btn-icon" title="리포트 내보내기">💾</button>
-                        <button id="clear-results-btn" class="btn-icon" title="결과 지우기">🗑️</button>
-                    </div>
-                </div>
-                <div id="results-container" class="results-container">
-                    <div class="results-summary">
-                        <div class="summary-item">
+            </div>
+        </div>
+
+        <!-- 실행 결과 오버레이 패널 (VS Code 스타일) -->
+        <div id="results-overlay" class="results-overlay">
+            <div class="results-overlay-header">
+                <div class="results-overlay-title">
+                    <span class="results-icon">📊</span>
+                    <span>전체 실행 결과</span>
+                    <div class="results-summary-inline">
+                        <span class="summary-item-inline">
                             <span class="summary-label">전체:</span>
                             <span class="summary-value" id="summary-total">0</span>
-                        </div>
-                        <div class="summary-item passed">
+                        </span>
+                        <span class="summary-item-inline passed">
                             <span class="summary-label">통과:</span>
                             <span class="summary-value" id="summary-passed">0</span>
-                        </div>
-                        <div class="summary-item failed">
+                        </span>
+                        <span class="summary-item-inline failed">
                             <span class="summary-label">실패:</span>
                             <span class="summary-value" id="summary-failed">0</span>
-                        </div>
-                        <div class="summary-item error">
+                        </span>
+                        <span class="summary-item-inline error">
                             <span class="summary-label">에러:</span>
                             <span class="summary-value" id="summary-error">0</span>
-                        </div>
-                    </div>
-                    <div id="results-list" class="results-list">
-                        <div class="placeholder">실행 결과가 여기에 표시됩니다</div>
+                        </span>
                     </div>
                 </div>
-            </aside>
-        </main>
+                <div class="results-overlay-actions">
+                    <button id="export-report-btn" class="results-overlay-btn" title="리포트 내보내기">💾</button>
+                    <button id="clear-results-btn" class="results-overlay-btn" title="결과 지우기">🗑️</button>
+                    <button id="close-results-overlay-btn" class="results-overlay-btn" title="닫기">✕</button>
+                </div>
+            </div>
+            <div class="results-overlay-content">
+                <div id="results-list" class="results-list">
+                    <div class="placeholder">실행 결과가 여기에 표시됩니다</div>
+                </div>
+            </div>
+        </div>
 
-        <!-- 하단 패널 (Katalon 스타일) -->
-        <footer class="bottom-panel" id="bottom-panel">
-            <div class="panel-tabs">
-                <button class="panel-tab active" data-panel="log">로그</button>
-                <button class="panel-tab" data-panel="result">결과</button>
-                <button class="panel-tab" data-panel="console">콘솔</button>
-                <button class="panel-tab" data-panel="error">에러</button>
-                <button id="toggle-bottom-panel" class="panel-toggle">▼</button>
-            </div>
-            <div class="panel-content">
-                <div class="panel-tab-content active" id="panel-log">
-                    <div class="log-content" id="log-content">
-                        <div class="log-entry info">[INFO] 애플리케이션이 시작되었습니다</div>
-                    </div>
+        <!-- 로그 오버레이 패널 (VS Code 스타일) -->
+        <div id="log-overlay" class="log-overlay">
+            <div class="log-overlay-header">
+                <div class="log-overlay-title">
+                    <span class="log-icon">📋</span>
+                    <span>로그</span>
                 </div>
-                <div class="panel-tab-content" id="panel-result">
-                    <div class="result-content" id="result-content">
-                        <div class="placeholder">실행 결과가 여기에 표시됩니다</div>
-                    </div>
-                </div>
-                <div class="panel-tab-content" id="panel-console">
-                    <div class="console-content" id="console-content">
-                        <div class="placeholder">콘솔 출력이 여기에 표시됩니다</div>
-                    </div>
-                </div>
-                <div class="panel-tab-content" id="panel-error">
-                    <div class="error-content" id="error-content">
-                        <div class="placeholder">에러가 없습니다</div>
-                    </div>
+                <div class="log-overlay-actions">
+                    <button id="clear-log-btn" class="log-overlay-btn" title="로그 지우기">🗑️</button>
+                    <button id="close-log-overlay-btn" class="log-overlay-btn" title="닫기">✕</button>
                 </div>
             </div>
-        </footer>
+            <div class="log-overlay-content">
+                <div class="log-content" id="log-content">
+                    <div class="log-entry info">[INFO] 애플리케이션이 시작되었습니다</div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- 컨텍스트 메뉴 -->
@@ -441,6 +395,40 @@
     <script src="lib/codemirror/mode/python/python.js"></script>
     <script src="lib/codemirror/mode/javascript/javascript.js"></script>
     <script src="lib/codemirror/mode/clike/clike.js"></script>
+    
+    <!-- 즉시 실행 테스트 스크립트 -->
+    <script>
+      console.log('=== HTML 스크립트 즉시 실행 ===');
+      console.log('DOM 상태:', document.readyState);
+      console.log('window.electronAPI:', typeof window.electronAPI);
+      console.log('document.body:', document.body ? '존재' : '없음');
+      
+      // DevTools 열기 테스트 (F12 키보드 이벤트)
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'F12' || (e.ctrlKey && e.shiftKey && e.key === 'I')) {
+          e.preventDefault();
+          console.log('DevTools 단축키 감지됨');
+          if (window.electronAPI && window.electronAPI.toggleDevTools) {
+            window.electronAPI.toggleDevTools();
+          }
+        }
+      });
+      
+      // 모든 버튼에 클릭 이벤트 테스트
+      window.addEventListener('load', () => {
+        console.log('=== window.load 이벤트 발생 ===');
+        setTimeout(() => {
+          const buttons = document.querySelectorAll('button');
+          console.log('발견된 버튼 개수:', buttons.length);
+          buttons.forEach((btn, index) => {
+            if (index < 5) {
+              console.log(`버튼 ${index}:`, btn.id || btn.className, btn);
+            }
+          });
+        }, 1000);
+      });
+    </script>
+    
     <script type="module" src="renderer.js"></script>
 </body>
 </html>

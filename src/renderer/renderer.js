@@ -121,6 +121,7 @@ let tcTreeData = null;
 let activeTab = 'detail';
 let isRecording = false;
 let recordedEvents = [];
+let currentRecordingSessionId = null;
 
 // ============================================================================
 // DOM 요소 참조 (지연 초기화 - init 함수 내에서만 사용)
@@ -130,7 +131,7 @@ let recordedEvents = [];
 let projectSelect, newProjectBtn, tcTree, newFolderBtn, newTCTreeBtn;
 let selectedCountSpan, runSelectedBtn;
 let tabButtons, tabPanels;
-let tcDetailContent, editTCBtn, newTCBtn;
+let tcDetailContent, editTCBtn, recordBtn, newTCBtn;
 let scriptContent, createScriptBtn, editScriptBtn, saveScriptBtn;
 let scriptLanguage, scriptFramework, codeEditor;
 let scriptCodeView, scriptKeywordView, viewButtons;
@@ -174,6 +175,7 @@ function initDOMElements() {
   
   tcDetailContent = document.getElementById('tc-detail-content');
   editTCBtn = document.getElementById('edit-tc-btn');
+  recordBtn = document.getElementById('record-btn');
   newTCBtn = document.getElementById('new-tc-btn');
   
   scriptContent = document.getElementById('script-content');
@@ -219,6 +221,10 @@ function initDOMElements() {
   summaryPassed = document.getElementById('summary-passed');
   summaryFailed = document.getElementById('summary-failed');
   summaryError = document.getElementById('summary-error');
+  
+  // 결과 오버레이
+  const resultsOverlay = document.getElementById('results-overlay');
+  const closeResultsOverlayBtn = document.getElementById('close-results-overlay-btn');
   
   runCurrentBtn = document.getElementById('run-current-btn');
   profileSelect = document.getElementById('profile-select');
@@ -447,9 +453,8 @@ function setupEventListeners() {
       }
     });
     console.log('새 TC 버튼 이벤트 리스너 등록 완료');
-  } else {
-    console.error('newTCBtn 요소를 찾을 수 없습니다. HTML을 확인하세요.');
   }
+  // newTCBtn이 없어도 계속 진행 (선택적 기능)
 
   // TC/폴더 편집 버튼
   if (editTCBtn) {
@@ -464,6 +469,63 @@ function setupEventListeners() {
     });
   }
 
+  // 녹화 버튼
+  if (recordBtn) {
+    recordBtn.addEventListener('click', async () => {
+      // 녹화 중이면 중지
+      if (isRecording) {
+        await stopRecording();
+        return;
+      }
+
+      // 녹화 시작
+      if (!currentTC || currentTC.type === 'folder') {
+        showMessageDialog('알림', '테스트케이스를 선택하거나 새 TC를 생성하세요.');
+        return;
+      }
+
+      if (!currentProject) {
+        showMessageDialog('알림', '먼저 프로젝트를 선택하세요.');
+        return;
+      }
+
+      try {
+        const sessionId = `session-${Date.now()}`;
+        const result = await window.electronAPI.openBrowser({
+          browser: 'chrome',
+          tcId: currentTC.id,
+          projectId: currentProject.id,
+          sessionId: sessionId
+        });
+
+        if (result.success) {
+          isRecording = true;
+          currentRecordingSessionId = result.sessionId;
+          addLog('info', `녹화 시작: 브라우저가 열렸습니다. 크롬 확장 프로그램에서 녹화를 시작하세요.`);
+          recordBtn.disabled = false; // 중지 가능하도록 활성화
+          recordBtn.innerHTML = '<span class="btn-icon">⏸️</span> 녹화 중지';
+          
+          // 녹화 데이터 수신 대기
+          window.electronAPI.onRecordingData((data) => {
+            handleRecordingData(data);
+          });
+
+          // 녹화 중지 신호 수신 대기
+          window.electronAPI.onRecordingStop((data) => {
+            handleRecordingStop(data);
+          });
+        } else {
+          showMessageDialog('오류', `브라우저 열기 실패: ${result.error}`);
+        }
+      } catch (error) {
+        console.error('녹화 시작 오류:', error);
+        showMessageDialog('오류', `녹화 시작 실패: ${error.message}`);
+      }
+    });
+    console.log('✅ record-btn 이벤트 리스너 등록 완료');
+  } else {
+    console.error('❌ record-btn 요소를 찾을 수 없습니다.');
+  }
 
   // 실행
   if (runSelectedBtn) {
@@ -478,30 +540,8 @@ function setupEventListeners() {
     console.error('❌ runSelectedBtn 요소를 찾을 수 없습니다.');
   }
 
-  // 리코더
-  if (startRecordingBtn) {
-    startRecordingBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      console.log('startRecordingBtn 클릭됨');
-      startRecording();
-    });
-    console.log('✅ startRecordingBtn 이벤트 리스너 등록 완료');
-  } else {
-    console.error('❌ startRecordingBtn 요소를 찾을 수 없습니다.');
-  }
-
-  if (stopRecordingBtn) {
-    stopRecordingBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      console.log('stopRecordingBtn 클릭됨');
-      stopRecording();
-    });
-    console.log('✅ stopRecordingBtn 이벤트 리스너 등록 완료');
-  } else {
-    console.error('❌ stopRecordingBtn 요소를 찾을 수 없습니다.');
-  }
+  // 기존 리코더 기능 (startRecordingBtn, stopRecordingBtn)은 새로운 record-btn으로 대체됨
+  // HTML에 없으면 무시
 
   // 결과 패널 토글
   if (toggleResultsBtn && resultsPanel) {
@@ -513,9 +553,8 @@ function setupEventListeners() {
       toggleResultsBtn.textContent = resultsPanel.classList.contains('collapsed') ? '▶' : '◀';
     });
     console.log('✅ toggleResultsBtn 이벤트 리스너 등록 완료');
-  } else {
-    console.error('❌ toggleResultsBtn 또는 resultsPanel 요소를 찾을 수 없습니다.');
   }
+  // 결과 패널이 없어도 계속 진행 (선택적 기능)
 
   // 리포트 내보내기
   if (exportReportBtn) {
@@ -571,6 +610,7 @@ function setupEventListeners() {
     console.error('❌ searchInput 요소를 찾을 수 없습니다.');
   }
 
+  // 필터 버튼 (향후 구현 예정)
   if (filterBtn) {
     filterBtn.addEventListener('click', (e) => {
       e.preventDefault();
@@ -579,10 +619,9 @@ function setupEventListeners() {
       alert('필터 기능은 향후 구현 예정입니다.');
     });
     console.log('✅ filterBtn 이벤트 리스너 등록 완료');
-  } else {
-    console.error('❌ filterBtn 요소를 찾을 수 없습니다.');
   }
 
+  // 설정 버튼 (향후 구현 예정)
   if (settingsBtn) {
     settingsBtn.addEventListener('click', (e) => {
       e.preventDefault();
@@ -591,8 +630,6 @@ function setupEventListeners() {
       alert('설정 기능은 향후 구현 예정입니다.');
     });
     console.log('✅ settingsBtn 이벤트 리스너 등록 완료');
-  } else {
-    console.error('❌ settingsBtn 요소를 찾을 수 없습니다.');
   }
 
   // 스크립트 저장
@@ -633,6 +670,23 @@ function setupEventListeners() {
     console.error('❌ createScriptBtn 요소를 찾을 수 없습니다.');
   }
 
+  // 결과 오버레이 닫기 버튼
+  const closeResultsOverlayBtn = document.getElementById('close-results-overlay-btn');
+  if (closeResultsOverlayBtn) {
+    closeResultsOverlayBtn.addEventListener('click', () => {
+      const resultsOverlay = document.getElementById('results-overlay');
+      if (resultsOverlay) {
+        resultsOverlay.classList.remove('show');
+        // activity-bar의 results 항목에서 active 클래스 제거
+        const resultsActivityItem = document.querySelector('.activity-bar-item[data-view="results"]');
+        if (resultsActivityItem) {
+          resultsActivityItem.classList.remove('active');
+        }
+      }
+    });
+    console.log('✅ close-results-overlay-btn 이벤트 리스너 등록 완료');
+  }
+
   // 키워드 추가 버튼
   if (addKeywordBtn && keywordTableBody) {
     addKeywordBtn.addEventListener('click', () => {
@@ -649,6 +703,59 @@ function setupEventListeners() {
   } else {
     console.error('❌ addKeywordBtn 또는 keywordTableBody 요소를 찾을 수 없습니다.');
   }
+
+  // Activity Bar (왼쪽 사이드 메뉴) 클릭 이벤트
+  const activityBarItems = document.querySelectorAll('.activity-bar-item');
+  activityBarItems.forEach(item => {
+    // SVG 내부 요소 클릭도 처리하기 위해 이벤트 위임 사용
+    item.addEventListener('click', (e) => {
+      // SVG 내부 요소(path 등)를 클릭한 경우에도 부모 요소의 이벤트 처리
+      const target = e.target.closest('.activity-bar-item');
+      if (!target) return;
+      
+      e.preventDefault();
+      e.stopPropagation();
+      
+      const view = target.dataset.view;
+      console.log('Activity Bar 클릭:', view);
+      
+      // 모든 activity-bar-item에서 active 클래스 제거
+      activityBarItems.forEach(barItem => barItem.classList.remove('active'));
+      // 클릭한 항목에 active 클래스 추가
+      target.classList.add('active');
+      
+      // view에 따라 처리
+      if (view === 'results') {
+        // 결과 오버레이 표시
+        const resultsOverlay = document.getElementById('results-overlay');
+        if (resultsOverlay) {
+          resultsOverlay.classList.add('show');
+          console.log('✅ 결과 오버레이 표시');
+        } else {
+          console.error('❌ results-overlay 요소를 찾을 수 없습니다.');
+        }
+      } else if (view === 'log') {
+        // 로그 오버레이 표시
+        const logOverlay = document.getElementById('log-overlay');
+        if (logOverlay) {
+          logOverlay.classList.add('show');
+          console.log('✅ 로그 오버레이 표시');
+        } else {
+          console.error('❌ log-overlay 요소를 찾을 수 없습니다.');
+        }
+      } else if (view === 'explorer') {
+        // 탐색기는 기본적으로 표시되어 있음
+        console.log('✅ 탐색기 뷰');
+      } else if (view === 'search') {
+        // 검색 기능 (향후 구현)
+        console.log('✅ 검색 뷰 (향후 구현)');
+      } else if (view === 'settings') {
+        // 설정 기능 (향후 구현)
+        console.log('✅ 설정 뷰 (향후 구현)');
+      }
+    });
+  });
+  console.log('✅ Activity Bar 이벤트 리스너 등록 완료');
 
   console.log('=== setupEventListeners() 완료 ===');
 }
@@ -680,6 +787,11 @@ function setupProjectExplorer() {
 }
 
 function setupBottomPanel() {
+  // 하단 패널이 없으면 건너뛰기
+  if (!toggleBottomPanel || !bottomPanel) {
+    return;
+  }
+
   // 패널 토글
   toggleBottomPanel.addEventListener('click', () => {
     bottomPanel.classList.toggle('collapsed');
@@ -1645,8 +1757,16 @@ function selectTC(tc) {
   }
 
   // 버튼 활성화
-  editTCBtn.disabled = false; // 폴더와 TC 모두 편집 가능
-  createScriptBtn.disabled = tc.type === 'folder';
+  if (editTCBtn) {
+    editTCBtn.disabled = false; // 폴더와 TC 모두 편집 가능
+  }
+  if (createScriptBtn) {
+    createScriptBtn.disabled = tc.type === 'folder';
+  }
+  if (recordBtn) {
+    // 녹화 버튼은 테스트케이스일 때만 활성화
+    recordBtn.disabled = tc.type === 'folder';
+  }
 }
 
 function displayTCDetail(tc) {
@@ -2225,10 +2345,7 @@ ${steps.map(step => {
         } else if (step.action === 'type' || step.action === 'setText') {
           return `    page.fill("${step.target || ''}", "${step.value || ''}")  # ${step.description || ''}`;
         } else if (step.action === 'goto' || step.action === 'open') {
-          const url = step.target || step.value || '';
-          // URL에 프로토콜이 없으면 https:// 추가
-          const normalizedUrl = url && !/^https?:\/\//i.test(url) ? `https://${url}` : url;
-          return `    page.goto("${normalizedUrl}")  # ${step.description || ''}`;
+          return `    page.goto("${step.target || step.value || ''}")  # ${step.description || ''}`;
         } else {
           return `    # ${step.action}: ${step.target || ''} ${step.value || ''}  # ${step.description || ''}`;
         }
@@ -2249,10 +2366,7 @@ ${steps.map(step => {
         } else if (step.action === 'type' || step.action === 'setText') {
           return `        driver.find_element(By.${step.target?.includes('id=') ? 'ID' : 'CSS_SELECTOR'}, "${step.target || ''}").send_keys("${step.value || ''}")  # ${step.description || ''}`;
         } else if (step.action === 'goto' || step.action === 'open') {
-          const url = step.target || step.value || '';
-          // URL에 프로토콜이 없으면 https:// 추가
-          const normalizedUrl = url && !/^https?:\/\//i.test(url) ? `https://${url}` : url;
-          return `        driver.get("${normalizedUrl}")  # ${step.description || ''}`;
+          return `        driver.get("${step.target || step.value || ''}")  # ${step.description || ''}`;
         } else {
           return `        # ${step.action}: ${step.target || ''} ${step.value || ''}  # ${step.description || ''}`;
         }
@@ -2321,29 +2435,7 @@ async function startRecording() {
   }
 }
 
-async function stopRecording() {
-  try {
-    const result = await window.electronAPI.stopRecording();
-    
-    if (result.success && result.events) {
-      recordedEvents = result.events;
-      isRecording = false;
-      startRecordingBtn.disabled = false;
-      stopRecordingBtn.disabled = true;
-      
-      // 이벤트 목록 표시
-      displayRecordedEvents(recordedEvents);
-      
-      // TC에 저장할지 확인
-      if (confirm(`${recordedEvents.length}개의 이벤트가 캡처되었습니다. TC에 저장하시겠습니까?`)) {
-        await saveEventsToTC(recordedEvents);
-      }
-    }
-  } catch (error) {
-    console.error('녹화 중지 실패:', error);
-    alert('녹화 중지 실패: ' + error.message);
-  }
-}
+// 기존 stopRecording 함수는 제거됨 (크롬 확장 프로그램용 새 함수로 대체)
 
 function displayRecordedEvents(events) {
   if (events.length === 0) {
@@ -2358,6 +2450,203 @@ function displayRecordedEvents(events) {
       ${event.value ? `<div>값: ${event.value}</div>` : ''}
     </div>
   `).join('');
+}
+
+/**
+ * 녹화 중지 처리
+ */
+async function stopRecording() {
+  try {
+    if (!isRecording) {
+      return;
+    }
+
+    // 크롬 확장 프로그램에 중지 신호 전송
+    const result = await window.electronAPI.stopRecording({
+      sessionId: currentRecordingSessionId
+    });
+
+    if (result.success) {
+      isRecording = false;
+      currentRecordingSessionId = null;
+      addLog('info', '녹화 중지 신호를 전송했습니다.');
+      
+      // 녹화 버튼 상태 복원
+      if (recordBtn) {
+        recordBtn.disabled = false;
+        recordBtn.innerHTML = '<span class="btn-icon">🔴</span> 녹화';
+      }
+    } else {
+      showMessageDialog('오류', `녹화 중지 실패: ${result.error}`);
+    }
+  } catch (error) {
+    console.error('녹화 중지 오류:', error);
+    showMessageDialog('오류', `녹화 중지 실패: ${error.message}`);
+  }
+}
+
+/**
+ * 녹화 중지 신호 수신 처리
+ */
+function handleRecordingStop(data) {
+  console.log('🛑 녹화 중지 신호 수신:', data);
+  isRecording = false;
+  currentRecordingSessionId = null;
+  
+  // 녹화 버튼 상태 복원
+  if (recordBtn) {
+    recordBtn.disabled = false;
+    recordBtn.innerHTML = '<span class="btn-icon">🔴</span> 녹화';
+  }
+  
+  addLog('info', '녹화가 중지되었습니다.');
+}
+
+/**
+ * 크롬 확장 프로그램에서 받은 녹화 데이터 처리
+ */
+async function handleRecordingData(recordingData) {
+  try {
+    console.log('📥 녹화 데이터 수신:', recordingData);
+
+    if (recordingData.type !== 'recording_complete') {
+      console.warn('⚠️ 알 수 없는 녹화 데이터 타입:', recordingData.type);
+      return;
+    }
+
+    const { tcId, events, code } = recordingData;
+
+    // 현재 선택된 TC와 일치하는지 확인
+    if (currentTC && currentTC.id === tcId) {
+      // 녹화 상태 초기화
+      isRecording = false;
+      currentRecordingSessionId = null;
+      
+      // 녹화 버튼 상태 복원
+      if (recordBtn) {
+        recordBtn.disabled = false;
+        recordBtn.innerHTML = '<span class="btn-icon">🔴</span> 녹화';
+      }
+
+      // 이벤트를 TC 스텝으로 변환하여 저장
+      if (events && events.length > 0) {
+        const steps = events.map(event => {
+          const step = {
+            action: event.type,
+            target: event.target ? {
+              tagName: event.target.tagName,
+              id: event.target.id,
+              className: event.target.className,
+              selectors: event.target.selectors || {}
+            } : null,
+            value: event.value || null,
+            url: event.url || null,
+            timestamp: event.timestamp || null
+          };
+
+          // wait 이벤트의 경우 조건 추가
+          if (event.type === 'wait') {
+            step.condition = event.condition || 'visible';
+            step.timeout = event.timeout || 5000;
+          }
+
+          // assert 이벤트의 경우 검증 정보 추가
+          if (event.type === 'assert') {
+            step.assertion = event.assertion || 'text';
+            step.expected = event.expected || null;
+          }
+
+          return step;
+        });
+
+        // TC 업데이트
+        const updateData = {
+          ...currentTC,
+          steps: JSON.stringify(steps)
+        };
+
+        const response = await window.electronAPI.api.updateTestCase(tcId, updateData);
+        if (response.success) {
+          addLog('success', `${events.length}개의 이벤트가 TC에 저장되었습니다.`);
+          
+          // TC 트리 새로고침
+          if (currentProject) {
+            await loadTCTree(currentProject.id);
+          }
+          
+          // 현재 TC 다시 로드
+          if (currentTC) {
+            const updatedTC = await window.electronAPI.api.getTestCase(currentTC.id);
+            if (updatedTC.success) {
+              selectTC(updatedTC.data);
+            }
+          }
+        }
+      }
+
+      // 코드가 있으면 스크립트 생성/업데이트
+      if (code) {
+        for (const [language, codeData] of Object.entries(code)) {
+          if (!codeData || !codeData.code) continue;
+
+          const framework = codeData.framework || 'playwright';
+          const scriptCode = codeData.code;
+          const scriptName = `Generated ${language} script`;
+
+          // 기존 스크립트 확인
+          const existingScripts = await window.electronAPI.api.getScripts({
+            test_case_id: tcId
+          });
+
+          const existingScript = existingScripts.data?.find(
+            s => s.language === language && s.framework === framework && s.status === 'active'
+          );
+
+          if (existingScript) {
+            // 기존 스크립트 업데이트
+            const updateResponse = await window.electronAPI.api.updateScript(existingScript.id, {
+              code: scriptCode
+            });
+            if (updateResponse.success) {
+              addLog('success', `${language} 스크립트가 업데이트되었습니다.`);
+            }
+          } else {
+            // 새 스크립트 생성
+            const createResponse = await window.electronAPI.api.createScript({
+              test_case_id: tcId,
+              name: scriptName,
+              framework: framework,
+              language: language,
+              code: scriptCode,
+              status: 'active'
+            });
+            if (createResponse.success) {
+              addLog('success', `${language} 스크립트가 생성되었습니다.`);
+            }
+          }
+        }
+
+        // 스크립트 탭 새로고침
+        if (currentTC) {
+          await loadScripts(currentTC.id);
+        }
+      }
+
+      // 성공 메시지 표시
+      showMessageDialog('성공', '녹화 데이터가 성공적으로 저장되었습니다.');
+    } else {
+      console.warn('⚠️ 수신한 녹화 데이터의 TC ID가 현재 선택된 TC와 일치하지 않습니다.');
+    }
+  } catch (error) {
+    console.error('❌ 녹화 데이터 처리 오류:', error);
+    showMessageDialog('오류', `녹화 데이터 처리 실패: ${error.message}`);
+    
+    // 녹화 버튼 상태 복원
+    if (recordBtn) {
+      recordBtn.disabled = false;
+      recordBtn.innerHTML = '<span class="btn-icon">🔴</span> 녹화';
+    }
+  }
 }
 
 async function saveEventsToTC(events) {
@@ -2469,11 +2758,13 @@ async function runSelectedTCs() {
           // Python + pytest/playwright/selenium만 실행
           if (script.language === 'python' && 
               (script.framework === 'pytest' || script.framework === 'playwright' || script.framework === 'selenium')) {
-            // 파일명 생성 (main.js와 동일한 형식)
+            // 파일명 생성 (main.js와 동일한 로직)
+            const extension = script.language === 'python' ? 'py' : 
+                             script.language === 'typescript' ? 'ts' : 'js';
             const sanitizedName = script.name.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
-            const filename = `test_tc${tcId}_${sanitizedName}.py`;
+            const filename = `test_tc${tcId}_${sanitizedName}.${extension}`;
             
-            // TC ID와 파일명 매핑 저장
+            // tcFileMap에 파일명과 TC 정보 매핑
             tcFileMap.set(filename, {
               tcId,
               scriptId: script.id,
@@ -2513,14 +2804,31 @@ async function runSelectedTCs() {
     
     // 결과 파싱 및 매핑
     const results = [];
+    const executedTcIds = new Set(); // 실행된 TC ID 추적
+    
     if (result.success && result.data && result.data.tests) {
       // pytest JSON 리포트에서 각 테스트 결과 추출
       for (const test of result.data.tests) {
-        const testName = test.nodeid; // 예: "test_tc1_login.py::test_login"
+        const testName = test.nodeid; // 예: "test_tc1_login.py::test_login" 또는 "test_tc1_login::test_login"
         const fileName = testName.split('::')[0]; // 파일명 추출
         
+        // 파일명 매핑 시도 (확장자 포함/미포함 모두 시도)
+        let tcInfo = null;
         if (tcFileMap.has(fileName)) {
-          const tcInfo = tcFileMap.get(fileName);
+          tcInfo = tcFileMap.get(fileName);
+        } else {
+          // 확장자 없이도 매핑 시도
+          const fileNameWithoutExt = fileName.replace(/\.py$/, '');
+          for (const [key, value] of tcFileMap.entries()) {
+            if (key.replace(/\.py$/, '') === fileNameWithoutExt) {
+              tcInfo = value;
+              break;
+            }
+          }
+        }
+        
+        if (tcInfo) {
+          executedTcIds.add(tcInfo.tcId);
           results.push({
             tcId: tcInfo.tcId,
             scriptId: tcInfo.scriptId,
@@ -2531,22 +2839,37 @@ async function runSelectedTCs() {
               duration: test.duration,
               error: test.call?.longrepr || null
             },
-            status: test.outcome === 'passed' ? 'passed' : 
-                    test.outcome === 'failed' ? 'failed' : 
-                    test.outcome === 'error' ? 'error' : 'error'
+            status: test.outcome === 'passed' ? 'passed' : test.outcome === 'failed' ? 'failed' : 'error'
           });
+        } else {
+          console.warn(`파일명 매핑 실패: ${fileName} (test.nodeid: ${testName})`);
+          console.warn(`사용 가능한 파일명:`, Array.from(tcFileMap.keys()));
         }
       }
       
-      // 실행되지 않은 TC 처리 (스크립트가 없는 경우)
+      // 실행되지 않은 TC 처리
+      // scriptsToRun에 포함된 TC는 실행 시도했지만 결과가 없는 경우
+      const attemptedTcIds = new Set(scriptsToRun.map(s => s.tcId));
+      
       for (const tcId of tcIds) {
         if (!results.find(r => r.tcId === tcId)) {
-          results.push({
-            tcId,
-            name: `TC #${tcId}`,
-            error: '스크립트가 없거나 pytest 형식이 아닙니다',
-            status: 'error'
-          });
+          if (attemptedTcIds.has(tcId)) {
+            // 스크립트는 있었지만 실행 결과가 없는 경우
+            results.push({
+              tcId,
+              name: `TC #${tcId}`,
+              error: '테스트 실행 결과를 찾을 수 없습니다 (파일명 매핑 실패 가능)',
+              status: 'error'
+            });
+          } else {
+            // 스크립트가 없는 경우
+            results.push({
+              tcId,
+              name: `TC #${tcId}`,
+              error: '스크립트가 없거나 pytest 형식이 아닙니다',
+              status: 'error'
+            });
+          }
         }
       }
     } else {
@@ -2572,7 +2895,18 @@ async function runSelectedTCs() {
 }
 
 function displayResults(results) {
+  if (!resultsList) {
+    console.warn('resultsList 요소를 찾을 수 없습니다.');
+    return;
+  }
+
   resultsList.innerHTML = '';
+
+  // 결과 오버레이 표시
+  const resultsOverlay = document.getElementById('results-overlay');
+  if (resultsOverlay) {
+    resultsOverlay.classList.add('show');
+  }
 
   results.forEach((item) => {
     const resultDiv = document.createElement('div');
@@ -2588,26 +2922,11 @@ function displayResults(results) {
       }
     };
 
-    // status를 기준으로 표시 (result.success가 아닌 status 사용)
-    let statusText = '알 수 없음';
-    let statusClass = '';
-    
-    if (item.status === 'passed') {
-      statusText = '통과';
-      statusClass = 'passed';
-    } else if (item.status === 'failed') {
-      statusText = '실패';
-      statusClass = 'failed';
-    } else if (item.status === 'error') {
-      statusText = '에러';
-      statusClass = 'error';
-    }
-    
     if (item.error) {
       resultDiv.innerHTML = `
         <div class="result-header">
           <span class="result-name">${item.name}</span>
-          <span class="result-status ${statusClass}">${statusText}</span>
+          <span class="result-status">에러</span>
         </div>
         <div>${item.error}</div>
       `;
@@ -2615,24 +2934,13 @@ function displayResults(results) {
       resultDiv.innerHTML = `
         <div class="result-header">
           <span class="result-name">${item.name}</span>
-          <span class="result-status ${statusClass}">${statusText}</span>
+          <span class="result-status">${item.result.success ? '통과' : '실패'}</span>
         </div>
-        ${item.result.error ? `
-          <div class="result-error">${item.result.error}</div>
-        ` : ''}
         ${item.result.data ? `
           <div class="result-details">
             <pre>${JSON.stringify(item.result.data, null, 2)}</pre>
           </div>
         ` : ''}
-      `;
-    } else {
-      // status만 있는 경우
-      resultDiv.innerHTML = `
-        <div class="result-header">
-          <span class="result-name">${item.name}</span>
-          <span class="result-status ${statusClass}">${statusText}</span>
-        </div>
       `;
     }
 

@@ -105,6 +105,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /**
    * 서버 API 호출
    */
+  /**
+   * DevTools 토글
+   * @returns {Promise<Object>} 실행 결과
+   */
+  toggleDevTools: () => {
+    return ipcRenderer.invoke('toggle-devtools');
+  },
+
   api: {
     // 프로젝트
     getProjects: () => ipcRenderer.invoke('api-get-projects'),
@@ -163,6 +171,42 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onScriptUpdated: (callback) => {
     ipcRenderer.on('script-updated', (event, data) => callback(data));
+  },
+  
+  /**
+   * 녹화 데이터 수신 리스너
+   * @param {Function} callback - 녹화 데이터 수신 시 호출될 콜백 함수
+   */
+  onRecordingData: (callback) => {
+    ipcRenderer.on('recording-data', (event, data) => callback(data));
+  },
+
+  /**
+   * 녹화 중지 신호 수신 리스너
+   * @param {Function} callback - 녹화 중지 신호 수신 시 호출될 콜백 함수
+   */
+  onRecordingStop: (callback) => {
+    ipcRenderer.on('recording-stop', (event, data) => callback(data));
+  },
+
+  /**
+   * 녹화 중지 요청
+   * @param {Object} options - 중지 옵션 (sessionId 등)
+   * @returns {Promise<Object>} 결과
+   */
+  stopRecording: async (options = {}) => {
+    try {
+      const response = await fetch('http://localhost:3000/api/recording/stop', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(options)
+      });
+      return await response.json();
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
   }
 
   // ============================================================================

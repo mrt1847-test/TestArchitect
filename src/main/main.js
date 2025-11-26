@@ -18,8 +18,15 @@ if (process.platform === 'win32') {
   process.env.PYTHONIOENCODING = 'utf-8';
 }
 
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, globalShortcut } = require('electron');
 const path = require('path');
+const http = require('http');
+const express = require('express');
+const cors = require('cors');
+const bodyParser = require('body-parser');
+const { spawn } = require('child_process');
+const os = require('os');
+const fs = require('fs');
 const config = require('./config/config');
 const PytestService = require('./services/pytestService');
 const ScriptManager = require('./services/scriptManager');
@@ -31,6 +38,273 @@ const DbService = require('./services/dbService');
 
 /** @type {BrowserWindow} 메인 윈도우 인스턴스 */
 let mainWindow;
+
+/** @type {http.Server} 녹화 데이터 수신용 HTTP 서버 */
+let recordingServer = null;
+
+/**
+ * 녹화 데이터 수신용 HTTP 서버 시작
+ * 크롬 확장 프로그램과 통신하기 위한 로컬 서버
+ */
+function startRecordingServer() {
+  if (recordingServer) {
+    console.log('⚠️ 녹화 서버가 이미 실행 중입니다.');
+    return;
+  }
+
+  const recordingApp = express();
+  recordingApp.use(cors());
+  recordingApp.use(bodyParser.json({ limit: '50mb' }));
+  recordingApp.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
+
+  // 녹화 데이터 수신 엔드포인트
+  recordingApp.post('/api/recording', async (req, res) => {
+    try {
+      const recordingData = req.body;
+      console.log('📥 녹화 데이터 수신:', {
+        type: recordingData.type,
+        sessionId: recordingData.sessionId,
+        tcId: recordingData.tcId,
+        eventsCount: recordingData.events?.length || 0
+      });
+
+      // 녹화 데이터를 메인 프로세스로 전달
+      if (mainWindow && mainWindow.webContents) {
+        mainWindow.webContents.send('recording-data', recordingData);
+      }
+
+      // 데이터를 TC와 스크립트에 반영
+      const result = await processRecordingData(recordingData);
+
+      res.json({
+        success: true,
+        message: '녹화 데이터가 성공적으로 저장되었습니다',
+        ...result
+      });
+    } catch (error) {
+      console.error('❌ 녹화 데이터 처리 오류:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message || '녹화 데이터 처리 중 오류가 발생했습니다',
+        code: 'PROCESSING_ERROR'
+      });
+    }
+  });
+
+  // 녹화 시작 페이지 (크롬 확장 프로그램이 감지할 URL)
+  recordingApp.get('/record', (req, res) => {
+    const { tcId, projectId, sessionId } = req.query;
+    
+    // 간단한 HTML 페이지 반환 (크롬 확장 프로그램이 감지)
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>TestArchitect 녹화</title>
+        <meta charset="UTF-8">
+        <style>
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+          }
+          .container {
+            text-align: center;
+            padding: 40px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+          }
+          h1 { margin: 0 0 20px 0; font-size: 2.5em; }
+          p { font-size: 1.2em; opacity: 0.9; }
+          .info {
+            margin-top: 30px;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            font-size: 0.9em;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>🎬 녹화 준비 완료</h1>
+          <p>크롬 확장 프로그램이 녹화를 시작합니다...</p>
+          <div class="info">
+            <div>TC ID: ${tcId || 'N/A'}</div>
+            <div>프로젝트 ID: ${projectId || 'N/A'}</div>
+            <div>세션 ID: ${sessionId || 'N/A'}</div>
+          </div>
+        </div>
+        <script>
+          // 크롬 확장 프로그램이 이 페이지를 감지하도록 메시지 전송
+          window.postMessage({
+            type: 'TESTARCHITECT_RECORDING_START',
+            tcId: '${tcId}',
+            projectId: '${projectId}',
+            sessionId: '${sessionId}'
+          }, '*');
+          
+          console.log('TestArchitect 녹화 시작:', {
+            tcId: '${tcId}',
+            projectId: '${projectId}',
+            sessionId: '${sessionId}'
+          });
+        </script>
+      </body>
+      </html>
+    `);
+  });
+
+  // 녹화 중지 요청 엔드포인트
+  recordingApp.post('/api/recording/stop', (req, res) => {
+    try {
+      const { sessionId } = req.body;
+      console.log('🛑 녹화 중지 요청:', { sessionId });
+
+      // 녹화 중지 신호를 메인 프로세스로 전달
+      if (mainWindow && mainWindow.webContents) {
+        mainWindow.webContents.send('recording-stop', { sessionId });
+      }
+
+      res.json({
+        success: true,
+        message: '녹화 중지 신호가 전송되었습니다'
+      });
+    } catch (error) {
+      console.error('❌ 녹화 중지 오류:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message || '녹화 중지 중 오류가 발생했습니다'
+      });
+    }
+  });
+
+  // Health check
+  recordingApp.get('/api/health', (req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  });
+
+  const PORT = 3000;
+  recordingServer = http.createServer(recordingApp);
+  
+  recordingServer.listen(PORT, () => {
+    console.log(`✅ 녹화 데이터 수신 서버 시작: http://localhost:${PORT}`);
+  });
+
+  recordingServer.on('error', (error) => {
+    if (error.code === 'EADDRINUSE') {
+      console.warn(`⚠️ 포트 ${PORT}가 이미 사용 중입니다. 녹화 서버를 시작할 수 없습니다.`);
+    } else {
+      console.error('❌ 녹화 서버 오류:', error);
+    }
+  });
+}
+
+/**
+ * 녹화 데이터를 TC와 스크립트에 반영
+ */
+async function processRecordingData(recordingData) {
+  const { type, tcId, projectId, events, code } = recordingData;
+
+  if (type !== 'recording_complete') {
+    throw new Error('지원하지 않는 녹화 데이터 타입입니다');
+  }
+
+  if (!tcId || !events || !Array.isArray(events)) {
+    throw new Error('필수 데이터가 누락되었습니다 (tcId, events)');
+  }
+
+  // 1. 이벤트를 TC 스텝으로 변환
+  const steps = events.map(event => {
+    const step = {
+      action: event.type,
+      target: event.target ? {
+        tagName: event.target.tagName,
+        id: event.target.id,
+        className: event.target.className,
+        selectors: event.target.selectors || {}
+      } : null,
+      value: event.value || null,
+      url: event.url || null,
+      timestamp: event.timestamp || null
+    };
+
+    // wait 이벤트의 경우 조건 추가
+    if (event.type === 'wait') {
+      step.condition = event.condition || 'visible';
+      step.timeout = event.timeout || 5000;
+    }
+
+    // assert 이벤트의 경우 검증 정보 추가
+    if (event.type === 'assert') {
+      step.assertion = event.assertion || 'text';
+      step.expected = event.expected || null;
+    }
+
+    return step;
+  });
+
+  // 2. TC 업데이트 (steps 저장)
+  const tcUpdateData = {
+    steps: JSON.stringify(steps)
+  };
+
+  const tcUpdateResult = DbService.run(
+    'UPDATE test_cases SET steps = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+    [tcUpdateData.steps, tcId]
+  );
+
+  if (!tcUpdateResult) {
+    throw new Error('TC 업데이트 실패');
+  }
+
+  // 3. 코드가 있으면 스크립트 생성/업데이트
+  let scriptResults = {};
+  if (code) {
+    for (const [language, codeData] of Object.entries(code)) {
+      if (!codeData || !codeData.code) continue;
+
+      const framework = codeData.framework || 'playwright';
+      const scriptCode = codeData.code;
+
+      // 기존 스크립트 확인
+      const existingScript = DbService.get(
+        'SELECT * FROM test_scripts WHERE test_case_id = ? AND language = ? AND framework = ? AND status = ?',
+        [tcId, language, framework, 'active']
+      );
+
+      if (existingScript) {
+        // 기존 스크립트 업데이트
+        DbService.run(
+          'UPDATE test_scripts SET code = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+          [scriptCode, existingScript.id]
+        );
+        scriptResults[language] = { id: existingScript.id, action: 'updated' };
+      } else {
+        // 새 스크립트 생성
+        const scriptName = `Generated ${language} script`;
+        const result = DbService.run(
+          `INSERT INTO test_scripts (test_case_id, name, framework, language, code, file_path, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [tcId, scriptName, framework, language, scriptCode, null, 'active']
+        );
+        scriptResults[language] = { id: result.lastID, action: 'created' };
+      }
+    }
+  }
+
+  return {
+    tcId: tcId,
+    scriptIds: scriptResults
+  };
+}
 
 /**
  * 메인 윈도우 생성
@@ -65,6 +339,9 @@ function createWindow() {
  * Electron 앱이 준비되면 윈도우 생성
  */
 app.whenReady().then(async () => {
+  // 메뉴 바 표시 (기본 Electron 메뉴)
+  // Menu.setApplicationMenu(null); // 주석 처리하여 메뉴 표시
+  
   // 프로덕션 모드 경로 초기화 (createWindow 전에 실행)
   config.initializePaths(app);
   // 스크립트 디렉토리 초기화
@@ -107,6 +384,33 @@ app.whenReady().then(async () => {
   // 메인 윈도우 생성
   createWindow();
 
+  // 녹화 데이터 수신용 HTTP 서버 시작
+  startRecordingServer();
+
+  // DevTools 단축키 등록 (F12 또는 Ctrl+Shift+I)
+  // 윈도우가 생성된 후에 등록해야 함
+  setTimeout(() => {
+    try {
+      const ret1 = globalShortcut.register('F12', () => {
+        if (mainWindow) {
+          mainWindow.webContents.toggleDevTools();
+        }
+      });
+      const ret2 = globalShortcut.register('CommandOrControl+Shift+I', () => {
+        if (mainWindow) {
+          mainWindow.webContents.toggleDevTools();
+        }
+      });
+      if (ret1 && ret2) {
+        console.log('✅ DevTools 단축키 등록 완료 (F12, Ctrl+Shift+I)');
+      } else {
+        console.warn('⚠️ DevTools 단축키 등록 실패');
+      }
+    } catch (error) {
+      console.error('❌ DevTools 단축키 등록 오류:', error);
+    }
+  }, 500);
+
   // macOS에서 독 아이콘 클릭 시 윈도우 재생성
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -117,6 +421,17 @@ app.whenReady().then(async () => {
 
 // 앱 종료 시 데이터베이스 연결 종료 및 정리
 app.on('before-quit', () => {
+  // 전역 단축키 해제
+  globalShortcut.unregisterAll();
+  
+  // 녹화 서버 종료
+  if (recordingServer) {
+    recordingServer.close(() => {
+      console.log('✅ 녹화 서버 종료');
+    });
+    recordingServer = null;
+  }
+  
   try {
     // 실행 결과 정리 (최근 100개만 보관)
     DbService.cleanupOldResults(100);
@@ -139,6 +454,18 @@ app.on('window-all-closed', () => {
 // ============================================================================
 // IPC 핸들러 등록
 // ============================================================================
+
+/**
+ * DevTools 토글 IPC 핸들러
+ * 렌더러 프로세스에서 DevTools 열기/닫기 요청 처리
+ */
+ipcMain.handle('toggle-devtools', () => {
+  if (mainWindow) {
+    mainWindow.webContents.toggleDevTools();
+    return { success: true };
+  }
+  return { success: false, error: 'Main window not found' };
+});
 
 /**
  * Pytest 테스트 실행 IPC 핸들러
@@ -443,13 +770,274 @@ ipcMain.handle('capture-event', async (event, eventData) => {
  * 브라우저 열기 IPC 핸들러
  * @event ipcMain.handle:open-browser
  */
+const { shell } = require('electron');
 ipcMain.handle('open-browser', async (event, options) => {
   try {
-    // 새 BrowserWindow 생성 (향후 구현)
-    console.log('브라우저 열기:', options);
-    return { success: true };
+    const browser = options.browser || 'chrome';
+    const tcId = options.tcId;
+    const projectId = options.projectId;
+    const sessionId = options.sessionId || `session-${Date.now()}`;
+    
+    if (!tcId || !projectId) {
+      return { success: false, error: 'tcId와 projectId가 필요합니다' };
+    }
+
+    // 녹화 서버가 실행 중인지 확인
+    if (!recordingServer) {
+      startRecordingServer();
+      // 서버 시작 대기
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    
+    // 확장프로그램과 통신하기 위한 URL 생성
+    const recordingUrl = `http://localhost:3000/record?tcId=${tcId}&projectId=${projectId}&sessionId=${sessionId}`;
+    
+    // 확장 프로그램 ID
+    const EXTENSION_ID = 'hemlilhhjhpkpgeonbmaknbffgapneam';
+    
+    // Chrome 경로 및 확장 프로그램 경로 찾기
+    let chromePath;
+    let extensionPath;
+    const platform = process.platform;
+    
+    if (platform === 'win32') {
+      // Windows Chrome 경로 찾기
+      const possibleChromePaths = [
+        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+        path.join(os.homedir(), 'AppData\\Local\\Google\\Chrome\\Application\\chrome.exe')
+      ];
+      
+      for (const possiblePath of possibleChromePaths) {
+        if (fs.existsSync(possiblePath)) {
+          chromePath = possiblePath;
+          break;
+        }
+      }
+      
+      // 확장 프로그램 경로 찾기
+      const extensionBasePath = path.join(
+        os.homedir(),
+        'AppData\\Local\\Google\\Chrome\\User Data\\Default\\Extensions',
+        EXTENSION_ID
+      );
+      
+      console.log('🔍 확장 프로그램 경로 확인:', extensionBasePath);
+      console.log('🔍 경로 존재 여부:', fs.existsSync(extensionBasePath));
+      
+      if (fs.existsSync(extensionBasePath)) {
+        // 최신 버전 폴더 찾기
+        try {
+          const items = fs.readdirSync(extensionBasePath);
+          console.log('🔍 확장 프로그램 폴더 내용:', items);
+          
+          const versions = items
+            .filter(item => {
+              const itemPath = path.join(extensionBasePath, item);
+              const isDir = fs.statSync(itemPath).isDirectory();
+              console.log(`🔍 항목 확인: ${item}, 디렉토리: ${isDir}`);
+              return isDir;
+            })
+            .sort((a, b) => {
+              // 버전 번호로 정렬 (간단한 버전 비교)
+              return b.localeCompare(a, undefined, { numeric: true });
+            });
+          
+          console.log('🔍 찾은 버전:', versions);
+          
+          if (versions.length > 0) {
+            extensionPath = path.join(extensionBasePath, versions[0]);
+            console.log('✅ 확장 프로그램 경로:', extensionPath);
+          } else {
+            console.warn('⚠️ 확장 프로그램 버전 폴더를 찾을 수 없습니다');
+          }
+        } catch (error) {
+          console.error('❌ 확장 프로그램 버전 폴더 읽기 실패:', error);
+          console.error('❌ 오류 상세:', error.message);
+        }
+      } else {
+        console.warn('⚠️ 확장 프로그램 기본 경로가 존재하지 않습니다:', extensionBasePath);
+        
+        // 대체 경로 시도 (Profile 1 등)
+        const alternativePaths = [
+          path.join(os.homedir(), 'AppData\\Local\\Google\\Chrome\\User Data\\Profile 1\\Extensions', EXTENSION_ID),
+          path.join(os.homedir(), 'AppData\\Local\\Google\\Chrome\\User Data\\Extensions', EXTENSION_ID)
+        ];
+        
+        for (const altPath of alternativePaths) {
+          console.log('🔍 대체 경로 확인:', altPath);
+          if (fs.existsSync(altPath)) {
+            console.log('✅ 대체 경로에서 확장 프로그램 발견:', altPath);
+            try {
+              const items = fs.readdirSync(altPath);
+              const versions = items
+                .filter(item => {
+                  const itemPath = path.join(altPath, item);
+                  return fs.statSync(itemPath).isDirectory();
+                })
+                .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+              
+              if (versions.length > 0) {
+                extensionPath = path.join(altPath, versions[0]);
+                console.log('✅ 확장 프로그램 경로 (대체):', extensionPath);
+                break;
+              }
+            } catch (error) {
+              console.warn('대체 경로 읽기 실패:', error);
+            }
+          }
+        }
+      }
+    } else if (platform === 'darwin') {
+      // macOS
+      chromePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+      const extensionBasePath = path.join(
+        os.homedir(),
+        'Library/Application Support/Google/Chrome/Default/Extensions',
+        EXTENSION_ID
+      );
+      
+      if (fs.existsSync(extensionBasePath)) {
+        try {
+          const versions = fs.readdirSync(extensionBasePath)
+            .filter(item => {
+              const itemPath = path.join(extensionBasePath, item);
+              return fs.statSync(itemPath).isDirectory();
+            })
+            .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+          
+          if (versions.length > 0) {
+            extensionPath = path.join(extensionBasePath, versions[0]);
+          }
+        } catch (error) {
+          console.warn('확장 프로그램 버전 폴더 읽기 실패:', error);
+        }
+      }
+    } else {
+      // Linux
+      chromePath = 'google-chrome';
+      const extensionBasePath = path.join(
+        os.homedir(),
+        '.config/google-chrome/Default/Extensions',
+        EXTENSION_ID
+      );
+      
+      if (fs.existsSync(extensionBasePath)) {
+        try {
+          const versions = fs.readdirSync(extensionBasePath)
+            .filter(item => {
+              const itemPath = path.join(extensionBasePath, item);
+              return fs.statSync(itemPath).isDirectory();
+            })
+            .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+          
+          if (versions.length > 0) {
+            extensionPath = path.join(extensionBasePath, versions[0]);
+          }
+        } catch (error) {
+          console.warn('확장 프로그램 버전 폴더 읽기 실패:', error);
+        }
+      }
+    }
+    
+    // Chrome 실행
+    if (chromePath && fs.existsSync(chromePath)) {
+      const chromeArgs = [
+        recordingUrl,
+        '--new-window'
+      ];
+      
+      // 기존 사용자 데이터 디렉토리 사용 (기존 확장 프로그램 접근 가능)
+      let userDataPath;
+      if (platform === 'win32') {
+        userDataPath = path.join(os.homedir(), 'AppData\\Local\\Google\\Chrome\\User Data');
+      } else if (platform === 'darwin') {
+        userDataPath = path.join(os.homedir(), 'Library/Application Support/Google/Chrome');
+      } else {
+        userDataPath = path.join(os.homedir(), '.config/google-chrome');
+      }
+      
+      // 기존 사용자 데이터 디렉토리가 있으면 사용
+      if (fs.existsSync(userDataPath)) {
+        chromeArgs.push(`--user-data-dir=${userDataPath}`);
+        chromeArgs.push('--profile-directory=Default');
+        console.log('✅ 기존 Chrome 프로필 사용:', userDataPath);
+        
+        // 확장 프로그램이 이미 설치되어 있는지 확인
+        const extensionBasePath = path.join(
+          userDataPath,
+          platform === 'win32' ? 'Default\\Extensions' : 'Default/Extensions',
+          EXTENSION_ID
+        );
+        
+        if (fs.existsSync(extensionBasePath)) {
+          // 이미 설치된 확장 프로그램이므로 --load-extension 불필요
+          // 기존 프로필에서 자동으로 로드됨
+          console.log('✅ 기존에 설치된 확장 프로그램이 자동으로 로드됩니다');
+        } else {
+          // 확장 프로그램이 없을 때만 --load-extension 사용
+          if (extensionPath && fs.existsSync(extensionPath)) {
+            chromeArgs.push(`--load-extension=${extensionPath}`);
+            console.log('✅ 확장 프로그램 로드:', extensionPath);
+          } else {
+            console.warn('⚠️ 확장 프로그램을 찾을 수 없습니다:', EXTENSION_ID);
+          }
+        }
+      } else {
+        // 사용자 데이터 디렉토리가 없으면 기본 프로필 사용 (--user-data-dir 없이)
+        console.log('⚠️ Chrome 사용자 데이터 디렉토리를 찾을 수 없습니다. 기본 프로필 사용');
+        
+        // 확장 프로그램이 없을 때만 --load-extension 사용
+        if (extensionPath && fs.existsSync(extensionPath)) {
+          chromeArgs.push(`--load-extension=${extensionPath}`);
+          console.log('✅ 확장 프로그램 로드:', extensionPath);
+        }
+      }
+      
+      spawn(chromePath, chromeArgs, {
+        detached: true,
+        stdio: 'ignore'
+      });
+      
+      console.log('🌐 Chrome 실행:', { 
+        chromePath, 
+        extensionPath: extensionPath || '없음',
+        recordingUrl, 
+        sessionId 
+      });
+      
+      return { 
+        success: true, 
+        url: recordingUrl, 
+        sessionId, 
+        method: 'direct',
+        extensionLoaded: !!extensionPath
+      };
+    } else {
+      // Chrome을 찾을 수 없으면 기본 브라우저로 폴백
+      console.warn('⚠️ Chrome을 찾을 수 없습니다. 기본 브라우저로 열립니다.');
+      await shell.openExternal(recordingUrl);
+      return { 
+        success: true, 
+        url: recordingUrl, 
+        sessionId, 
+        method: 'fallback' 
+      };
+    }
   } catch (error) {
+    console.error('❌ 브라우저 열기 오류:', error);
     return { success: false, error: error.message };
+  }
+});
+
+/**
+ * 확장프로그램으로부터 녹화 데이터 수신 IPC 핸들러
+ * @event ipcMain.on:recording-data
+ */
+ipcMain.on('recording-data', (event, data) => {
+  // 모든 렌더러 프로세스에 브로드캐스트
+  if (mainWindow && mainWindow.webContents) {
+    mainWindow.webContents.send('recording-data', data);
   }
 });
 

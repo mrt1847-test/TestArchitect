@@ -41,3 +41,4 @@ ALTER TABLE test_cases ADD COLUMN tc_number INTEGER;
 -- 기존 TC의 경우, tc_number가 없으면 id를 사용하여 호환성을 유지합니다.
 
 
+

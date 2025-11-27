@@ -108,7 +108,8 @@ function startRecordingServer() {
   recordingApp.get('/record', (req, res) => {
     const { tcId, projectId, sessionId } = req.query;
     
-    // 간단한 HTML 페이지 반환 (크롬 확장 프로그램이 감지)
+    // 간단한 HTML 페이지 반환
+    // 확장 프로그램의 Content Script가 URL 파라미터를 감지하여 처리
     res.send(`
       <!DOCTYPE html>
       <html>
@@ -133,249 +134,53 @@ function startRecordingServer() {
             background: rgba(255, 255, 255, 0.1);
             border-radius: 20px;
             backdrop-filter: blur(10px);
+            max-width: 600px;
           }
           h1 { margin: 0 0 20px 0; font-size: 2.5em; }
-          p { font-size: 1.2em; opacity: 0.9; }
+          p { font-size: 1.2em; opacity: 0.9; margin: 10px 0; }
           .info {
             margin-top: 30px;
             padding: 20px;
             background: rgba(0, 0, 0, 0.2);
             border-radius: 10px;
             font-size: 0.9em;
+            text-align: left;
+          }
+          .info div {
+            margin: 8px 0;
+            padding: 5px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+          }
+          .info div:last-child {
+            border-bottom: none;
+          }
+          .status {
+            margin-top: 20px;
+            padding: 15px;
+            background: rgba(76, 175, 80, 0.2);
+            border-radius: 8px;
+            border-left: 4px solid #4ade80;
           }
         </style>
       </head>
       <body>
         <div class="container">
           <h1>🎬 녹화 준비 완료</h1>
-          <p>크롬 확장 프로그램이 녹화를 시작합니다...</p>
+          <p>크롬 확장 프로그램이 자동으로 녹화를 시작합니다...</p>
+          <div class="status">
+            ✅ 확장 프로그램의 사이드 패널이 자동으로 열립니다
+          </div>
           <div class="info">
-            <div>TC ID: ${tcId || 'N/A'}</div>
-            <div>프로젝트 ID: ${projectId || 'N/A'}</div>
-            <div>세션 ID: ${sessionId || 'N/A'}</div>
+            <div><strong>TC ID:</strong> ${tcId || 'N/A'}</div>
+            <div><strong>프로젝트 ID:</strong> ${projectId || 'N/A'}</div>
+            <div><strong>세션 ID:</strong> ${sessionId || 'N/A'}</div>
           </div>
         </div>
-        <script>
-          // 크롬 확장 프로그램에 팝업 열기 메시지 전송
-          (function() {
-            const params = {
-              type: 'OPEN_POPUP',
-              tcId: '${tcId}',
-              projectId: '${projectId}',
-              sessionId: '${sessionId}',
-              source: 'testarchitect',
-              timestamp: Date.now()
-            };
-            
-            let attemptCount = 0;
-            const maxAttempts = 8;
-            let messageReceived = false;
-            let ws = null;
-            let wsConnected = false;
-            
-            // WebSocket 연결 (Extension Background와 직접 통신)
-            function connectWebSocket() {
-              try {
-                const wsUrl = 'ws://localhost:3000';
-                ws = new WebSocket(wsUrl);
-                
-                ws.onopen = () => {
-                  wsConnected = true;
-                  console.log('[TestArchitect] ✅ WebSocket 연결 성공');
-                  
-                  // Extension에 팝업 열기 요청 전송
-                  sendWebSocketMessage({
-                    type: 'OPEN_POPUP',
-                    tcId: params.tcId,
-                    projectId: params.projectId,
-                    sessionId: params.sessionId
-                  });
-                };
-                
-                ws.onmessage = (event) => {
-                  try {
-                    const data = JSON.parse(event.data);
-                    console.log('[TestArchitect] 📨 WebSocket 메시지 수신:', data);
-                    
-                    if (data.type === 'popup_opened' || data.type === 'OPEN_POPUP_RESPONSE') {
-                      messageReceived = true;
-                      const p = document.querySelector('p');
-                      if (p) {
-                        p.textContent = '✅ 팝업 열기 요청이 확장 프로그램에 전달되었습니다!';
-                        p.style.color = '#4ade80';
-                      }
-                    }
-                  } catch (error) {
-                    console.error('[TestArchitect] WebSocket 메시지 파싱 오류:', error);
-                  }
-                };
-                
-                ws.onerror = (error) => {
-                  console.warn('[TestArchitect] ⚠️ WebSocket 연결 오류:', error);
-                  wsConnected = false;
-                };
-                
-                ws.onclose = () => {
-                  console.log('[TestArchitect] WebSocket 연결 종료');
-                  wsConnected = false;
-                };
-              } catch (error) {
-                console.error('[TestArchitect] WebSocket 생성 오류:', error);
-              }
-            }
-            
-            function sendWebSocketMessage(message) {
-              if (ws && wsConnected && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify(message));
-                console.log('[TestArchitect] 📤 WebSocket 메시지 전송:', message);
-              }
-            }
-            
-            // 확장 프로그램으로부터 응답을 받는 리스너 (Content Script용)
-            window.addEventListener('message', function(event) {
-              // 보안: 같은 윈도우에서 온 메시지만 처리
-              if (event.source !== window) return;
-              
-              // 확장 프로그램으로부터의 응답 확인
-              if (event.data && event.data.type === 'OPEN_POPUP_RESPONSE' && event.data.source === 'testarchitect-extension') {
-                messageReceived = true;
-                console.log('[TestArchitect] ✅ 확장 프로그램으로부터 응답 수신:', event.data);
-                
-                const p = document.querySelector('p');
-                if (p) {
-                  if (event.data.success) {
-                    p.textContent = '✅ 팝업 열기 요청이 확장 프로그램에 전달되었습니다!';
-                    p.style.color = '#4ade80';
-                  } else {
-                    p.textContent = '⚠️ 확장 프로그램 응답: ' + (event.data.error || '알 수 없는 오류');
-                    p.style.color = '#fbbf24';
-                  }
-                }
-              }
-            });
-            
-            function sendMessage() {
-              if (attemptCount >= maxAttempts) {
-                if (!messageReceived) {
-                  console.warn('[TestArchitect] ⚠️ 메시지 전송 최대 시도 횟수 도달 - 확장 프로그램이 응답하지 않음');
-                  
-                  // URL 파라미터를 전역 변수로도 노출 (확장 프로그램이 읽을 수 있도록)
-                  window.testArchitectParams = params;
-                  
-                  const p = document.querySelector('p');
-                  if (p) {
-                    p.innerHTML = '❌ 확장 프로그램이 메시지에 응답하지 않습니다.<br><br>' +
-                      '💡 <strong>확인 사항:</strong><br>' +
-                      '1. 확장 프로그램이 설치되어 있고 활성화되어 있는지<br>' +
-                      '2. 확장 프로그램의 Background Script가 WebSocket에 연결되어 있는지<br>' +
-                      '3. 현재 URL: <code>' + window.location.href + '</code><br>' +
-                      '4. WebSocket 연결 상태: ' + (wsConnected ? '✅ 연결됨' : '❌ 연결 안 됨');
-                    p.style.color = '#ef4444';
-                    p.style.textAlign = 'left';
-                    p.style.fontSize = '0.9em';
-                  }
-                }
-                return;
-              }
-              
-              try {
-                // 방법 1: WebSocket (우선순위 높음)
-                if (wsConnected) {
-                  sendWebSocketMessage({
-                    type: 'OPEN_POPUP',
-                    tcId: params.tcId,
-                    projectId: params.projectId,
-                    sessionId: params.sessionId
-                  });
-                }
-                
-                // 방법 2: window.postMessage (Content Script용)
-                window.postMessage(params, '*');
-                
-                // 방법 3: 커스텀 이벤트
-                const customEvent = new CustomEvent('testarchitect-open-popup', {
-                  detail: params,
-                  bubbles: true,
-                  cancelable: true
-                });
-                document.dispatchEvent(customEvent);
-                window.dispatchEvent(customEvent);
-                
-                // 방법 4: 전역 변수 노출
-                window.testArchitectParams = params;
-                
-                attemptCount++;
-                console.log('[TestArchitect] 📤 팝업 열기 메시지 전송 (시도 ' + attemptCount + '/' + maxAttempts + '):', {
-                  type: params.type,
-                  tcId: params.tcId,
-                  projectId: params.projectId,
-                  sessionId: params.sessionId,
-                  websocket: wsConnected ? '✅' : '❌'
-                });
-                
-                // 메시지 전송 확인을 위한 피드백
-                const p = document.querySelector('p');
-                if (p && !messageReceived) {
-                  const methods = [];
-                  if (wsConnected) methods.push('WebSocket');
-                  methods.push('postMessage', 'CustomEvent', '전역변수');
-                  p.textContent = '📤 확장 프로그램에 팝업 열기 요청 전송 중... (시도: ' + attemptCount + '/' + maxAttempts + ')\\n💡 사용 방법: ' + methods.join(', ');
-                  p.style.whiteSpace = 'pre-line';
-                }
-                
-                // 다음 재시도 스케줄링 (점진적으로 간격 증가)
-                if (attemptCount < maxAttempts && !messageReceived) {
-                  const delays = [0, 200, 500, 1000, 1500, 2000, 3000, 5000];
-                  const delay = delays[attemptCount] || 5000;
-                  setTimeout(() => sendMessage(), delay);
-                }
-              } catch (error) {
-                console.error('[TestArchitect] ❌ 메시지 전송 오류:', error);
-              }
-            }
-            
-            // 페이지 로드 완료 후 메시지 전송 시작
-            function init() {
-              console.log('[TestArchitect] 🚀 페이지 초기화 시작');
-              console.log('[TestArchitect] 📋 파라미터:', params);
-              
-              // WebSocket 연결 시도 (Extension Background와 직접 통신)
-              connectWebSocket();
-              
-              // 기존 방식도 함께 시도
-              setTimeout(() => sendMessage(), 200);
-            }
-            
-            if (document.readyState === 'loading') {
-              document.addEventListener('DOMContentLoaded', () => {
-                console.log('[TestArchitect] 📄 DOMContentLoaded 이벤트 발생');
-                setTimeout(init, 100);
-              });
-            } else {
-              console.log('[TestArchitect] 📄 DOM 이미 로드됨');
-              setTimeout(init, 100);
-            }
-            
-            // window.load 이벤트에서도 한 번 더 시도
-            window.addEventListener('load', () => {
-              console.log('[TestArchitect] ✅ window.load 이벤트 발생');
-              if (!messageReceived && !wsConnected) {
-                // WebSocket 재연결 시도
-                connectWebSocket();
-              }
-              if (!messageReceived) {
-                setTimeout(() => sendMessage(), 300);
-              }
-            });
-            
-            // 페이지 언로드 시 WebSocket 정리
-            window.addEventListener('beforeunload', () => {
-              if (ws) {
-                ws.close();
-              }
-            });
-          })();
-        </script>
+        <!-- 
+          Content Script가 자동으로 URL 파라미터를 감지하여
+          Background Script에 메시지를 보내고 Side Panel을 엽니다.
+          별도의 JavaScript 로직이 필요하지 않습니다.
+        -->
       </body>
       </html>
     `);

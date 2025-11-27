@@ -2,22 +2,41 @@
 
 ## 개요
 
-TestArchitect는 WebSocket과 HTTP를 통해 Chrome Extension과 통신합니다. 이 문서는 Extension 개발자가 TestArchitect와 통신하는 방법을 설명합니다.
+TestArchitect는 HTTP를 통해 Chrome Extension과 통신합니다. 이 문서는 Extension 개발자가 TestArchitect와 통신하는 방법을 설명합니다.
 
-## 아키텍처
+> **⚠️ 중요**: 최신 구현 방식은 Side Panel을 사용합니다. 자세한 내용은 [Side Panel 구현 가이드](./EXTENSION-SIDE-PANEL-IMPLEMENTATION.md)를 참조하세요.
+
+## 아키텍처 (최신 방식)
 
 ```
-[Electron App]
+[Electron App] - 녹화 버튼 클릭
     │
     ▼
-[HTTP/WebSocket Server (포트 3000)]
+[Chrome 실행 - recording URL 열기]
     │
     ▼
-[Chrome Extension Background]
+[Content Script - URL 파라미터 감지]
     │
     ▼
-[Content Script → 브라우저 제어]
+[Background Script - 메시지 수신]
+    │
+    ▼
+[chrome.sidePanel.open() - 자동 열기]
+    │
+    ▼
+[Side Panel - 녹화 UI 표시]
 ```
+
+## 새로운 플로우 (권장)
+
+1. Electron에서 녹화 버튼 클릭
+2. Chrome 브라우저가 `http://localhost:3000/record?tcId=X&projectId=Y&sessionId=Z` URL로 열림
+3. Content Script가 URL 파라미터를 자동 감지
+4. Background Script에 메시지 전송
+5. `chrome.sidePanel.open()`으로 Side Panel 자동 열기
+6. Side Panel에 녹화 UI 표시
+
+자세한 구현 방법은 [Side Panel 구현 가이드](./EXTENSION-SIDE-PANEL-IMPLEMENTATION.md)를 참조하세요.
 
 ## 통신 방법
 

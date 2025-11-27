@@ -1819,15 +1819,22 @@ function displayTCDetail(tc) {
         </div>
         ${steps && Array.isArray(steps) && steps.length > 0 ? `
           <div class="tc-steps">
-            <h5>테스트 단계:</h5>
-            ${steps.map((step, idx) => `
+            <h5>테스트 단계 (${steps.length}개):</h5>
+            ${steps.map((step, idx) => {
+              const action = step.action || step.type || 'unknown';
+              const target = step.target || '(대상 없음)';
+              const value = step.value || null;
+              const description = step.description || null;
+              
+              return `
               <div class="step-item">
-                <strong>${idx + 1}. ${step.action || step.type || 'N/A'}</strong>
-                ${step.target ? `<div>대상: ${step.target}</div>` : ''}
-                ${step.value ? `<div>값: ${step.value}</div>` : ''}
-                ${step.description ? `<div>설명: ${step.description}</div>` : ''}
+                <strong>${idx + 1}. ${action}</strong>
+                <div>대상: ${target}</div>
+                ${value ? `<div>값: ${value}</div>` : ''}
+                ${description ? `<div>설명: ${description}</div>` : ''}
               </div>
-            `).join('')}
+            `;
+            }).join('')}
           </div>
         ` : '<p class="placeholder">테스트 단계가 없습니다</p>'}
       </div>
@@ -2548,60 +2555,44 @@ async function handleRecordingData(recordingData) {
         recordBtn.innerHTML = '<span class="btn-icon">🔴</span> 녹화';
       }
 
-      // 이벤트를 TC 스텝으로 변환하여 저장
+      // 서버에서 이미 processRecordingData로 스텝 변환 및 저장이 완료되었으므로
+      // 여기서는 UI만 갱신하면 됩니다
       if (events && events.length > 0) {
-        const steps = events.map(event => {
-          const step = {
-            action: event.type,
-            target: event.target ? {
-              tagName: event.target.tagName,
-              id: event.target.id,
-              className: event.target.className,
-              selectors: event.target.selectors || {}
-            } : null,
-            value: event.value || null,
-            url: event.url || null,
-            timestamp: event.timestamp || null
-          };
-
-          // wait 이벤트의 경우 조건 추가
-          if (event.type === 'wait') {
-            step.condition = event.condition || 'visible';
-            step.timeout = event.timeout || 5000;
-          }
-
-          // assert 이벤트의 경우 검증 정보 추가
-          if (event.type === 'assert') {
-            step.assertion = event.assertion || 'text';
-            step.expected = event.expected || null;
-          }
-
-          return step;
-        });
-
-        // TC 업데이트
-        const updateData = {
-          ...currentTC,
-          steps: JSON.stringify(steps)
-        };
-
-        const response = await window.electronAPI.api.updateTestCase(tcId, updateData);
-        if (response.success) {
-          addLog('success', `${events.length}개의 이벤트가 TC에 저장되었습니다.`);
-          
-          // TC 트리 새로고침
-          if (currentProject) {
-            await loadTCTree(currentProject.id);
-          }
-          
-          // 현재 TC 다시 로드
-          if (currentTC) {
-            const updatedTC = await window.electronAPI.api.getTestCase(currentTC.id);
-            if (updatedTC.success) {
-              selectTC(updatedTC.data);
+        addLog('success', `${events.length}개의 이벤트가 서버에서 처리되었습니다.`);
+        
+        // TC 트리 새로고침
+        if (currentProject) {
+          await loadTCTree(currentProject.id);
+        }
+        
+        // 현재 TC 다시 로드 (서버에서 변환된 스텝 포함)
+        if (currentTC) {
+          const updatedTC = await window.electronAPI.api.getTestCase(currentTC.id);
+          if (updatedTC.success) {
+            console.log('✅ 업데이트된 TC 로드:', updatedTC.data);
+            // steps가 제대로 있는지 확인
+            if (updatedTC.data.steps) {
+              try {
+                const steps = typeof updatedTC.data.steps === 'string' 
+                  ? JSON.parse(updatedTC.data.steps) 
+                  : updatedTC.data.steps;
+                console.log(`✅ TC에 ${steps.length}개의 스텝이 저장되었습니다.`);
+                if (steps.length === 0) {
+                  console.warn('⚠️ 스텝이 비어있습니다. 서버에서 변환이 제대로 되지 않았을 수 있습니다.');
+                }
+              } catch (e) {
+                console.error('❌ 스텝 파싱 오류:', e);
+              }
+            } else {
+              console.warn('⚠️ TC에 steps 필드가 없습니다.');
             }
+            selectTC(updatedTC.data);
+          } else {
+            console.error('❌ TC 로드 실패:', updatedTC.error);
           }
         }
+      } else {
+        console.warn('⚠️ 이벤트가 없습니다.');
       }
 
       // 코드가 있으면 스크립트 생성/업데이트

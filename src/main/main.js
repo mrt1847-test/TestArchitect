@@ -24,7 +24,7 @@ const http = require('http');
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
-const { spawn } = require('child_process');
+const { spawn, exec, execSync } = require('child_process');
 const os = require('os');
 const fs = require('fs');
 const net = require('net');
@@ -43,6 +43,9 @@ let mainWindow;
 
 /** @type {BrowserWindow} 녹화 창 인스턴스 */
 let recorderWindow = null;
+
+/** @type {boolean} 전역 녹화 상태 */
+let globalRecordingState = false;
 
 /** @type {http.Server} 녹화 데이터 수신용 HTTP 서버 */
 let recordingServer = null;
@@ -67,6 +70,11 @@ function startRecordingServer() {
   recordingApp.use(cors());
   recordingApp.use(bodyParser.json({ limit: '50mb' }));
   recordingApp.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
+
+  // favicon.ico 요청 처리 (404 오류 방지)
+  recordingApp.get('/favicon.ico', (req, res) => {
+    res.status(204).end(); // No Content
+  });
 
   // 녹화 데이터 수신 엔드포인트
   recordingApp.post('/api/recording', async (req, res) => {
@@ -293,43 +301,104 @@ function startRecordingServer() {
   // Extension 클라이언트 연결 관리
   recordingWebSocketServer.on('connection', (ws, req) => {
     const clientIp = req.socket.remoteAddress;
-    console.log(`🔌 Extension WebSocket 클라이언트 연결: ${clientIp}`);
+    const userAgent = req.headers['user-agent'] || 'unknown';
+    console.log(`🔌 Extension WebSocket 클라이언트 연결: ${clientIp}, User-Agent: ${userAgent}`);
     extensionClients.add(ws);
+    console.log(`[Extension] 현재 연결된 클라이언트 수: ${extensionClients.size}`);
     
     // 연결 확인 메시지 전송
-    ws.send(JSON.stringify({
-      type: 'connected',
-      message: 'TestArchitect 서버에 연결되었습니다',
-      timestamp: Date.now()
-    }));
+    try {
+      ws.send(JSON.stringify({
+        type: 'connected',
+        message: 'TestArchitect 서버에 연결되었습니다',
+        timestamp: Date.now()
+      }));
+      console.log(`[Extension] 연결 확인 메시지 전송 완료: ${clientIp}`);
+      
+      // 녹화 중이면 즉시 recording-start 메시지 전송 (늦게 연결된 클라이언트용)
+      console.log(`[Extension] 현재 녹화 상태 확인: ${globalRecordingState ? '녹화 중' : '녹화 중지'}`);
+      if (globalRecordingState) {
+        console.log(`[Extension] 녹화 중이므로 recording-start 메시지 즉시 전송: ${clientIp}`);
+        try {
+          const message = {
+            type: 'recording-start',
+            timestamp: Date.now()
+          };
+          ws.send(JSON.stringify(message));
+          console.log(`[Extension] recording-start 메시지 전송 완료: ${clientIp}`);
+        } catch (error) {
+          console.error(`[Extension] recording-start 메시지 전송 실패: ${error.message}`);
+        }
+      } else {
+        console.log(`[Extension] 녹화 중이 아니므로 recording-start 메시지 전송 안 함: ${clientIp}`);
+      }
+    } catch (error) {
+      console.error(`[Extension] 연결 확인 메시지 전송 실패: ${error.message}`);
+    }
     
     // 메시지 수신 처리
     ws.on('message', (message) => {
       try {
         const data = JSON.parse(message.toString());
+        console.log(`[Extension] 메시지 수신 (${clientIp}):`, data.type);
         handleExtensionMessage(ws, data);
       } catch (error) {
         console.error('[Extension] 메시지 파싱 오류:', error.message);
         console.error('[Extension] 원본 메시지:', message.toString().substring(0, 200));
-        ws.send(JSON.stringify({
-          type: 'error',
-          message: '메시지 파싱 실패',
-          error: error.message
-        }));
+        try {
+          ws.send(JSON.stringify({
+            type: 'error',
+            message: '메시지 파싱 실패',
+            error: error.message
+          }));
+        } catch (sendError) {
+          console.error('[Extension] 에러 메시지 전송 실패:', sendError.message);
+        }
       }
     });
     
     // 연결 종료 처리
-    ws.on('close', () => {
-      console.log(`🔌 Extension WebSocket 클라이언트 연결 해제: ${clientIp}`);
+    ws.on('close', (code, reason) => {
+      console.log(`🔌 Extension WebSocket 클라이언트 연결 해제: ${clientIp}, 코드: ${code}, 이유: ${reason?.toString() || '없음'}`);
       extensionClients.delete(ws);
+      console.log(`[Extension] 현재 연결된 클라이언트 수: ${extensionClients.size}`);
     });
     
     // 에러 처리
     ws.on('error', (error) => {
-      console.error('❌ Extension WebSocket 오류:', error);
+      console.error(`❌ Extension WebSocket 오류 (${clientIp}):`, error.message);
       extensionClients.delete(ws);
+      console.log(`[Extension] 현재 연결된 클라이언트 수: ${extensionClients.size}`);
     });
+    
+    // ping/pong으로 연결 유지
+    ws.isAlive = true;
+    ws.on('pong', () => {
+      ws.isAlive = true;
+    });
+  });
+  
+  // 연결 유지 체크 (30초마다)
+  const keepAliveInterval = setInterval(() => {
+    extensionClients.forEach((ws) => {
+      if (ws.isAlive === false) {
+        console.log('[Extension] 비활성 연결 제거');
+        extensionClients.delete(ws);
+        return ws.terminate();
+      }
+      ws.isAlive = false;
+      try {
+        ws.ping();
+      } catch (error) {
+        console.error('[Extension] ping 실패:', error.message);
+        extensionClients.delete(ws);
+      }
+    });
+  }, 30000);
+  
+  // 서버 종료 시 인터벌 정리
+  recordingServer.on('close', () => {
+    clearInterval(keepAliveInterval);
   });
   
   recordingServer.listen(PORT, () => {
@@ -410,8 +479,44 @@ function handleExtensionMessage(ws, data) {
       
     case 'recording-start':
       // Electron 내부 창(recorder.html)에서 녹화 시작 요청
-      console.log('[Extension] 녹화 시작 요청 수신');
+      console.log('[Extension] 녹화 시작 요청 수신 (WebSocket에서)');
       console.log('[Extension] 현재 연결된 클라이언트 수:', extensionClients.size);
+      console.log('[Extension] 녹화 상태 변경: false -> true');
+      globalRecordingState = true;
+      
+      // Recorder 창에도 녹화 시작 신호 전달 (준비된 경우에만)
+      if (recorderWindow && recorderWindow.webContents && !recorderWindow.isDestroyed()) {
+        // recorderWindow가 준비될 때까지 대기
+        const sendRecordingStart = () => {
+          try {
+            console.log('[Extension] Recorder 창으로 recording-start 전송');
+            recorderWindow.webContents.send('recording-start', {
+              timestamp: data.timestamp || Date.now()
+            });
+          } catch (error) {
+            console.error('[Extension] Recorder 창으로 recording-start 전송 실패:', error.message);
+          }
+        };
+        
+        if (recorderWindow.isReady) {
+          sendRecordingStart();
+        } else {
+          // 준비될 때까지 대기 (최대 5초)
+          const checkReady = setInterval(() => {
+            if (recorderWindow && recorderWindow.isReady) {
+              clearInterval(checkReady);
+              sendRecordingStart();
+            }
+          }, 100);
+          
+          setTimeout(() => {
+            clearInterval(checkReady);
+          }, 5000);
+        }
+      } else {
+        console.warn('[Extension] Recorder 창이 없어서 recording-start 전송 불가');
+      }
+      
       // 모든 Extension 클라이언트(Content Script)에게 브로드캐스트
       broadcastToExtensions({
         type: 'recording-start',
@@ -422,6 +527,22 @@ function handleExtensionMessage(ws, data) {
     case 'recording-stop':
       // Electron 내부 창(recorder.html)에서 녹화 중지 요청
       console.log('[Extension] 녹화 중지 요청 수신');
+      globalRecordingState = false;
+      
+      // Recorder 창에도 녹화 중지 신호 전달
+      if (recorderWindow && recorderWindow.webContents && !recorderWindow.isDestroyed()) {
+        try {
+          console.log('[Extension] Recorder 창으로 recording-stop 전송');
+          recorderWindow.webContents.send('recording-stop', {
+            timestamp: data.timestamp || Date.now()
+          });
+        } catch (error) {
+          console.error('[Extension] Recorder 창으로 recording-stop 전송 실패:', error.message);
+        }
+      } else {
+        console.warn('[Extension] Recorder 창이 없어서 recording-stop 전송 불가');
+      }
+      
       // 모든 Extension 클라이언트(Content Script)에게 브로드캐스트
       broadcastToExtensions({
         type: 'recording-stop',
@@ -467,11 +588,23 @@ function handleExtensionMessage(ws, data) {
       }
       
       // Recorder 창에도 전달 (recorder.html이 열려있는 경우)
-      if (recorderWindow && recorderWindow.webContents) {
-        recorderWindow.webContents.send('dom-event', {
-          ...data.event,
-          timestamp: data.timestamp || Date.now(),
-          sessionId: data.sessionId
+      if (recorderWindow && recorderWindow.webContents && !recorderWindow.isDestroyed()) {
+        try {
+          console.log('[Extension] Recorder 창으로 DOM 이벤트 전송:', data.event?.action);
+          recorderWindow.webContents.send('dom-event', {
+            ...data.event,
+            timestamp: data.timestamp || Date.now(),
+            sessionId: data.sessionId
+          });
+        } catch (error) {
+          console.error('[Extension] Recorder 창으로 DOM 이벤트 전송 실패:', error.message);
+        }
+      } else {
+        console.warn('[Extension] Recorder 창이 없거나 파괴됨, DOM 이벤트 전송 불가');
+        console.warn('[Extension] recorderWindow 상태:', {
+          exists: !!recorderWindow,
+          hasWebContents: !!(recorderWindow && recorderWindow.webContents),
+          isDestroyed: recorderWindow ? recorderWindow.isDestroyed() : 'N/A'
         });
       }
       
@@ -635,6 +768,20 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
     
     console.log('✅ 대상 탭 발견:', targetTab.url);
     
+    // selectorUtils.js 파일 읽기 (CDP 스크립트에 포함)
+    const selectorUtilsPath = path.join(__dirname, '../renderer/utils/selectorUtils.js');
+    let selectorUtilsCode = '';
+    try {
+      selectorUtilsCode = fs.readFileSync(selectorUtilsPath, 'utf8');
+      // export 키워드 제거 (CDP 스크립트에서 직접 사용)
+      selectorUtilsCode = selectorUtilsCode
+        .replace(/export\s+function\s+/g, 'function ')
+        .replace(/export\s+/g, '');
+      console.log('✅ selectorUtils.js 로드 완료');
+    } catch (error) {
+      console.warn('⚠️ selectorUtils.js 로드 실패:', error.message);
+    }
+    
     // DOM 이벤트 캡처 스크립트 생성 (확장 프로그램 없이 직접 구현)
     const domCaptureScript = `
 (function() {
@@ -649,7 +796,14 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
   
   console.log('[DOM Capture] DOM 이벤트 캡처 스크립트 시작');
   
+  // ============================================================================
+  // selectorUtils.js 함수들 (CDP 스크립트에 포함)
+  // ============================================================================
+  ${selectorUtilsCode}
+  
+  // ============================================================================
   // WebSocket 연결
+  // ============================================================================
   let wsConnection = null;
   let isRecording = false;
   let lastUrl = window.location.href;
@@ -673,6 +827,7 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
       wsConnection.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
+          console.log('[DOM Capture] 메시지 수신:', message.type);
           if (message.type === 'recording-start') {
             console.log('[DOM Capture] 녹화 시작');
             isRecording = true;
@@ -701,17 +856,24 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
   
   // 이벤트 전송 함수
   function sendEvent(eventData) {
-    if (!isRecording || !wsConnection || wsConnection.readyState !== WebSocket.OPEN) {
+    if (!isRecording) {
+      console.log('[DOM Capture] 녹화 중이 아니어서 이벤트 전송 스킵:', eventData.action);
+      return;
+    }
+    if (!wsConnection || wsConnection.readyState !== WebSocket.OPEN) {
+      console.log('[DOM Capture] WebSocket 연결이 없어서 이벤트 전송 스킵:', eventData.action);
       return;
     }
     
     try {
-      wsConnection.send(JSON.stringify({
+      const message = {
         type: 'dom-event',
         event: eventData,
         timestamp: Date.now(),
         sessionId: window.__testarchitect_session_id__ || null
-      }));
+      };
+      console.log('[DOM Capture] 이벤트 전송:', eventData.action);
+      wsConnection.send(JSON.stringify(message));
     } catch (error) {
       console.error('[DOM Capture] 이벤트 전송 실패:', error);
     }
@@ -725,16 +887,29 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
     if (!target || target === document.body || target === document.documentElement) return;
     
     const rect = target.getBoundingClientRect();
+    
+    // selectorUtils.js를 사용하여 셀렉터 후보 생성 (유일성 검증 포함)
+    let selectorCandidates = [];
+    try {
+      selectorCandidates = getSelectorCandidatesWithUniqueness(target, {
+        requireUnique: false
+      });
+      console.log('[DOM Capture] 셀렉터 후보 생성 완료:', selectorCandidates.length, '개');
+    } catch (error) {
+      console.error('[DOM Capture] 셀렉터 생성 오류:', error);
+    }
+    
     sendEvent({
       action: 'click',
       target: {
         tag: target.tagName.toLowerCase(),
         id: target.id || null,
         className: target.className || null,
-        text: target.textContent?.trim().substring(0, 100) || null
+        text: (target.innerText || target.textContent || "").trim().substring(0, 100) || null
       },
       value: target.value || target.textContent?.trim() || null,
-      selectors: [],
+      selectorCandidates: selectorCandidates,
+      selectors: selectorCandidates.map(c => c.selector || c), // 호환성
       clientRect: {
         x: rect.x,
         y: rect.y,
@@ -755,6 +930,16 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
     const target = event.target;
     if (!target || (target.tagName !== 'INPUT' && target.tagName !== 'TEXTAREA')) return;
     
+    // selectorUtils.js를 사용하여 셀렉터 후보 생성 (유일성 검증 포함)
+    let selectorCandidates = [];
+    try {
+      selectorCandidates = getSelectorCandidatesWithUniqueness(target, {
+        requireUnique: false
+      });
+    } catch (error) {
+      console.error('[DOM Capture] 셀렉터 생성 오류:', error);
+    }
+    
     sendEvent({
       action: 'input',
       target: {
@@ -764,7 +949,8 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
         type: target.type || null
       },
       value: target.value || null,
-      selectors: [],
+      selectorCandidates: selectorCandidates,
+      selectors: selectorCandidates.map(c => c.selector || c), // 호환성
       page: {
         url: window.location.href,
         title: document.title
@@ -795,8 +981,13 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
     }
   }, 500);
   
+  // 요소 하이라이트 기능은 일단 제거 (문제 해결 후 다시 추가 가능)
+  
   // WebSocket 연결 시작
   connectWebSocket();
+  
+  // 초기에는 하이라이트 리스너를 추가하지 않음 (녹화 시작 시에만 추가)
+  // setupHoverListeners()는 recording-start 메시지를 받을 때 호출됨
   
   console.log('[DOM Capture] DOM 이벤트 캡처 스크립트 초기화 완료');
 })();
@@ -916,6 +1107,163 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
 }
 
 /**
+ * 단일 이벤트를 step으로 변환하는 함수
+ */
+function convertEventToStep(event, index = 0) {
+  // 디버깅: 이벤트 구조 로그 (첫 번째 이벤트만)
+  if (index === 0) {
+    console.log('[Recording] 첫 번째 이벤트 구조:', JSON.stringify(event, null, 2));
+  }
+  
+  // 키워드 형식으로 변환: { action, target, value, description }
+  // event.type이 없을 경우 이벤트 구조에서 추론 시도
+  let action = event.type;
+  if (!action) {
+    // 이벤트 구조에서 타입 추론
+    if (event.action) action = event.action;
+    else if (event.eventType) action = event.eventType;
+    else if (event.name) action = event.name;
+    else {
+      console.warn(`[Recording] 이벤트 ${index}에 type이 없습니다:`, event);
+      action = 'unknown';
+    }
+  }
+  
+  const step = {
+    action: action, // 'click', 'type', 'navigate', 'wait', 'assert' 등
+    target: null,
+    value: event.value || null,
+    description: null
+  };
+
+  // Target 추출 및 정규화
+  if (event.target) {
+    const selectors = event.target.selectors || {};
+    
+    // Selector 우선순위: id > css > xpath > text > name
+    let targetSelector = null;
+    
+    // 1. selectors 객체에서 추출
+    if (selectors.id) {
+      targetSelector = `#${selectors.id.replace(/^#/, '')}`;
+    } else if (selectors.css) {
+      targetSelector = selectors.css;
+    } else if (selectors.xpath) {
+      targetSelector = selectors.xpath;
+    } else if (selectors.text) {
+      targetSelector = `text:"${selectors.text}"`;
+    } else if (selectors.name) {
+      targetSelector = `[name="${selectors.name}"]`;
+    } else if (selectors.dataTestId) {
+      targetSelector = `[data-testid="${selectors.dataTestId}"]`;
+    }
+    
+    // 2. selectorCandidates에서 추출 (최우선 셀렉터 사용)
+    if (!targetSelector && event.selectorCandidates && Array.isArray(event.selectorCandidates) && event.selectorCandidates.length > 0) {
+      // 가장 높은 점수의 셀렉터 사용
+      const topCandidate = event.selectorCandidates[0];
+      if (topCandidate && topCandidate.selector) {
+        targetSelector = topCandidate.selector;
+      }
+    }
+    
+    // 3. selectors 배열에서 추출
+    if (!targetSelector && event.selectors && Array.isArray(event.selectors) && event.selectors.length > 0) {
+      targetSelector = event.selectors[0];
+    }
+    
+    // 4. target 객체에서 직접 추출
+    if (!targetSelector) {
+      if (event.target.id) {
+        targetSelector = `#${event.target.id}`;
+      } else if (event.target.className) {
+        const classes = event.target.className.split(/\s+/).filter(c => c).join('.');
+        if (classes) {
+          targetSelector = `.${classes}`;
+        }
+      } else if (event.target.tagName) {
+        targetSelector = event.target.tagName.toLowerCase();
+      } else if (event.target.text) {
+        targetSelector = `text:"${event.target.text}"`;
+      } else if (event.target.selector) {
+        targetSelector = event.target.selector;
+      } else if (event.target.xpath) {
+        targetSelector = event.target.xpath;
+      }
+    }
+    
+    step.target = targetSelector;
+    
+    // Description 생성 (디버깅용)
+    const targetInfo = [];
+    if (event.target.tagName) targetInfo.push(`tag:${event.target.tagName}`);
+    if (event.target.id) targetInfo.push(`id:${event.target.id}`);
+    if (event.target.text) targetInfo.push(`text:"${event.target.text.substring(0, 50)}"`);
+    if (event.target.className) targetInfo.push(`class:${event.target.className}`);
+    if (targetInfo.length > 0) {
+      step.description = targetInfo.join(', ');
+    }
+    
+    // target이 여전히 null이면 경고 및 상세 디버깅
+    if (!step.target) {
+      console.warn(`[Recording] ⚠️ 이벤트 ${index} (${step.action})의 target을 추출할 수 없습니다.`);
+      console.warn(`[Recording] 이벤트 전체 구조:`, JSON.stringify(event, null, 2));
+      console.warn(`[Recording] target 객체:`, event.target);
+      console.warn(`[Recording] selectors 객체:`, selectors);
+    }
+  } else if (event.selector) {
+    // target이 없지만 selector가 직접 있는 경우
+    step.target = event.selector;
+    console.log(`[Recording] selector에서 target 추출: ${step.target}`);
+  } else if (event.xpath) {
+    // xpath가 직접 있는 경우
+    step.target = event.xpath;
+    console.log(`[Recording] xpath에서 target 추출: ${step.target}`);
+  } else if (action === 'navigate') {
+    // navigate의 경우 target이 없을 수 있음 (value가 URL)
+    step.target = event.value || event.url || null;
+  }
+
+  // navigate 이벤트의 경우 target을 URL로 설정
+  if (event.type === 'navigate' && event.value) {
+    step.target = event.value;
+    step.value = null;
+  }
+
+  // wait 이벤트의 경우 조건 추가
+  if (event.type === 'wait') {
+    step.condition = event.condition || 'visible';
+    step.timeout = event.timeout || 5000;
+    if (!step.target && event.target) {
+      // wait의 경우 target이 selector여야 함
+      const selectors = event.target.selectors || {};
+      step.target = selectors.css || selectors.xpath || selectors.id || null;
+    }
+  }
+
+  // assert 이벤트의 경우 검증 정보 추가
+  if (event.type === 'assert') {
+    step.assertion = event.assertion || 'text';
+    step.expected = event.expected || null;
+    if (!step.target && event.target) {
+      const selectors = event.target.selectors || {};
+      step.target = selectors.css || selectors.xpath || selectors.id || null;
+    }
+  }
+
+  // URL 정보는 description에 추가 (선택사항)
+  if (event.url && event.url !== step.target) {
+    if (step.description) {
+      step.description += ` | url:${event.url}`;
+    } else {
+      step.description = `url:${event.url}`;
+    }
+  }
+
+  return step;
+}
+
+/**
  * 녹화 데이터를 TC와 스크립트에 반영
  */
 async function processRecordingData(recordingData) {
@@ -931,149 +1279,7 @@ async function processRecordingData(recordingData) {
 
   // 1. 이벤트를 TC 스텝으로 변환 (키워드 형식)
   const steps = events.map((event, index) => {
-    // 디버깅: 이벤트 구조 로그
-    if (index === 0) {
-      console.log('[Recording] 첫 번째 이벤트 구조:', JSON.stringify(event, null, 2));
-    }
-    
-    // 키워드 형식으로 변환: { action, target, value, description }
-    // event.type이 없을 경우 이벤트 구조에서 추론 시도
-    let action = event.type;
-    if (!action) {
-      // 이벤트 구조에서 타입 추론
-      if (event.action) action = event.action;
-      else if (event.eventType) action = event.eventType;
-      else if (event.name) action = event.name;
-      else {
-        console.warn(`[Recording] 이벤트 ${index}에 type이 없습니다:`, event);
-        action = 'unknown';
-      }
-    }
-    
-    const step = {
-      action: action, // 'click', 'type', 'navigate', 'wait', 'assert' 등
-      target: null,
-      value: event.value || null,
-      description: null
-    };
-
-    // Target 추출 및 정규화
-    if (event.target) {
-      const selectors = event.target.selectors || {};
-      
-      // Selector 우선순위: id > css > xpath > text > name
-      let targetSelector = null;
-      
-      // 1. selectors 객체에서 추출
-      if (selectors.id) {
-        targetSelector = `#${selectors.id.replace(/^#/, '')}`;
-      } else if (selectors.css) {
-        targetSelector = selectors.css;
-      } else if (selectors.xpath) {
-        targetSelector = selectors.xpath;
-      } else if (selectors.text) {
-        targetSelector = `text:"${selectors.text}"`;
-      } else if (selectors.name) {
-        targetSelector = `[name="${selectors.name}"]`;
-      } else if (selectors.dataTestId) {
-        targetSelector = `[data-testid="${selectors.dataTestId}"]`;
-      }
-      
-      // 2. target 객체에서 직접 추출
-      if (!targetSelector) {
-        if (event.target.id) {
-          targetSelector = `#${event.target.id}`;
-        } else if (event.target.className) {
-          const classes = event.target.className.split(/\s+/).filter(c => c).join('.');
-          if (classes) {
-            targetSelector = `.${classes}`;
-          }
-        } else if (event.target.tagName) {
-          targetSelector = event.target.tagName.toLowerCase();
-        } else if (event.target.text) {
-          targetSelector = `text:"${event.target.text}"`;
-        } else if (event.target.selector) {
-          targetSelector = event.target.selector;
-        } else if (event.target.xpath) {
-          targetSelector = event.target.xpath;
-        }
-      }
-      
-      step.target = targetSelector;
-      
-      // Description 생성 (디버깅용)
-      const targetInfo = [];
-      if (event.target.tagName) targetInfo.push(`tag:${event.target.tagName}`);
-      if (event.target.id) targetInfo.push(`id:${event.target.id}`);
-      if (event.target.text) targetInfo.push(`text:"${event.target.text.substring(0, 50)}"`);
-      if (event.target.className) targetInfo.push(`class:${event.target.className}`);
-      if (targetInfo.length > 0) {
-        step.description = targetInfo.join(', ');
-      }
-      
-      // target이 여전히 null이면 경고 및 상세 디버깅
-      if (!step.target) {
-        console.warn(`[Recording] ⚠️ 이벤트 ${index} (${step.action})의 target을 추출할 수 없습니다.`);
-        console.warn(`[Recording] 이벤트 전체 구조:`, JSON.stringify(event, null, 2));
-        console.warn(`[Recording] target 객체:`, event.target);
-        console.warn(`[Recording] selectors 객체:`, selectors);
-      }
-    } else if (event.selector) {
-      // target이 없지만 selector가 직접 있는 경우
-      step.target = event.selector;
-      console.log(`[Recording] selector에서 target 추출: ${step.target}`);
-    } else if (event.xpath) {
-      // xpath가 직접 있는 경우
-      step.target = event.xpath;
-      console.log(`[Recording] xpath에서 target 추출: ${step.target}`);
-    } else if (action === 'navigate') {
-      // navigate의 경우 target이 없을 수 있음 (value가 URL)
-      step.target = event.value || event.url || null;
-    } else if (event.selector) {
-      // target이 없지만 selector가 직접 있는 경우
-      step.target = event.selector;
-    } else if (event.xpath) {
-      // xpath가 직접 있는 경우
-      step.target = event.xpath;
-    }
-
-    // navigate 이벤트의 경우 target을 URL로 설정
-    if (event.type === 'navigate' && event.value) {
-      step.target = event.value;
-      step.value = null;
-    }
-
-    // wait 이벤트의 경우 조건 추가
-    if (event.type === 'wait') {
-      step.condition = event.condition || 'visible';
-      step.timeout = event.timeout || 5000;
-      if (!step.target && event.target) {
-        // wait의 경우 target이 selector여야 함
-        const selectors = event.target.selectors || {};
-        step.target = selectors.css || selectors.xpath || selectors.id || null;
-      }
-    }
-
-    // assert 이벤트의 경우 검증 정보 추가
-    if (event.type === 'assert') {
-      step.assertion = event.assertion || 'text';
-      step.expected = event.expected || null;
-      if (!step.target && event.target) {
-        const selectors = event.target.selectors || {};
-        step.target = selectors.css || selectors.xpath || selectors.id || null;
-      }
-    }
-
-    // URL 정보는 description에 추가 (선택사항)
-    if (event.url && event.url !== step.target) {
-      if (step.description) {
-        step.description += ` | url:${event.url}`;
-      } else {
-        step.description = `url:${event.url}`;
-      }
-    }
-
-    return step;
+    return convertEventToStep(event, index);
   });
 
   // 디버깅: 변환된 steps 확인
@@ -1114,6 +1320,8 @@ async function processRecordingData(recordingData) {
   if (!tcUpdateResult) {
     throw new Error('TC 업데이트 실패');
   }
+  
+  return { steps, tcId, projectId };
   
   // 저장된 데이터 확인
   const savedTC = DbService.get('SELECT steps FROM test_cases WHERE id = ?', [tcId]);
@@ -1219,8 +1427,25 @@ function openRecorderWindow(tcId, projectId, sessionId) {
   // recorder.html 로드
   recorderWindow.loadFile(recorderPath);
 
+  // 창이 준비되면 로그 출력 및 준비 완료 플래그 설정
+  recorderWindow.webContents.once('did-finish-load', () => {
+    console.log('[Recorder] recorder.html 로드 완료');
+    recorderWindow.isReady = true;
+    
+    // 녹화 중이면 즉시 recording-start 전송
+    if (globalRecordingState) {
+      console.log('[Recorder] 녹화 중이므로 recording-start 메시지 즉시 전송');
+      recorderWindow.webContents.send('recording-start', {
+        timestamp: Date.now()
+      });
+    }
+  });
+  
+  recorderWindow.isReady = false; // 초기 상태
+
   // 창이 닫히면 참조 제거
   recorderWindow.on('closed', () => {
+    console.log('[Recorder] recorderWindow 닫힘');
     recorderWindow = null;
   });
 
@@ -1228,6 +1453,14 @@ function openRecorderWindow(tcId, projectId, sessionId) {
   if (config.dev.enabled && config.dev.autoOpenDevTools) {
     recorderWindow.webContents.openDevTools();
   }
+  
+  console.log('[Recorder] recorderWindow 생성 완료');
+  console.log('[Recorder] recorderWindow 상태:', {
+    exists: !!recorderWindow,
+    hasWebContents: !!(recorderWindow && recorderWindow.webContents),
+    isDestroyed: recorderWindow ? recorderWindow.isDestroyed() : 'N/A',
+    isReady: recorderWindow ? recorderWindow.isReady : 'N/A'
+  });
 
   console.log('✅ 녹화 창 열림:', recorderPath);
 }
@@ -1740,21 +1973,47 @@ ipcMain.handle('open-browser', async (event, options) => {
     let extensionPath;
     const platform = process.platform;
     
-    if (platform === 'win32') {
-      // Windows Chrome 경로 찾기
-      const possibleChromePaths = [
-        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-        path.join(os.homedir(), 'AppData\\Local\\Google\\Chrome\\Application\\chrome.exe')
-      ];
+    // PATH에서 Chrome 찾기 (우선 시도)
+    function findChromeFromPath() {
+      try {
+        const cmd = platform === 'win32' ? 'where chrome' : 'which google-chrome';
+        const result = execSync(cmd, { encoding: 'utf8', timeout: 2000 }).toString().trim().split('\n')[0];
+        if (result && fs.existsSync(result)) {
+          return result;
+        }
+        return null;
+      } catch (error) {
+        return null;
+      }
+    }
+    
+    // PATH에서 Chrome 찾기 시도
+    chromePath = findChromeFromPath();
+    if (chromePath) {
+      console.log('✅ PATH에서 Chrome 경로 발견:', chromePath);
+    } else {
+      console.log('⚠️ PATH에서 Chrome을 찾을 수 없습니다. 하드코딩된 경로 확인 중...');
       
-      for (const possiblePath of possibleChromePaths) {
-        if (fs.existsSync(possiblePath)) {
-          chromePath = possiblePath;
-          break;
+      if (platform === 'win32') {
+        // Windows Chrome 경로 찾기 (하드코딩된 경로)
+        const possibleChromePaths = [
+          'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+          'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+          path.join(os.homedir(), 'AppData\\Local\\Google\\Chrome\\Application\\chrome.exe')
+        ];
+        
+        for (const possiblePath of possibleChromePaths) {
+          if (fs.existsSync(possiblePath)) {
+            chromePath = possiblePath;
+            console.log('✅ 하드코딩된 경로에서 Chrome 발견:', chromePath);
+            break;
+          }
         }
       }
-      
+    }
+    
+    // 확장 프로그램 경로 찾기 (플랫폼별)
+    if (platform === 'win32') {
       // 확장 프로그램 경로 찾기
       const extensionBasePath = path.join(
         os.homedir(),
@@ -1829,8 +2088,15 @@ ipcMain.handle('open-browser', async (event, options) => {
         }
       }
     } else if (platform === 'darwin') {
-      // macOS
-      chromePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+      // macOS - PATH에서 찾지 못했으면 하드코딩된 경로 시도
+      if (!chromePath) {
+        chromePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+        if (fs.existsSync(chromePath)) {
+          console.log('✅ macOS 하드코딩된 경로에서 Chrome 발견:', chromePath);
+        } else {
+          chromePath = null;
+        }
+      }
       const extensionBasePath = path.join(
         os.homedir(),
         'Library/Application Support/Google/Chrome/Default/Extensions',
@@ -1854,8 +2120,11 @@ ipcMain.handle('open-browser', async (event, options) => {
         }
       }
     } else {
-      // Linux
-      chromePath = 'google-chrome';
+      // Linux - PATH에서 찾지 못했으면 'google-chrome' 시도
+      if (!chromePath) {
+        chromePath = 'google-chrome';
+        console.log('⚠️ Linux: PATH에서 찾지 못해 "google-chrome" 사용 (실행 시 확인됨)');
+      }
       const extensionBasePath = path.join(
         os.homedir(),
         '.config/google-chrome/Default/Extensions',
@@ -1881,7 +2150,12 @@ ipcMain.handle('open-browser', async (event, options) => {
     }
     
     // Chrome 실행
+    console.log('🔍 Chrome 경로 확인 결과:');
+    console.log('  - chromePath:', chromePath || '없음');
+    console.log('  - 경로 존재 여부:', chromePath ? fs.existsSync(chromePath) : false);
+    
     if (chromePath && fs.existsSync(chromePath)) {
+      console.log('✅ Chrome 경로 확인됨 - spawn으로 CDP 모드 실행');
       // 사용 가능한 CDP 포트 찾기
       async function findAvailableCDPPort(startPort = 9222, maxAttempts = 10) {
         for (let i = 0; i < maxAttempts; i++) {
@@ -1928,48 +2202,159 @@ ipcMain.handle('open-browser', async (event, options) => {
         userDataPath = path.join(os.homedir(), '.config/google-chrome');
       }
       
-      // 기존 프로필이 있으면 사용 (로그인 정보 유지)
-      // 단, 프로필 잠금 파일이 있으면 임시 프로필 사용 (충돌 방지)
+      // 기존 프로필을 복제해서 CDP 전용 프로필로 사용 (로그인 정보 유지 + 충돌 방지)
+      function copyProfileForCDP(sourceProfilePath, targetProfilePath) {
+        try {
+          // 필요한 파일/폴더만 복제 (전체 복제는 시간이 오래 걸림)
+          const filesToCopy = [
+            'Cookies',
+            'Cookies-journal',
+            'Login Data',
+            'Login Data-journal',
+            'Preferences',
+            'Secure Preferences',
+            'Web Data',
+            'Web Data-journal',
+            'History',
+            'History-journal',
+            'Bookmarks',
+            'Bookmarks.bak',
+            'Favicons',
+            'Favicons-journal',
+            'Top Sites',
+            'Top Sites-journal',
+            'Shortcuts',
+            'Shortcuts-journal'
+          ];
+          
+          const dirsToCopy = [
+            'Local Storage',
+            'Session Storage',
+            'IndexedDB'
+          ];
+          
+          // 타겟 프로필 디렉토리 생성
+          if (!fs.existsSync(targetProfilePath)) {
+            fs.mkdirSync(targetProfilePath, { recursive: true });
+          }
+          
+          // 파일 복제
+          let copiedCount = 0;
+          for (const file of filesToCopy) {
+            const sourceFile = path.join(sourceProfilePath, file);
+            const targetFile = path.join(targetProfilePath, file);
+            
+            if (fs.existsSync(sourceFile)) {
+              try {
+                fs.copyFileSync(sourceFile, targetFile);
+                copiedCount++;
+              } catch (error) {
+                // 파일이 잠겨있거나 사용 중일 수 있음 (무시)
+                console.warn(`  ⚠️ 복제 실패: ${file} - ${error.message}`);
+              }
+            }
+          }
+          
+          // 디렉토리 복제 (빈 디렉토리만 생성)
+          for (const dir of dirsToCopy) {
+            const targetDir = path.join(targetProfilePath, dir);
+            if (!fs.existsSync(targetDir)) {
+              try {
+                fs.mkdirSync(targetDir, { recursive: true });
+              } catch (error) {
+                console.warn(`  ⚠️ 디렉토리 생성 실패: ${dir}`);
+              }
+            }
+          }
+          
+          console.log(`  ✅ ${copiedCount}개 파일 복제 완료`);
+          return true;
+        } catch (error) {
+          console.error('❌ 프로필 복제 실패:', error.message);
+          return false;
+        }
+      }
+      
+      let cdpProfilePath = null;
       let useTempProfile = false;
-      let profileLockPath = null;
       
       if (fs.existsSync(userDataPath)) {
-        // 프로필 잠금 파일 확인 (Windows: SingletonLock, Linux/Mac: SingletonSocket)
-        if (platform === 'win32') {
-          profileLockPath = path.join(userDataPath, 'SingletonLock');
-        } else if (platform === 'darwin') {
-          profileLockPath = path.join(userDataPath, 'SingletonSocket');
-        } else {
-          profileLockPath = path.join(userDataPath, 'SingletonLock');
-        }
+        const defaultProfilePath = path.join(
+          userDataPath,
+          platform === 'win32' ? 'Default' : 'Default'
+        );
         
-        // 프로필 잠금 파일이 있으면 임시 프로필 사용
-        if (fs.existsSync(profileLockPath)) {
-          console.warn('⚠️ Chrome 프로필이 잠겨있습니다 (실행 중인 Chrome이 있을 수 있음)');
-          console.warn('⚠️ 임시 프로필을 사용합니다 (로그인 정보는 유지되지 않습니다)');
-          useTempProfile = true;
-        } else {
-          // 프로필 디렉토리를 명시적으로 지정
-          chromeArgs.push(`--user-data-dir=${userDataPath}`);
-          chromeArgs.push('--profile-directory=Default');
-          console.log('✅ 기존 Chrome 프로필 사용 (로그인 정보 유지):', userDataPath);
-          
-          // 확장 프로그램이 이미 설치되어 있으면 자동으로 로드됨
-          const extensionBasePath = path.join(
-            userDataPath,
-            platform === 'win32' ? 'Default\\Extensions' : 'Default/Extensions',
-            EXTENSION_ID
+        if (fs.existsSync(defaultProfilePath)) {
+          // CDP 전용 프로필 경로 (앱 데이터 디렉토리)
+          const cdpProfileBasePath = path.join(
+            os.homedir(),
+            platform === 'win32' 
+              ? 'AppData\\Local\\TestArchitect\\ChromeProfiles'
+              : platform === 'darwin'
+              ? 'Library/Application Support/TestArchitect/ChromeProfiles'
+              : '.config/testarchitect/chrome-profiles'
           );
           
-          if (fs.existsSync(extensionBasePath)) {
-            console.log('✅ 기존에 설치된 확장 프로그램이 자동으로 로드됩니다');
+          // CDP 프로필 디렉토리 생성
+          if (!fs.existsSync(cdpProfileBasePath)) {
+            fs.mkdirSync(cdpProfileBasePath, { recursive: true });
           }
+          
+          cdpProfilePath = path.join(cdpProfileBasePath, 'CDP-Profile');
+          
+          // 프로필 복제 (캐시된 프로필이 있으면 스킵 가능)
+          const profileCacheFile = path.join(cdpProfilePath, '.profile-copied');
+          const sourcePrefsFile = path.join(defaultProfilePath, 'Preferences');
+          const shouldCopy = !fs.existsSync(profileCacheFile) || 
+                            !fs.existsSync(sourcePrefsFile) ||
+                            (fs.existsSync(profileCacheFile) && fs.existsSync(sourcePrefsFile) &&
+                             fs.statSync(profileCacheFile).mtime < fs.statSync(sourcePrefsFile).mtime);
+          
+          if (shouldCopy) {
+            console.log('📋 기존 프로필을 CDP 전용 프로필로 복제 중...');
+            if (copyProfileForCDP(defaultProfilePath, cdpProfilePath)) {
+              // 복제 완료 마커 파일 생성
+              try {
+                fs.writeFileSync(profileCacheFile, new Date().toISOString());
+              } catch (error) {
+                // 무시
+              }
+              console.log('✅ 프로필 복제 완료:', cdpProfilePath);
+            } else {
+              console.warn('⚠️ 프로필 복제 실패, 임시 프로필 사용');
+              useTempProfile = true;
+            }
+          } else {
+            console.log('✅ 캐시된 CDP 프로필 사용:', cdpProfilePath);
+          }
+          
+          // CDP 프로필 사용
+          if (!useTempProfile && cdpProfilePath && fs.existsSync(cdpProfilePath)) {
+            chromeArgs.push(`--user-data-dir=${cdpProfileBasePath}`);
+            chromeArgs.push('--profile-directory=CDP-Profile');
+            console.log('✅ CDP 전용 프로필 사용 (로그인 정보 유지, 충돌 방지):', cdpProfilePath);
+            
+            // 확장 프로그램 경로 확인 (원본 프로필에서)
+            const extensionBasePath = path.join(
+              userDataPath,
+              platform === 'win32' ? 'Default\\Extensions' : 'Default/Extensions',
+              EXTENSION_ID
+            );
+            
+            if (fs.existsSync(extensionBasePath)) {
+              console.log('✅ 기존에 설치된 확장 프로그램이 자동으로 로드됩니다');
+            }
+          } else {
+            useTempProfile = true;
+          }
+        } else {
+          useTempProfile = true;
         }
       } else {
         useTempProfile = true;
       }
       
-      // 임시 프로필 사용
+      // 임시 프로필 사용 (복제 실패 시)
       if (useTempProfile) {
         const tempUserDataDir = path.join(os.tmpdir(), `testarchitect-chrome-${Date.now()}`);
         chromeArgs.push(`--user-data-dir=${tempUserDataDir}`);
@@ -1982,6 +2367,21 @@ ipcMain.handle('open-browser', async (event, options) => {
         console.log('✅ 확장 프로그램 로드:', extensionPath);
       }
       
+      // Chrome 실행 인수 검증 (CDP 모드 확인)
+      const hasRemoteDebuggingPort = chromeArgs.some(arg => arg.includes('--remote-debugging-port'));
+      if (!hasRemoteDebuggingPort) {
+        console.error('❌ --remote-debugging-port 옵션이 Chrome 인수에 없습니다!');
+        console.error('❌ CDP 모드로 실행할 수 없습니다.');
+        return { 
+          success: false, 
+          error: '--remote-debugging-port 옵션이 없습니다' 
+        };
+      }
+      
+      console.log('🔍 Chrome 실행 인수 검증:');
+      console.log('  ✅ --remote-debugging-port 옵션 확인됨');
+      console.log('  📋 전체 실행 인수:', chromeArgs.join(' '));
+      
       // Chrome 프로세스 실행 (오류 확인을 위해 stdio 캡처)
       const chromeProcess = spawn(chromePath, chromeArgs, {
         detached: true,
@@ -1990,6 +2390,14 @@ ipcMain.handle('open-browser', async (event, options) => {
       
       // Chrome 프로세스 출력 캡처 (CDP 서버 시작 확인)
       let cdpServerReady = false;
+      let chromeProcessStarted = false;
+      let chromeProcessError = null;
+      
+      // Chrome 프로세스 시작 확인
+      chromeProcess.on('spawn', () => {
+        chromeProcessStarted = true;
+        console.log('✅ Chrome 프로세스 시작됨 (PID:', chromeProcess.pid, ')');
+      });
       
       chromeProcess.stdout.on('data', (data) => {
         const output = data.toString();
@@ -2001,9 +2409,10 @@ ipcMain.handle('open-browser', async (event, options) => {
             cdpServerReady = true;
           }
         }
-        if (output.trim() && !output.includes('DevTools listening')) {
-          console.log('[Chrome stdout]', output.trim());
-        }
+        // 디버깅을 위해 모든 출력 로깅 (필요시 주석 처리)
+        // if (output.trim() && !output.includes('DevTools listening')) {
+        //   console.log('[Chrome stdout]', output.trim());
+        // }
       });
       
       chromeProcess.stderr.on('data', (data) => {
@@ -2016,19 +2425,29 @@ ipcMain.handle('open-browser', async (event, options) => {
             cdpServerReady = true;
           }
         }
+        // 프로필 관련 오류는 중요하므로 로깅
+        if (output.includes('profile') || output.includes('lock') || output.includes('already running')) {
+          console.warn('[Chrome stderr]', output.trim());
+          chromeProcessError = output.trim();
+        }
         // 일반적인 Chrome 경고는 무시
         if (!output.includes('DevTools listening') && !output.includes('INFO') && !output.includes('ERROR:google_apis') && output.trim()) {
-          console.warn('[Chrome stderr]', output.trim());
+          // 디버깅을 위해 주석 처리 (필요시 활성화)
+          // console.warn('[Chrome stderr]', output.trim());
         }
       });
       
       chromeProcess.on('error', (error) => {
         console.error('❌ Chrome 실행 오류:', error.message);
+        chromeProcessError = error.message;
       });
       
       chromeProcess.on('exit', (code, signal) => {
         if (code !== null && code !== 0) {
           console.warn(`⚠️ Chrome 프로세스 종료 (코드: ${code}, 신호: ${signal})`);
+          if (code === 1) {
+            console.warn('⚠️ Chrome이 오류로 종료되었습니다. 프로필 잠금 또는 다른 Chrome 인스턴스와 충돌할 수 있습니다.');
+          }
         }
       });
       
@@ -2044,7 +2463,16 @@ ipcMain.handle('open-browser', async (event, options) => {
         wsUrl: `ws://localhost:3000`,
         pid: chromeProcess.pid
       });
-      console.log('📋 Chrome 실행 인수:', chromeArgs.join(' '));
+      
+      // Chrome 실행 인수 상세 출력 (디버깅용)
+      console.log('📋 Chrome 실행 인수 (상세):');
+      chromeArgs.forEach((arg, index) => {
+        if (arg.includes('--remote-debugging-port')) {
+          console.log(`  [${index}] ✅ ${arg} <- CDP 모드 활성화`);
+        } else {
+          console.log(`  [${index}] ${arg}`);
+        }
+      });
 
       // Chrome이 완전히 시작될 때까지 대기 후 DOM 이벤트 캡처 스크립트 주입 시도
       // CDP 서버가 준비될 때까지 내부에서 재시도하므로 한 번만 호출
@@ -2065,10 +2493,55 @@ ipcMain.handle('open-browser', async (event, options) => {
       setTimeout(async () => {
         clearInterval(checkCDPServer);
         
+        // Chrome 프로세스 시작 확인
+        if (!chromeProcessStarted) {
+          console.error('❌ Chrome 프로세스가 시작되지 않았습니다.');
+          if (chromeProcessError) {
+            console.error('❌ 오류:', chromeProcessError);
+          }
+          return;
+        }
+        
+        // Chrome이 실제로 CDP 모드로 실행되었는지 확인 (Windows)
+        if (platform === 'win32' && chromeProcess.pid) {
+          try {
+            // PowerShell을 사용하여 Chrome 프로세스의 명령줄 인수 확인
+            const checkCommand = `powershell -Command "Get-WmiObject Win32_Process -Filter \\"ProcessId = ${chromeProcess.pid}\\" | Select-Object -ExpandProperty CommandLine"`;
+            exec(checkCommand, { timeout: 3000 }, (error, stdout, stderr) => {
+              if (!error && stdout) {
+                const commandLine = stdout.trim();
+                if (commandLine.includes('--remote-debugging-port')) {
+                  const portMatch = commandLine.match(/--remote-debugging-port=(\d+)/);
+                  if (portMatch) {
+                    const actualPort = parseInt(portMatch[1]);
+                    console.log(`✅ Chrome 프로세스 확인: CDP 모드로 실행 중 (포트: ${actualPort})`);
+                    if (actualPort !== CDP_PORT) {
+                      console.warn(`⚠️ 예상 포트(${CDP_PORT})와 실제 포트(${actualPort})가 다릅니다.`);
+                    }
+                  } else {
+                    console.log('✅ Chrome 프로세스 확인: --remote-debugging-port 옵션 포함됨');
+                  }
+                } else {
+                  console.error('❌ Chrome 프로세스 확인: --remote-debugging-port 옵션이 없습니다!');
+                  console.error('❌ Chrome이 CDP 모드로 실행되지 않았습니다.');
+                }
+              }
+            });
+          } catch (error) {
+            console.warn('⚠️ Chrome 프로세스 명령줄 확인 실패:', error.message);
+          }
+        }
+        
         // CDP 서버가 감지되지 않았으면 경고
         if (!cdpServerDetected && !cdpServerReady) {
           console.warn('⚠️ Chrome에서 CDP 서버 시작 메시지를 감지하지 못했습니다.');
           console.warn('⚠️ Chrome이 CDP 모드로 실행되었는지 확인하세요.');
+          console.warn('⚠️ 프로필 잠금으로 인해 Chrome이 제대로 시작되지 않았을 수 있습니다.');
+          console.warn('💡 해결 방법:');
+          console.warn('   1. 실행 중인 Chrome을 모두 종료하세요.');
+          console.warn('   2. 프로필 잠금 파일을 확인하세요 (SingletonLock).');
+          console.warn('   3. Chrome을 수동으로 CDP 모드로 실행해보세요.');
+          console.warn(`   4. 수동 실행: "${chromePath}" --remote-debugging-port=${CDP_PORT} "${recordingUrl}"`);
         }
         
         try {
@@ -2080,6 +2553,38 @@ ipcMain.handle('open-browser', async (event, options) => {
           console.log('ℹ️ 실행 중인 Chrome을 모두 종료한 후 다시 시도해보세요.');
           console.log(`ℹ️ CDP 포트 ${CDP_PORT}가 사용 가능한지 확인하세요.`);
           console.log('ℹ️ Chrome 프로세스가 정상적으로 시작되었는지 확인하세요.');
+          
+          // 추가 디버깅 정보
+          if (chromeProcessError) {
+            console.log('ℹ️ Chrome 프로세스 오류:', chromeProcessError);
+          }
+          
+          // CDP 서버 연결 테스트
+          console.log(`🔍 CDP 서버 연결 테스트: http://127.0.0.1:${CDP_PORT}/json/list`);
+          try {
+            const testReq = http.get(`http://127.0.0.1:${CDP_PORT}/json/list`, { timeout: 2000 }, (res) => {
+              let data = '';
+              res.on('data', (chunk) => { data += chunk; });
+              res.on('end', () => {
+                try {
+                  const targets = JSON.parse(data);
+                  console.log(`✅ CDP 서버 연결 성공! 발견된 탭: ${targets.length}개`);
+                } catch (e) {
+                  console.error('❌ CDP 서버 응답 파싱 실패');
+                }
+              });
+            });
+            testReq.on('error', (err) => {
+              console.error(`❌ CDP 서버 연결 실패: ${err.message}`);
+              console.error(`❌ 포트 ${CDP_PORT}에 CDP 서버가 실행되고 있지 않습니다.`);
+            });
+            testReq.on('timeout', () => {
+              testReq.destroy();
+              console.error(`❌ CDP 서버 연결 타임아웃`);
+            });
+          } catch (testError) {
+            console.error('❌ CDP 서버 연결 테스트 실패:', testError.message);
+          }
         }
       }, initialDelay); // 기존 프로필 사용 시 5초, 임시 프로필 사용 시 3초
 
@@ -2097,10 +2602,22 @@ ipcMain.handle('open-browser', async (event, options) => {
       };
     } else {
       // Chrome을 찾을 수 없으면 기본 브라우저로 폴백
-      console.warn('⚠️ Chrome을 찾을 수 없습니다. 기본 브라우저로 열립니다.');
+      console.error('❌❌❌ Chrome을 찾을 수 없습니다!');
+      console.error('❌ shell.openExternal()로 일반 브라우저를 열려고 시도합니다.');
+      console.error('❌ 이 경우 CDP 모드가 아니므로 연결이 실패합니다!');
+      console.error('💡 해결 방법:');
+      console.error('   1. Chrome이 설치되어 있는지 확인하세요.');
+      console.error('   2. Chrome 경로를 확인하세요:');
+      console.error('      - C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe');
+      console.error('      - C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe');
+      console.error('   3. Chrome을 수동으로 CDP 모드로 실행하세요:');
+      console.error(`      chrome.exe --remote-debugging-port=9222 "${recordingUrl}"`);
+      
+      console.warn('⚠️ 기본 브라우저로 열립니다 (CDP 연결 불가능)');
       await shell.openExternal(recordingUrl);
       return { 
-        success: true, 
+        success: false,  // 실패로 표시
+        error: 'Chrome을 찾을 수 없습니다. CDP 모드로 실행할 수 없습니다.',
         url: recordingUrl, 
         sessionId, 
         method: 'fallback' 
@@ -2642,6 +3159,114 @@ ipcMain.handle('api-get-test-case-full', async (event, id) => {
       }
     };
   } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+/**
+ * 실시간 이벤트를 TC step으로 저장
+ */
+ipcMain.handle('save-event-step', async (event, { tcId, projectId, event: eventData }) => {
+  try {
+    if (!tcId || !eventData) {
+      return { success: false, error: 'tcId와 event가 필요합니다' };
+    }
+    
+    // 1. 이벤트를 step으로 변환
+    const newStep = convertEventToStep(eventData, 0);
+    
+    // 2. 기존 steps 읽기
+    const testCase = DbService.get('SELECT steps FROM test_cases WHERE id = ?', [tcId]);
+    if (!testCase) {
+      return { success: false, error: `TC ID ${tcId}를 찾을 수 없습니다` };
+    }
+    
+    let existingSteps = [];
+    if (testCase.steps) {
+      try {
+        existingSteps = JSON.parse(testCase.steps);
+        if (!Array.isArray(existingSteps)) {
+          existingSteps = [];
+        }
+      } catch (e) {
+        console.warn('[Recording] 기존 steps 파싱 실패, 빈 배열로 시작:', e);
+        existingSteps = [];
+      }
+    }
+    
+    // 3. 새 step 추가
+    existingSteps.push(newStep);
+    
+    // 4. 업데이트된 steps 저장
+    const stepsJson = JSON.stringify(existingSteps);
+    DbService.run(
+      'UPDATE test_cases SET steps = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [stepsJson, tcId]
+    );
+    
+    console.log(`[Recording] ✅ 실시간 step 저장 완료: TC ${tcId}, Step ${existingSteps.length} (action: ${newStep.action}, target: ${newStep.target || '(없음)'})`);
+    
+    return {
+      success: true,
+      stepIndex: existingSteps.length - 1,
+      step: newStep
+    };
+  } catch (error) {
+    console.error('[Recording] ❌ 실시간 step 저장 실패:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+/**
+ * 실시간 이벤트를 TC step으로 저장
+ */
+ipcMain.handle('save-event-step', async (event, { tcId, projectId, event: eventData }) => {
+  try {
+    if (!tcId || !eventData) {
+      return { success: false, error: 'tcId와 event가 필요합니다' };
+    }
+    
+    // 1. 이벤트를 step으로 변환
+    const newStep = convertEventToStep(eventData, 0);
+    
+    // 2. 기존 steps 읽기
+    const testCase = DbService.get('SELECT steps FROM test_cases WHERE id = ?', [tcId]);
+    if (!testCase) {
+      return { success: false, error: `TC ID ${tcId}를 찾을 수 없습니다` };
+    }
+    
+    let existingSteps = [];
+    if (testCase.steps) {
+      try {
+        existingSteps = JSON.parse(testCase.steps);
+        if (!Array.isArray(existingSteps)) {
+          existingSteps = [];
+        }
+      } catch (e) {
+        console.warn('[Recording] 기존 steps 파싱 실패, 빈 배열로 시작:', e);
+        existingSteps = [];
+      }
+    }
+    
+    // 3. 새 step 추가
+    existingSteps.push(newStep);
+    
+    // 4. 업데이트된 steps 저장
+    const stepsJson = JSON.stringify(existingSteps);
+    DbService.run(
+      'UPDATE test_cases SET steps = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [stepsJson, tcId]
+    );
+    
+    console.log(`[Recording] ✅ 실시간 step 저장 완료: TC ${tcId}, Step ${existingSteps.length} (action: ${newStep.action}, target: ${newStep.target || '(없음)'})`);
+    
+    return {
+      success: true,
+      stepIndex: existingSteps.length - 1,
+      step: newStep
+    };
+  } catch (error) {
+    console.error('[Recording] ❌ 실시간 step 저장 실패:', error);
     return { success: false, error: error.message };
   }
 });

@@ -190,6 +190,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   /**
+   * IPC 이벤트 리스너 등록 (recorder.js용)
+   * @param {string} channel - IPC 채널 이름
+   * @param {Function} callback - 이벤트 수신 시 호출될 콜백 함수 (data만 전달)
+   */
+  onIpcMessage: (channel, callback) => {
+    const handler = (event, data) => callback(data);
+    ipcRenderer.on(channel, handler);
+    // 리스너 제거를 위해 핸들러를 반환 (필요시 사용)
+    return () => ipcRenderer.removeListener(channel, handler);
+  },
+
+  /**
+   * IPC 이벤트 리스너 제거
+   * @param {string} channel - IPC 채널 이름
+   * @param {Function} callback - 제거할 콜백 함수
+   */
+  removeIpcListener: (channel, callback) => {
+    ipcRenderer.removeListener(channel, callback);
+  },
+
+  /**
    * 녹화 중지 요청
    * @param {Object} options - 중지 옵션 (sessionId 등)
    * @returns {Promise<Object>} 결과
@@ -207,6 +228,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     } catch (error) {
       return { success: false, error: error.message };
     }
+  },
+
+  /**
+   * IPC invoke 호출 (일반적인 IPC 통신용)
+   * @param {string} channel - IPC 채널 이름
+   * @param {...any} args - 전달할 인자들
+   * @returns {Promise<any>} 결과
+   */
+  invoke: (channel, ...args) => {
+    return ipcRenderer.invoke(channel, ...args);
   }
 
   // ============================================================================

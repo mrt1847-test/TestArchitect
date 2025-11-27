@@ -5,16 +5,16 @@
 
 import { generateCode } from './utils/codeGenerator.js';
 import { getAiSelectorSuggestions, getAiCodeReview } from './utils/aiService.js';
+import { getSelectorCandidatesWithUniqueness } from './utils/selectorUtils.js';
 
 // Electron IPC 통신 (Electron 환경에서만 사용)
-// ES6 모듈에서는 window.require 또는 전역 require 사용
-let ipcRenderer = null;
-if (typeof window !== 'undefined' && window.require) {
-  try {
-    ipcRenderer = window.require('electron').ipcRenderer;
-  } catch (e) {
-    console.warn('[Recorder] IPC Renderer 로드 실패:', e);
-  }
+// contextIsolation: true이므로 window.electronAPI를 통해 접근
+let electronAPI = null;
+if (typeof window !== 'undefined' && window.electronAPI) {
+  electronAPI = window.electronAPI;
+  console.log('[Recorder] electronAPI 로드 성공');
+} else {
+  console.warn('[Recorder] electronAPI가 없습니다. Electron 환경이 아닐 수 있습니다.');
 }
 
 // DOM 요소 참조 (나중에 초기화됨)
@@ -168,7 +168,10 @@ function handleWebSocketMessage(message) {
 
     case 'dom-event':
       // Content Script에서 전송된 DOM 이벤트
-      handleDomEvent(message.event);
+      console.log('[Recorder] DOM 이벤트 수신:', message.event?.action || message.action);
+      // message.event가 있으면 사용, 없으면 message 자체가 event일 수 있음
+      const eventData = message.event || message;
+      handleDomEvent(eventData);
       break;
 
     case 'element-hover':
@@ -208,6 +211,16 @@ function handleDomEvent(event) {
   if (!recording) return;
 
   const normalizedEvent = normalizeEventRecord(event);
+  
+  // CDP에서 이미 생성된 셀렉터 후보 사용 (selectorUtils.js로 생성됨)
+  // selectorCandidates가 없으면 빈 배열로 처리
+  if (!normalizedEvent.selectorCandidates) {
+    normalizedEvent.selectorCandidates = [];
+  }
+  if (!normalizedEvent.selectors && normalizedEvent.selectorCandidates.length > 0) {
+    normalizedEvent.selectors = normalizedEvent.selectorCandidates.map(c => c.selector || c);
+  }
+  
   allEvents.push(normalizedEvent);
   const index = allEvents.length - 1;
   
@@ -233,6 +246,45 @@ function handleDomEvent(event) {
   updateDeleteButtonState();
   
   logMessage(`이벤트 캡처: ${normalizedEvent.action || 'unknown'}`, 'info');
+  
+  // 실시간으로 TC step으로 저장
+  saveEventAsStep(normalizedEvent);
+}
+
+/**
+ * 이벤트를 TC step으로 실시간 저장
+ */
+async function saveEventAsStep(event) {
+  // TC ID와 Project ID 확인
+  const tcId = tcIdInput?.value;
+  const projectId = projectIdInput?.value;
+  
+  if (!tcId || !projectId) {
+    // TC ID나 Project ID가 없으면 저장하지 않음 (조용히 무시)
+    return;
+  }
+  
+  if (!electronAPI) {
+    console.warn('[Recorder] electronAPI가 없어 실시간 저장을 건너뜁니다.');
+    return;
+  }
+  
+  try {
+    // Main 프로세스에 이벤트 전송하여 step으로 변환 및 저장
+    const result = await electronAPI.invoke('save-event-step', {
+      tcId: parseInt(tcId, 10),
+      projectId: parseInt(projectId, 10),
+      event: event
+    });
+    
+    if (result && result.success) {
+      console.log('[Recorder] ✅ 이벤트가 TC step으로 저장되었습니다:', result.stepIndex);
+    } else {
+      console.warn('[Recorder] ⚠️ 이벤트 저장 실패:', result?.error || '알 수 없는 오류');
+    }
+  } catch (error) {
+    console.error('[Recorder] ❌ 이벤트 저장 중 오류:', error);
+  }
 }
 
 // 이벤트 레코드 정규화
@@ -3308,25 +3360,62 @@ function setupEventListeners() {
 
 // IPC 이벤트 리스너 설정 (Electron 환경)
 function setupIpcListeners() {
-  if (!ipcRenderer) return;
+  if (!electronAPI || !electronAPI.onIpcMessage) {
+    console.warn('[Recorder] electronAPI.onIpcMessage가 없습니다. Electron 환경이 아닐 수 있습니다.');
+    console.warn('[Recorder] electronAPI 상태:', {
+      exists: !!electronAPI,
+      hasOnIpcMessage: !!(electronAPI && electronAPI.onIpcMessage)
+    });
+    return;
+  }
+  
+  console.log('[Recorder] IPC 리스너 설정 시작');
   
   // Main 프로세스에서 전송된 DOM 이벤트 수신
-  ipcRenderer.on('dom-event', (event, data) => {
-    console.log('[Recorder] IPC로 DOM 이벤트 수신:', data.action);
+  electronAPI.onIpcMessage('dom-event', (data) => {
+    console.log('[Recorder] IPC로 DOM 이벤트 수신:', data.action, 'recording 상태:', recording);
+    if (!recording) {
+      console.warn('[Recorder] 녹화 중이 아니므로 이벤트 무시');
+      return;
+    }
     handleDomEvent(data);
   });
   
+  // 녹화 시작 신호 수신 (Main 프로세스에서)
+  electronAPI.onIpcMessage('recording-start', (data) => {
+    console.log('[Recorder] IPC로 녹화 시작 신호 수신', data);
+    if (!recording) {
+      console.log('[Recorder] startRecording() 호출');
+      startRecording();
+    } else {
+      console.log('[Recorder] 이미 녹화 중입니다');
+    }
+  });
+  
+  // 녹화 중지 신호 수신 (Main 프로세스에서)
+  electronAPI.onIpcMessage('recording-stop', (data) => {
+    console.log('[Recorder] IPC로 녹화 중지 신호 수신', data);
+    if (recording) {
+      console.log('[Recorder] stopRecording() 호출');
+      stopRecording();
+    } else {
+      console.log('[Recorder] 이미 녹화 중지 상태입니다');
+    }
+  });
+  
   // 요소 하이라이트 정보 수신
-  ipcRenderer.on('element-hover', (event, data) => {
+  electronAPI.onIpcMessage('element-hover', (data) => {
     console.log('[Recorder] IPC로 요소 하이라이트 수신:', data.element?.tag);
     handleElementHover(data);
   });
   
   // 요소 하이라이트 해제
-  ipcRenderer.on('element-hover-clear', (event, data) => {
+  electronAPI.onIpcMessage('element-hover-clear', (data) => {
     console.log('[Recorder] IPC로 요소 하이라이트 해제');
     clearElementHover();
   });
+  
+  console.log('[Recorder] IPC 리스너 설정 완료');
 }
 
 // DOM 요소 초기화
@@ -3379,6 +3468,11 @@ function initDOMElements() {
 // 초기화
 function init() {
   console.log('[Recorder] 초기화 시작');
+  console.log('[Recorder] electronAPI 상태:', {
+    exists: !!electronAPI,
+    hasOnIpcMessage: !!(electronAPI && electronAPI.onIpcMessage),
+    type: typeof electronAPI
+  });
   
   // DOM 요소 초기화
   initDOMElements();
@@ -3394,7 +3488,7 @@ function init() {
   // 이벤트 리스너 설정
   setupEventListeners();
   
-  // IPC 리스너 설정 (Electron 환경)
+  // IPC 리스너 설정 (Electron 환경) - 가장 먼저 설정
   setupIpcListeners();
 
   // WebSocket 연결
@@ -3407,6 +3501,7 @@ function init() {
   updateDeleteButtonState();
   
   logMessage('녹화 모듈 준비 완료', 'success');
+  console.log('[Recorder] 초기화 완료');
 }
 
 // DOMContentLoaded 이벤트 대기

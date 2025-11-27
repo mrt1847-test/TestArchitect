@@ -384,6 +384,221 @@ export function validateSelector(selector, type = null) {
   return { valid: true, type: parsed.type, value: parsed.value };
 }
 
+// 상수 정의
+const CLASS_COMBINATION_LIMIT = 3;
+const MAX_CLASS_COMBINATIONS = 24;
+const DEFAULT_TEXT_SCORE = 65;
+const DEFAULT_TAG_SCORE = 20;
+
+// 속성 우선순위 정의
+const ATTRIBUTE_PRIORITY = [
+  { attr: "id", type: "id", score: 90, reason: "id 속성", allowPartial: false },
+  { attr: "data-testid", type: "data-testid", score: 88, reason: "data-testid 속성", allowPartial: true },
+  { attr: "data-test", type: "data-test", score: 86, reason: "data-test 속성", allowPartial: true },
+  { attr: "data-qa", type: "data-qa", score: 84, reason: "data-qa 속성", allowPartial: true },
+  { attr: "data-cy", type: "data-cy", score: 84, reason: "data-cy 속성", allowPartial: true },
+  { attr: "data-id", type: "data-id", score: 82, reason: "data-id 속성", allowPartial: true },
+  { attr: "aria-label", type: "aria-label", score: 80, reason: "aria-label 속성", allowPartial: true },
+  { attr: "role", type: "role", score: 78, reason: "role 속성", allowPartial: false },
+  { attr: "name", type: "name", score: 78, reason: "name 속성", allowPartial: false },
+  { attr: "title", type: "title", score: 72, reason: "title 속성", allowPartial: true },
+  { attr: "type", type: "type", score: 68, reason: "type 속성", allowPartial: false }
+];
+
+/**
+ * 속성 기반 셀렉터 생성
+ */
+function buildAttributeSelectors(element) {
+  const results = [];
+  for (const meta of ATTRIBUTE_PRIORITY) {
+    const rawValue = element.getAttribute && element.getAttribute(meta.attr);
+    if (!rawValue) continue;
+    if (meta.attr === "id") {
+      results.push({
+        type: "id",
+        selector: `#${cssEscapeIdent(rawValue)}`,
+        score: meta.score,
+        reason: meta.reason
+      });
+      continue;
+    }
+    const escaped = escapeAttributeValue(rawValue);
+    results.push({
+      type: meta.type,
+      selector: `[${meta.attr}="${escaped}"]`,
+      score: meta.score,
+      reason: meta.reason
+    });
+    if (meta.allowPartial) {
+      const tokens = rawValue.split(/[\s,;]+/).filter((token) => token.length > 2);
+      tokens.slice(0, 2).forEach((token, index) => {
+        const escapedToken = escapeAttributeValue(token);
+        results.push({
+          type: `${meta.type}-partial`,
+          selector: `[${meta.attr}*="${escapedToken}"]`,
+          score: Math.max(meta.score - 8 - index * 2, 60),
+          reason: `${meta.reason} 부분 일치`,
+          matchMode: "contains"
+        });
+      });
+    }
+  }
+  return results;
+}
+
+/**
+ * 클래스 조합 셀렉터 생성
+ */
+function generateClassSelectors(element) {
+  const classList = Array.from(element.classList || []).filter(Boolean);
+  if (classList.length === 0) return [];
+  const escaped = classList.map((cls) => cssEscapeIdent(cls));
+  const combinations = new Set();
+  
+  function backtrack(start, depth, current) {
+    if (current.length > 0 && current.length <= CLASS_COMBINATION_LIMIT) {
+      const key = current.join(".");
+      combinations.add(key);
+    }
+    if (current.length === CLASS_COMBINATION_LIMIT) return;
+    for (let i = start; i < escaped.length; i += 1) {
+      current.push(escaped[i]);
+      backtrack(i + 1, depth + 1, current);
+      current.pop();
+    }
+  }
+  backtrack(0, 0, []);
+  
+  const results = [];
+  const ordered = Array.from(combinations).sort((a, b) => {
+    const lenDiff = a.split(".").length - b.split(".").length;
+    if (lenDiff !== 0) return lenDiff;
+    return a.localeCompare(b);
+  });
+  
+  ordered.slice(0, MAX_CLASS_COMBINATIONS).forEach((key) => {
+    const classSelector = `.${key}`;
+    results.push({
+      type: "class",
+      selector: classSelector,
+      score: 62 - Math.min(10, key.split(".").length * 2),
+      reason: "class 조합"
+    });
+    results.push({
+      type: "class-tag",
+      selector: `${element.tagName.toLowerCase()}${classSelector}`,
+      score: 68 - Math.min(10, key.split(".").length),
+      reason: "태그 + class 조합"
+    });
+  });
+  return results;
+}
+
+/**
+ * Robust XPath 세그먼트 생성 (속성 기반)
+ */
+function buildRobustXPathSegment(el) {
+  if (!el || el.nodeType !== 1) return null;
+  const tag = el.tagName.toLowerCase();
+  if (el.id) {
+    return { segment: `//*[@id=${escapeXPathLiteral(el.id)}]`, stop: true };
+  }
+  const attrPriority = ["data-testid", "data-test", "data-qa", "data-cy", "data-id", "aria-label", "role", "name", "type"];
+  for (const attr of attrPriority) {
+    const val = el.getAttribute && el.getAttribute(attr);
+    if (val) {
+      return { segment: `${tag}[@${attr}=${escapeXPathLiteral(val)}]`, stop: false };
+    }
+  }
+  const classList = Array.from(el.classList || []).filter(Boolean);
+  if (classList.length) {
+    const cls = classList[0];
+    const containsExpr = `contains(concat(' ', normalize-space(@class), ' '), ${escapeXPathLiteral(" " + cls + " ")})`;
+    return { segment: `${tag}[${containsExpr}]`, stop: false };
+  }
+  let index = 1;
+  let sibling = el.previousElementSibling;
+  while (sibling) {
+    if (sibling.tagName === el.tagName) {
+      index += 1;
+    }
+    sibling = sibling.previousElementSibling;
+  }
+  return { segment: `${tag}[${index}]`, stop: false };
+}
+
+/**
+ * Robust XPath 생성 (속성 기반)
+ */
+function buildRobustXPath(el) {
+  if (!el || el.nodeType !== 1) return null;
+  const segments = [];
+  let current = el;
+  while (current && current.nodeType === 1) {
+    const info = buildRobustXPathSegment(current);
+    if (!info || !info.segment) return null;
+    segments.unshift(info.segment);
+    if (info.stop) break;
+    current = current.parentElement;
+  }
+  if (segments.length === 0) return null;
+  let xpath = segments[0];
+  if (xpath.startsWith("//*[@")) {
+    if (segments.length > 1) {
+      xpath += `/${segments.slice(1).join("/")}`;
+    }
+  } else {
+    xpath = `//${segments.join("/")}`;
+  }
+  return xpath;
+}
+
+/**
+ * 첫 번째 nth-of-type 셀렉터 생성
+ */
+function buildFirstNthOfTypeSelector(element) {
+  if (!element || element.nodeType !== 1) return null;
+  const parent = element.parentElement;
+  if (!parent) return null;
+  const tagName = element.tagName ? element.tagName.toLowerCase() : null;
+  if (!tagName) return null;
+  const siblings = Array.from(parent.children || []);
+  let nth = 0;
+  for (const sibling of siblings) {
+    if (!sibling || sibling.nodeType !== 1) continue;
+    if (!sibling.tagName) continue;
+    if (sibling.tagName.toLowerCase() === tagName) {
+      nth += 1;
+      if (sibling === element) break;
+    }
+  }
+  if (nth !== 1) return null;
+  const classList = Array.from(element.classList || []).filter(Boolean);
+  if (!classList.length) return null;
+  const escapedClasses = classList.slice(0, 2).map((cls) => cssEscapeIdent(cls)).filter(Boolean);
+  if (!escapedClasses.length) return null;
+  const selector = `${tagName}.${escapedClasses.join(".")}:nth-of-type(1)`;
+  
+  // 유일성 검증 (간단한 버전)
+  try {
+    const doc = typeof document !== 'undefined' ? document : null;
+    if (doc) {
+      const matches = doc.querySelectorAll(selector);
+      if (matches.length === 1) {
+        return {
+          type: "css",
+          selector: selector,
+          score: 88,
+          reason: "첫 번째 항목 (nth-of-type)"
+        };
+      }
+    }
+  } catch (e) {
+    // 무시
+  }
+  return null;
+}
+
 /**
  * 요소에서 셀렉터 후보 생성 (기본 버전)
  */
@@ -392,18 +607,86 @@ export function getSelectorCandidates(element) {
   
   const candidates = [];
   
-  // 1. ID 기반
-  if (element.id) {
-    const idSelector = `#${cssEscapeIdent(element.id)}`;
-    candidates.push({
-      selector: idSelector,
-      type: 'css',
-      score: 100,
-      reason: 'ID 속성'
+  // 1. 속성 기반 셀렉터 (ID, data-*, aria-label, name, role, title, type 등)
+  try {
+    buildAttributeSelectors(element).forEach((cand) => {
+      candidates.push(cand);
     });
+  } catch (e) {
+    console.error('[SelectorUtils] buildAttributeSelectors 오류:', e);
   }
   
-  // 2. CSS 경로
+  // 2. 클래스 조합 셀렉터
+  try {
+    generateClassSelectors(element).forEach((cand) => {
+      candidates.push(cand);
+    });
+  } catch (e) {
+    console.error('[SelectorUtils] generateClassSelectors 오류:', e);
+  }
+  
+  // 4. 텍스트 기반 셀렉터 (버튼, 링크, 라벨 등에 유용)
+  const rawText = (element.innerText || element.textContent || "").trim();
+  if (rawText) {
+    // 첫 번째 줄만 사용 (여러 줄인 경우)
+    const firstLine = rawText.split("\n").map((t) => t.trim()).filter(Boolean)[0];
+    if (firstLine && firstLine.length > 0 && firstLine.length <= 60) {
+      const escapedText = escapeAttributeValue(firstLine);
+      const textSelector = `text="${escapedText}"`;
+      
+      // 텍스트 매칭 개수 확인
+      let textMatchCount = null;
+      try {
+        const parsed = parseSelectorForMatching(textSelector, "text");
+        const doc = typeof document !== 'undefined' ? document : null;
+        if (doc) {
+          textMatchCount = countMatchesForSelector(parsed, doc, { matchMode: "exact", maxCount: 6 });
+        }
+      } catch (e) {
+        textMatchCount = null;
+      }
+      
+      const reasonParts = ["텍스트 일치"];
+      if (typeof textMatchCount === "number") {
+        if (textMatchCount === 1) {
+          reasonParts.push("1개 요소와 일치");
+        } else if (textMatchCount > 1) {
+          reasonParts.push(`${textMatchCount}개 요소와 일치`);
+        } else if (textMatchCount === 0) {
+          reasonParts.push("일치 없음");
+        }
+      }
+      
+      candidates.push({
+        selector: textSelector,
+        type: 'text',
+        score: textMatchCount === 1 ? 80 : 50,
+        reason: reasonParts.join(" • "),
+        textValue: firstLine,
+        matchMode: "exact",
+        unique: textMatchCount === 1,
+        matchCount: textMatchCount
+      });
+    }
+  }
+  
+  // 5. Robust XPath (속성 기반)
+  try {
+    const robustXPath = buildRobustXPath(element);
+    if (robustXPath) {
+      candidates.push({
+        type: "xpath",
+        selector: `xpath=${robustXPath}`,
+        score: 58,
+        reason: "속성 기반 XPath",
+        xpathValue: robustXPath
+      });
+    }
+  } catch (e) {
+    console.error('[SelectorUtils] buildRobustXPath 오류:', e);
+  }
+  
+  // 6. CSS 경로
   const cssPath = buildUniqueCssPath(element);
   if (cssPath) {
     candidates.push({
@@ -414,30 +697,36 @@ export function getSelectorCandidates(element) {
     });
   }
   
-  // 3. XPath
+  // 7. Full XPath
   const xpath = buildFullXPath(element);
   if (xpath) {
     candidates.push({
       selector: `xpath=${xpath}`,
-      type: 'xpath',
-      score: 30,
-      reason: 'XPath'
+      type: 'xpath-full',
+      score: 42,
+      reason: 'Full XPath (절대 경로)',
+      xpathValue: xpath
     });
   }
   
-  // 4. data-* 속성
-  const dataAttrs = ['data-testid', 'data-test', 'data-qa', 'data-cy', 'data-id'];
-  for (const attr of dataAttrs) {
-    const value = element.getAttribute(attr);
-    if (value) {
-      candidates.push({
-        selector: `[${attr}="${escapeAttributeValue(value)}"]`,
-        type: 'css',
-        score: 90,
-        reason: `${attr} 속성`
-      });
+  // 8. 첫 번째 nth-of-type 셀렉터
+  try {
+    const firstNthCandidate = buildFirstNthOfTypeSelector(element);
+    if (firstNthCandidate) {
+      candidates.push(firstNthCandidate);
     }
+  } catch (e) {
+    console.error('[SelectorUtils] buildFirstNthOfTypeSelector 오류:', e);
   }
+  
+  // 9. 태그 기반 (낮은 우선순위)
+  const tagSelector = element.tagName.toLowerCase();
+  candidates.push({
+    selector: tagSelector,
+    type: 'tag',
+    score: DEFAULT_TAG_SCORE,
+    reason: '태그 이름'
+  });
   
   return candidates.sort((a, b) => (b.score || 0) - (a.score || 0));
 }

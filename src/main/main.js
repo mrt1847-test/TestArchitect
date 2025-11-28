@@ -3218,60 +3218,6 @@ ipcMain.handle('save-event-step', async (event, { tcId, projectId, event: eventD
 });
 
 /**
- * 실시간 이벤트를 TC step으로 저장
- */
-ipcMain.handle('save-event-step', async (event, { tcId, projectId, event: eventData }) => {
-  try {
-    if (!tcId || !eventData) {
-      return { success: false, error: 'tcId와 event가 필요합니다' };
-    }
-    
-    // 1. 이벤트를 step으로 변환
-    const newStep = convertEventToStep(eventData, 0);
-    
-    // 2. 기존 steps 읽기
-    const testCase = DbService.get('SELECT steps FROM test_cases WHERE id = ?', [tcId]);
-    if (!testCase) {
-      return { success: false, error: `TC ID ${tcId}를 찾을 수 없습니다` };
-    }
-    
-    let existingSteps = [];
-    if (testCase.steps) {
-      try {
-        existingSteps = JSON.parse(testCase.steps);
-        if (!Array.isArray(existingSteps)) {
-          existingSteps = [];
-        }
-      } catch (e) {
-        console.warn('[Recording] 기존 steps 파싱 실패, 빈 배열로 시작:', e);
-        existingSteps = [];
-      }
-    }
-    
-    // 3. 새 step 추가
-    existingSteps.push(newStep);
-    
-    // 4. 업데이트된 steps 저장
-    const stepsJson = JSON.stringify(existingSteps);
-    DbService.run(
-      'UPDATE test_cases SET steps = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [stepsJson, tcId]
-    );
-    
-    console.log(`[Recording] ✅ 실시간 step 저장 완료: TC ${tcId}, Step ${existingSteps.length} (action: ${newStep.action}, target: ${newStep.target || '(없음)'})`);
-    
-    return {
-      success: true,
-      stepIndex: existingSteps.length - 1,
-      step: newStep
-    };
-  } catch (error) {
-    console.error('[Recording] ❌ 실시간 step 저장 실패:', error);
-    return { success: false, error: error.message };
-  }
-});
-
-/**
  * 객체 레퍼지토리 IPC 핸들러 (로컬 SQLite 직접 연결)
  */
 

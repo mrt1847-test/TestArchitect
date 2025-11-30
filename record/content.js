@@ -2203,18 +2203,6 @@
       recorderState.overlayElement = null;
     }
     updateOverlayControlsState();
-    
-    // WebSocket으로 요소 하이라이트 해제 알림 전송
-    if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-      try {
-        wsConnection.send(JSON.stringify({
-          type: 'element-hover-clear',
-          timestamp: Date.now()
-        }));
-      } catch (error) {
-        console.error('[Content Script] 요소 하이라이트 해제 알림 전송 오류:', error);
-      }
-    }
   }
   function applySelectionParentHighlight(element) {
     if (!element || element.nodeType !== 1) return;
@@ -2279,7 +2267,6 @@
     createSelectorOverlay(rect, selectors);
     updateOverlayControlsState();
     if (!isSameElement) {
-      // Background Script로 메시지 전송 (기존 기능)
       chrome.runtime.sendMessage({
         type: "ELEMENT_HOVERED",
         selectors,
@@ -2290,29 +2277,6 @@
           domContext: buildDomContextSnapshot(element)
         }
       });
-      
-      // WebSocket으로 Electron에 요소 정보 전송 (새 기능)
-      if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-        try {
-          const elementInfo = {
-            tag: element.tagName,
-            id: element.id || null,
-            classes: Array.from(element.classList || []),
-            text: (element.innerText || element.textContent || "").trim().slice(0, 100),
-            iframeContext: getIframeContext(element),
-            domContext: buildDomContextSnapshot(element)
-          };
-          
-          wsConnection.send(JSON.stringify({
-            type: 'element-hover',
-            element: elementInfo,
-            selectors: selectors || [],
-            timestamp: Date.now()
-          }));
-        } catch (error) {
-          console.error('[Content Script] 요소 정보 전송 오류:', error);
-        }
-      }
     }
   }
   function handleMouseOver(event) {
@@ -2620,116 +2584,37 @@
 
   // src/content/recorder/index.js
   var INPUT_DEBOUNCE_DELAY = 800;
-  
-  // WebSocket 연결 관리
-  let wsConnection = null;
-  let wsReconnectAttempts = 0;
-  const MAX_RECONNECT_ATTEMPTS = 5;
-  const WS_RECONNECT_DELAY = 2000;
-  
-  function connectWebSocket() {
-    if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-      return;
-    }
-    
-    const wsUrl = 'ws://localhost:3000';
-    console.log('[Content Script] WebSocket 연결 시도:', wsUrl);
-    
-    try {
-      wsConnection = new WebSocket(wsUrl);
-      
-      wsConnection.onopen = () => {
-        console.log('[Content Script] WebSocket 연결 성공');
-        console.log('[Content Script] WebSocket readyState:', wsConnection.readyState);
-        wsReconnectAttempts = 0;
-        
-        // 연결 확인을 위해 서버에 메시지 전송
-        try {
-          wsConnection.send(JSON.stringify({
-            type: 'content-script-connected',
-            timestamp: Date.now(),
-            url: window.location.href
-          }));
-          console.log('[Content Script] 연결 확인 메시지 전송');
-        } catch (error) {
-          console.error('[Content Script] 연결 확인 메시지 전송 실패:', error);
-        }
-      };
-      
-      wsConnection.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data);
-          console.log('[Content Script] WebSocket 메시지 수신:', message.type);
-          console.log('[Content Script] 메시지 내용:', message);
-          
-          // 연결 확인 메시지 처리
-          if (message.type === 'connected' || message.type === 'content-script-ack') {
-            console.log('[Content Script] 서버 연결 확인:', message.message || '연결됨');
-            return;
-          }
-          
-          // 녹화 시작/중지 메시지 처리
-          if (message.type === 'recording-start') {
-            console.log('[Content Script] 녹화 시작 명령 수신');
-            console.log('[Content Script] 현재 녹화 상태:', recorderState.isRecording);
-            startRecording({ resetEvents: true });
-            console.log('[Content Script] 녹화 시작 후 상태:', recorderState.isRecording);
-          } else if (message.type === 'recording-stop') {
-            console.log('[Content Script] 녹화 중지 명령 수신');
-            stopRecording();
-          }
-        } catch (error) {
-          console.error('[Content Script] WebSocket 메시지 파싱 오류:', error);
-          console.error('[Content Script] 원본 메시지:', event.data);
-        }
-      };
-      
-      wsConnection.onerror = (error) => {
-        console.error('[Content Script] WebSocket 오류:', error);
-      };
-      
-      wsConnection.onclose = () => {
-        console.log('[Content Script] WebSocket 연결 종료');
-        wsConnection = null;
-        
-        // 자동 재연결 시도
-        if (wsReconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-          wsReconnectAttempts++;
-          console.log(`[Content Script] WebSocket 재연결 시도 (${wsReconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
-          setTimeout(connectWebSocket, WS_RECONNECT_DELAY);
-        }
-      };
-    } catch (error) {
-      console.error('[Content Script] WebSocket 연결 실패:', error);
-    }
-  }
-  
-  function sendEventToWebSocket(eventRecord) {
-    if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-      try {
-        wsConnection.send(JSON.stringify({
-          type: 'dom-event',
-          event: eventRecord,
-          timestamp: Date.now(),
-          sessionId: window.testArchitectParams?.sessionId || null
-        }));
-      } catch (error) {
-        console.error('[Content Script] WebSocket 전송 오류:', error);
-      }
-    }
-  }
-  
   function persistEvent(eventRecord) {
     chrome.runtime.sendMessage({ type: "SAVE_EVENT", event: eventRecord }, () => {
     });
-    // WebSocket으로도 전송
-    sendEventToWebSocket(eventRecord);
+  }
+  var currentSessionId = null;
+  function getCurrentSessionId() {
+    if (currentSessionId) {
+      return currentSessionId;
+    }
+    if (typeof window !== "undefined" && window.__ai_test_recorder_session_id__) {
+      return window.__ai_test_recorder_session_id__;
+    }
+    try {
+      chrome.storage.local.get(["recordingData"], (result) => {
+        if (result.recordingData && result.recordingData.sessionId) {
+          currentSessionId = result.recordingData.sessionId;
+        }
+      });
+    } catch (err) {
+    }
+    return currentSessionId;
   }
   function broadcastRecordedEvent(eventRecord) {
     chrome.runtime.sendMessage({ type: "EVENT_RECORDED", event: eventRecord }, () => {
     });
-    // WebSocket으로도 전송
-    sendEventToWebSocket(eventRecord);
+    chrome.runtime.sendMessage({
+      type: "DOM_EVENT",
+      event: eventRecord,
+      sessionId: getCurrentSessionId()
+    }, () => {
+    });
   }
   function buildClientRect(target) {
     if (!target || typeof target.getBoundingClientRect !== "function") {
@@ -2860,13 +2745,24 @@
   }
   var lastUrl = window.location.href;
   var lastTitle = document.title;
-  function checkUrlChange() {
+  async function checkUrlChange() {
     if (!recorderState.isRecording) return;
     const currentUrl = window.location.href;
     const currentTitle = document.title;
-    if (currentUrl !== lastUrl || currentTitle !== lastTitle) {
+    let storedLastUrl = lastUrl;
+    try {
+      const result = await chrome.storage.local.get(["lastRecordedUrl"]);
+      if (result.lastRecordedUrl && result.lastRecordedUrl !== currentUrl) {
+        storedLastUrl = result.lastRecordedUrl;
+      }
+    } catch (err) {
+    }
+    const compareUrl = storedLastUrl && storedLastUrl !== currentUrl ? storedLastUrl : lastUrl;
+    const urlChanged = currentUrl !== compareUrl;
+    const titleChanged = currentTitle !== lastTitle;
+    if (urlChanged || titleChanged) {
       const eventRecord = createEventRecord({
-        action: "goto",
+        action: "navigate",
         value: currentUrl,
         selectors: [],
         target: null,
@@ -2879,9 +2775,15 @@
         url: currentUrl,
         title: currentTitle
       };
+      eventRecord.url = currentUrl;
       eventRecord.primarySelector = currentUrl;
       persistEvent(eventRecord);
       broadcastRecordedEvent(eventRecord);
+      try {
+        chrome.storage.local.set({ lastRecordedUrl: currentUrl });
+      } catch (err) {
+        console.error("[AI Test Recorder] Failed to save last URL:", err);
+      }
       lastUrl = currentUrl;
       lastTitle = currentTitle;
     }
@@ -2906,8 +2808,57 @@
       chrome.storage.local.set({ recording: true });
     }
     removeHighlight();
-    lastUrl = window.location.href;
-    lastTitle = document.title;
+    const currentUrl = window.location.href;
+    const currentTitle = document.title;
+    chrome.storage.local.get(["lastRecordedUrl"], (result) => {
+      if (result.lastRecordedUrl && result.lastRecordedUrl !== currentUrl) {
+        lastUrl = result.lastRecordedUrl;
+        lastTitle = "";
+        setTimeout(() => {
+          checkUrlChange();
+        }, 100);
+      } else {
+        lastUrl = currentUrl;
+        lastTitle = currentTitle;
+        chrome.storage.local.set({ lastRecordedUrl: currentUrl });
+      }
+    });
+    if (!urlCheckInterval) {
+      urlCheckInterval = setInterval(() => {
+        try {
+          checkUrlChange();
+        } catch (err) {
+          console.error("[AI Test Recorder] Failed to check URL change:", err);
+        }
+      }, 1e3);
+    }
+    window.addEventListener("beforeunload", () => {
+      if (recorderState.isRecording) {
+        try {
+          chrome.storage.local.set({ lastRecordedUrl: window.location.href });
+        } catch (err) {
+          console.error("[AI Test Recorder] Failed to save URL on beforeunload:", err);
+        }
+      }
+    });
+    if (document.readyState === "complete") {
+      setTimeout(() => {
+        checkUrlChange();
+      }, 500);
+    } else {
+      window.addEventListener("load", () => {
+        setTimeout(() => {
+          checkUrlChange();
+        }, 500);
+      });
+    }
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", () => {
+        setTimeout(() => {
+          checkUrlChange();
+        }, 300);
+      });
+    }
   }
   function stopRecording() {
     recorderState.isRecording = false;
@@ -2979,13 +2930,58 @@
       originalReplaceState.apply(history, args);
       setTimeout(checkUrlChange, 100);
     };
-    urlCheckInterval = setInterval(() => {
-      try {
-        checkUrlChange();
-      } catch (err) {
-        console.error("[AI Test Recorder] Failed to check URL change:", err);
+    if (!urlCheckInterval) {
+      urlCheckInterval = setInterval(() => {
+        try {
+          checkUrlChange();
+        } catch (err) {
+          console.error("[AI Test Recorder] Failed to check URL change:", err);
+        }
+      }, 1e3);
+    }
+    window.addEventListener("beforeunload", () => {
+      if (recorderState.isRecording) {
+        try {
+          chrome.storage.local.set({ lastRecordedUrl: window.location.href });
+        } catch (err) {
+          console.error("[AI Test Recorder] Failed to save URL on beforeunload:", err);
+        }
       }
-    }, 1e3);
+    });
+    if (document.readyState === "complete") {
+      setTimeout(() => {
+        checkUrlChange();
+      }, 500);
+    } else {
+      window.addEventListener("load", () => {
+        setTimeout(() => {
+          checkUrlChange();
+        }, 500);
+      });
+    }
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", () => {
+        setTimeout(() => {
+          checkUrlChange();
+        }, 300);
+      });
+    }
+    chrome.storage.local.get(["recording", "lastRecordedUrl"], (result) => {
+      if (result.recording) {
+        const currentUrl = window.location.href;
+        if (result.lastRecordedUrl && result.lastRecordedUrl !== currentUrl) {
+          lastUrl = result.lastRecordedUrl;
+          lastTitle = "";
+          setTimeout(() => {
+            checkUrlChange();
+          }, 200);
+        } else {
+          lastUrl = currentUrl;
+          lastTitle = document.title;
+          chrome.storage.local.set({ lastRecordedUrl: currentUrl });
+        }
+      }
+    });
   }
   function getRecordingState() {
     return recorderState.isRecording;
@@ -3006,6 +3002,9 @@
           }
           case "RECORDING_START": {
             startRecording({ resetEvents: true });
+            if (message.sessionId) {
+              setCurrentSessionId(message.sessionId);
+            }
             sendResponse({ ok: true });
             return;
           }
@@ -3129,20 +3128,40 @@
         window.testArchitectParams = params;
         console.log("[Content Script] URL \uD30C\uB77C\uBBF8\uD130 \uC800\uC7A5:", params);
         if (tcId && projectId && sessionId) {
-          console.log("[Content Script] \uD544\uC218 \uD30C\uB77C\uBBF8\uD130 \uAC10\uC9C0, \uC0AC\uC774\uB4DC \uD328\uB110 \uC5F4\uAE30 \uC694\uCCAD:", params);
-          chrome.runtime.sendMessage({
-            type: "OPEN_RECORDING_PANEL",
-            tcId,
-            projectId,
-            sessionId,
-            url: window.location.href
-          }, (response) => {
-            if (chrome.runtime.lastError) {
-              console.error("[Content Script] \uC0AC\uC774\uB4DC \uD328\uB110 \uC5F4\uAE30 \uC694\uCCAD \uC2E4\uD328:", chrome.runtime.lastError);
-            } else {
-              console.log("[Content Script] \uC0AC\uC774\uB4DC \uD328\uB110 \uC5F4\uAE30 \uC694\uCCAD \uC131\uACF5:", response);
-            }
-          });
+          console.log("[Content Script] \u2705 \uD544\uC218 \uD30C\uB77C\uBBF8\uD130 \uAC10\uC9C0, \uC0AC\uC774\uB4DC \uD328\uB110 \uC5F4\uAE30 \uC694\uCCAD:", params);
+          setTimeout(() => {
+            chrome.runtime.sendMessage({
+              type: "OPEN_RECORDING_PANEL",
+              tcId,
+              projectId,
+              sessionId,
+              url: window.location.href
+            }, (response) => {
+              if (chrome.runtime.lastError) {
+                console.error("[Content Script] \u274C \uC0AC\uC774\uB4DC \uD328\uB110 \uC5F4\uAE30 \uC694\uCCAD \uC2E4\uD328:", chrome.runtime.lastError);
+                setTimeout(() => {
+                  console.log("[Content Script] \u{1F504} \uC0AC\uC774\uB4DC \uD328\uB110 \uC5F4\uAE30 \uC7AC\uC2DC\uB3C4");
+                  chrome.runtime.sendMessage({
+                    type: "OPEN_RECORDING_PANEL",
+                    tcId,
+                    projectId,
+                    sessionId,
+                    url: window.location.href
+                  }, (retryResponse) => {
+                    if (chrome.runtime.lastError) {
+                      console.error("[Content Script] \u274C \uC7AC\uC2DC\uB3C4\uB3C4 \uC2E4\uD328:", chrome.runtime.lastError);
+                    } else {
+                      console.log("[Content Script] \u2705 \uC7AC\uC2DC\uB3C4 \uC131\uACF5:", retryResponse);
+                    }
+                  });
+                }, 1e3);
+              } else {
+                console.log("[Content Script] \u2705 \uC0AC\uC774\uB4DC \uD328\uB110 \uC5F4\uAE30 \uC694\uCCAD \uC131\uACF5:", response);
+              }
+            });
+          }, 500);
+        } else {
+          console.log("[Content Script] \u26A0\uFE0F \uD544\uC218 \uD30C\uB77C\uBBF8\uD130 \uBD80\uC871:", { tcId: !!tcId, projectId: !!projectId, sessionId: !!sessionId });
         }
       }
       if (window.testArchitectParams && typeof window.testArchitectParams === "object") {
@@ -3212,10 +3231,6 @@
     if (window[GLOBAL_FLAG]) return;
     window[GLOBAL_FLAG] = true;
     extractAndSaveUrlParams();
-    
-    // WebSocket 연결 시작
-    connectWebSocket();
-    
     let lastUrl2 = window.location.href;
     const urlCheckInterval2 = setInterval(() => {
       if (window.location.href !== lastUrl2) {
@@ -3225,11 +3240,6 @@
     }, 500);
     window.addEventListener("beforeunload", () => {
       clearInterval(urlCheckInterval2);
-      // WebSocket 연결 종료
-      if (wsConnection) {
-        wsConnection.close();
-        wsConnection = null;
-      }
     });
     initOverlaySystem();
     initRecorderListeners();

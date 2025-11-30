@@ -34,6 +34,7 @@ const PytestService = require('./services/pytestService');
 const ScriptManager = require('./services/scriptManager');
 const EnvironmentChecker = require('./services/environmentChecker');
 const DbService = require('./services/dbService');
+const ChromeForTestingService = require('./services/chromeForTestingService');
 
 // 프로덕션 모드 경로 초기화는 app.whenReady()에서 처리
 // createWindow()가 호출되기 전에 경로가 설정되어야 함
@@ -41,11 +42,14 @@ const DbService = require('./services/dbService');
 /** @type {BrowserWindow} 메인 윈도우 인스턴스 */
 let mainWindow;
 
-/** @type {BrowserWindow} 녹화 창 인스턴스 */
+/** @type {BrowserWindow} 녹화 윈도우 인스턴스 */
 let recorderWindow = null;
 
 /** @type {boolean} 전역 녹화 상태 */
 let globalRecordingState = false;
+
+/** @type {WebSocket} CDP WebSocket 연결 (URL 변경 감지를 위해 유지) */
+let globalCdpWs = null;
 
 /** @type {http.Server} 녹화 데이터 수신용 HTTP 서버 */
 let recordingServer = null;
@@ -478,43 +482,21 @@ function handleExtensionMessage(ws, data) {
       break;
       
     case 'recording-start':
-      // Electron 내부 창(recorder.html)에서 녹화 시작 요청
+      // 확장 프로그램에서 녹화 시작 알림
       console.log('[Extension] 녹화 시작 요청 수신 (WebSocket에서)');
       console.log('[Extension] 현재 연결된 클라이언트 수:', extensionClients.size);
       console.log('[Extension] 녹화 상태 변경: false -> true');
       globalRecordingState = true;
       
-      // Recorder 창에도 녹화 시작 신호 전달 (준비된 경우에만)
-      if (recorderWindow && recorderWindow.webContents && !recorderWindow.isDestroyed()) {
-        // recorderWindow가 준비될 때까지 대기
-        const sendRecordingStart = () => {
-          try {
-            console.log('[Extension] Recorder 창으로 recording-start 전송');
-            recorderWindow.webContents.send('recording-start', {
-              timestamp: data.timestamp || Date.now()
-            });
-          } catch (error) {
-            console.error('[Extension] Recorder 창으로 recording-start 전송 실패:', error.message);
-          }
-        };
-        
-        if (recorderWindow.isReady) {
-          sendRecordingStart();
-        } else {
-          // 준비될 때까지 대기 (최대 5초)
-          const checkReady = setInterval(() => {
-            if (recorderWindow && recorderWindow.isReady) {
-              clearInterval(checkReady);
-              sendRecordingStart();
-            }
-          }, 100);
-          
-          setTimeout(() => {
-            clearInterval(checkReady);
-          }, 5000);
-        }
-      } else {
-        console.warn('[Extension] Recorder 창이 없어서 recording-start 전송 불가');
+      // 메인 윈도우에 알림
+      if (mainWindow && mainWindow.webContents) {
+        mainWindow.webContents.send('recording-started', {
+          source: 'extension',
+          tcId: data.tcId,
+          projectId: data.projectId,
+          sessionId: data.sessionId,
+          timestamp: data.timestamp || Date.now()
+        });
       }
       
       // 모든 Extension 클라이언트(Content Script)에게 브로드캐스트
@@ -525,22 +507,23 @@ function handleExtensionMessage(ws, data) {
       break;
       
     case 'recording-stop':
-      // Electron 내부 창(recorder.html)에서 녹화 중지 요청
+      // 확장 프로그램에서 녹화 중지 알림
       console.log('[Extension] 녹화 중지 요청 수신');
       globalRecordingState = false;
       
-      // Recorder 창에도 녹화 중지 신호 전달
-      if (recorderWindow && recorderWindow.webContents && !recorderWindow.isDestroyed()) {
-        try {
-          console.log('[Extension] Recorder 창으로 recording-stop 전송');
-          recorderWindow.webContents.send('recording-stop', {
-            timestamp: data.timestamp || Date.now()
-          });
-        } catch (error) {
-          console.error('[Extension] Recorder 창으로 recording-stop 전송 실패:', error.message);
-        }
-      } else {
-        console.warn('[Extension] Recorder 창이 없어서 recording-stop 전송 불가');
+      // CDP WebSocket 연결 종료
+      if (globalCdpWs && globalCdpWs.readyState === WebSocket.OPEN) {
+        console.log('[CDP] 녹화 중지: CDP WebSocket 연결 종료');
+        globalCdpWs.close();
+        globalCdpWs = null;
+      }
+      
+      // 메인 윈도우에 알림
+      if (mainWindow && mainWindow.webContents) {
+        mainWindow.webContents.send('recording-stopped', {
+          source: 'extension',
+          timestamp: data.timestamp || Date.now()
+        });
       }
       
       // 모든 Extension 클라이언트(Content Script)에게 브로드캐스트
@@ -578,35 +561,24 @@ function handleExtensionMessage(ws, data) {
         timestamp: data.timestamp
       });
       
-      // 메인 윈도우로 전달
+      const eventData = {
+        ...data.event,
+        timestamp: data.timestamp || Date.now(),
+        sessionId: data.sessionId
+      };
+      
+      // 메인 윈도우로 전달 (한 번만)
+      // renderer.js에서 iframe에 postMessage로 전달하므로 여기서는 IPC만 전송
       if (mainWindow && mainWindow.webContents) {
-        mainWindow.webContents.send('dom-event', {
-          ...data.event,
-          timestamp: data.timestamp || Date.now(),
-          sessionId: data.sessionId
-        });
+        mainWindow.webContents.send('dom-event', eventData);
       }
       
-      // Recorder 창에도 전달 (recorder.html이 열려있는 경우)
-      if (recorderWindow && recorderWindow.webContents && !recorderWindow.isDestroyed()) {
-        try {
-          console.log('[Extension] Recorder 창으로 DOM 이벤트 전송:', data.event?.action);
-          recorderWindow.webContents.send('dom-event', {
-            ...data.event,
-            timestamp: data.timestamp || Date.now(),
-            sessionId: data.sessionId
-          });
-        } catch (error) {
-          console.error('[Extension] Recorder 창으로 DOM 이벤트 전송 실패:', error.message);
-        }
-      } else {
-        console.warn('[Extension] Recorder 창이 없거나 파괴됨, DOM 이벤트 전송 불가');
-        console.warn('[Extension] recorderWindow 상태:', {
-          exists: !!recorderWindow,
-          hasWebContents: !!(recorderWindow && recorderWindow.webContents),
-          isDestroyed: recorderWindow ? recorderWindow.isDestroyed() : 'N/A'
-        });
+      // 녹화 윈도우로도 전달 (별도 윈도우가 있는 경우)
+      if (recorderWindow && !recorderWindow.isDestroyed() && recorderWindow.webContents) {
+        recorderWindow.webContents.send('dom-event', eventData);
       }
+      
+      // 주의: 메인 윈도우의 iframe은 renderer.js에서 postMessage로 전달하므로 중복 전송하지 않음
       
       // 실시간 이벤트 스트리밍 (선택적)
       // 필요시 여기서 데이터베이스에 저장하거나 추가 처리
@@ -620,13 +592,25 @@ function handleExtensionMessage(ws, data) {
         selectorsCount: data.selectors?.length || 0
       });
       
-      // Recorder 창에 전달
-      if (recorderWindow && recorderWindow.webContents) {
-        recorderWindow.webContents.send('element-hover', {
-          element: data.element,
-          selectors: data.selectors || [],
-          timestamp: data.timestamp || Date.now()
-        });
+      const hoverData = {
+        element: data.element,
+        selectors: data.selectors || [],
+        timestamp: data.timestamp || Date.now()
+      };
+      
+      // 메인 윈도우로 전달 (필요한 경우)
+      if (mainWindow && mainWindow.webContents) {
+        mainWindow.webContents.send('element-hover', hoverData);
+      }
+      
+      // 녹화 윈도우로도 전달 (별도 윈도우가 있는 경우)
+      if (recorderWindow && !recorderWindow.isDestroyed() && recorderWindow.webContents) {
+        recorderWindow.webContents.send('element-hover', hoverData);
+      }
+      
+      // 메인 윈도우의 iframe으로도 전달
+      if (mainWindow && mainWindow.webContents) {
+        mainWindow.webContents.send('element-hover', hoverData);
       }
       break;
       
@@ -634,10 +618,129 @@ function handleExtensionMessage(ws, data) {
       // 요소 하이라이트 해제
       console.log('[Extension] 요소 하이라이트 해제');
       
-      // Recorder 창에 전달
-      if (recorderWindow && recorderWindow.webContents) {
-        recorderWindow.webContents.send('element-hover-clear', {
-          timestamp: data.timestamp || Date.now()
+      const clearData = {
+        timestamp: data.timestamp || Date.now()
+      };
+      
+      // 메인 윈도우로 전달 (필요한 경우)
+      if (mainWindow && mainWindow.webContents) {
+        mainWindow.webContents.send('element-hover-clear', clearData);
+      }
+      
+      // 녹화 윈도우로도 전달 (별도 윈도우가 있는 경우)
+      if (recorderWindow && !recorderWindow.isDestroyed() && recorderWindow.webContents) {
+        recorderWindow.webContents.send('element-hover-clear', clearData);
+      }
+      
+      // 메인 윈도우의 iframe으로도 전달
+      if (mainWindow && mainWindow.webContents) {
+        mainWindow.webContents.send('element-hover-clear', clearData);
+      }
+      break;
+      
+    case 'url-changed':
+    case 'page-navigated':
+      // URL 변경 감지 (페이지 전환)
+      console.log('[Extension] ========== URL 변경 감지 ==========');
+      console.log('[Extension] URL 변경 정보:', {
+        url: data.url,
+        tabId: data.tabId,
+        timestamp: data.timestamp,
+        previousUrl: data.previousUrl || 'N/A'
+      });
+      console.log('[Extension] 현재 녹화 상태:', globalRecordingState ? '녹화 중' : '녹화 중지');
+      console.log('[Extension] 활성 WebSocket 연결 수:', extensionConnections.size);
+      
+      // WebSocket 연결 상태 확인
+      extensionConnections.forEach((conn, index) => {
+        console.log(`[Extension] WebSocket #${index}:`, {
+          readyState: conn.readyState,
+          url: conn.url || 'N/A',
+          protocol: conn.protocol || 'N/A'
+        });
+      });
+      
+      // 녹화 중인 경우에만 처리
+      if (globalRecordingState) {
+        const urlChangeData = {
+          url: data.url,
+          tabId: data.tabId,
+          timestamp: data.timestamp || Date.now(),
+          previousUrl: data.previousUrl || null
+        };
+        
+        console.log('[Extension] URL 변경 데이터 준비 완료:', urlChangeData);
+        
+        // 메인 윈도우로 전달
+        if (mainWindow && mainWindow.webContents) {
+          console.log('[Extension] 메인 윈도우로 URL 변경 전송 시도...');
+          mainWindow.webContents.send('url-changed', urlChangeData);
+          console.log('[Extension] ✅ 메인 윈도우로 URL 변경 전송 완료');
+        } else {
+          console.warn('[Extension] ⚠️ 메인 윈도우가 없거나 webContents가 없습니다');
+        }
+        
+        // 녹화 윈도우로도 전달
+        if (recorderWindow && !recorderWindow.isDestroyed() && recorderWindow.webContents) {
+          console.log('[Extension] 녹화 윈도우로 URL 변경 전송 시도...');
+          recorderWindow.webContents.send('url-changed', urlChangeData);
+          console.log('[Extension] ✅ 녹화 윈도우로 URL 변경 전송 완료');
+        } else {
+          console.log('[Extension] ℹ️ 녹화 윈도우가 없거나 닫혔습니다 (정상)');
+        }
+        
+        // Content Script에 녹화 재시작 메시지 전송 (중요!)
+        console.log('[Extension] Content Script에 녹화 재시작 메시지 전송 시도...');
+        if (data.tabId) {
+          // Background Script에 Content Script 재시작 요청 전달
+          // 실제로는 확장 프로그램의 Background Script가 처리해야 함
+          console.log('[Extension] ⚠️ Content Script 재시작은 확장 프로그램 Background Script에서 처리해야 합니다');
+          console.log('[Extension] ⚠️ tabId:', data.tabId, '로 RECORDING_START 메시지를 보내야 합니다');
+        }
+        
+        console.log('[Extension] ========== URL 변경 처리 완료 ==========');
+      } else {
+        console.log('[Extension] ⚠️ URL 변경 감지되었지만 녹화 중이 아니므로 무시');
+      }
+      break;
+      
+    case 'element-selection':
+      // 요소 선택 관련 메시지 (Content Script로 전달)
+      console.log('[Extension] 요소 선택 메시지 수신:', data.type);
+      
+      // Content Script에 전달하기 위해 WebSocket으로 브로드캐스트
+      // 실제로는 Content Script가 직접 WebSocket에 연결되어 있으므로
+      // Background Script를 통해 Content Script에 메시지 전달
+      broadcastToExtensions({
+        type: 'element-selection',
+        ...data
+      });
+      
+      // 녹화 윈도우로도 전달
+      if (recorderWindow && !recorderWindow.isDestroyed() && recorderWindow.webContents) {
+        recorderWindow.webContents.send('element-selection', data);
+      }
+      break;
+      
+    case 'ELEMENT_SELECTION_PICKED':
+    case 'ELEMENT_SELECTION_ERROR':
+    case 'ELEMENT_SELECTION_CANCELLED':
+      // 요소 선택 결과 메시지 (Content Script에서 전송)
+      console.log('[Extension] 요소 선택 결과 수신:', data.type);
+      
+      // 메인 윈도우로 전달
+      if (mainWindow && mainWindow.webContents) {
+        mainWindow.webContents.send('element-selection-result', {
+          type: data.type,
+          ...data
+        });
+      }
+      
+      // 녹화 윈도우로도 전달
+      if (recorderWindow && !recorderWindow.isDestroyed() && recorderWindow.webContents) {
+        recorderWindow.webContents.send('element-selection-result', {
+          type: data.type,
+          ...data
         });
       }
       break;
@@ -808,6 +911,473 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
   let isRecording = false;
   let lastUrl = window.location.href;
   let lastTitle = document.title;
+  let urlCheckInterval = null;
+  
+  // ============================================================================
+  // 요소 하이라이트 기능 (record/content.js 참고)
+  // ============================================================================
+  let currentHighlightedElement = null;
+  let overlayElement = null;
+  let hoverTimeout = null;
+  let mouseoutTimeout = null;
+  let scrollTimeout = null;
+  
+  // 오버레이 HTML 생성 (record/content.js의 buildOverlayHtml 참고)
+  function buildOverlayHtml(topSelector, selectors) {
+    if (!topSelector || !topSelector.selector) {
+      return '<div style="color: #ff9800;">No selector found</div>';
+    }
+    const more = selectors.length > 1 ? '<div style="font-size: 10px; color: #888; margin-top: 4px;">+' + (selectors.length - 1) + ' more</div>' : '';
+    const score = topSelector.score || 0;
+    const reason = topSelector.reason || topSelector.type || 'CSS';
+    const selectorText = escapeHtml(topSelector.selector);
+    return '<div style="font-weight: bold; margin-bottom: 4px; color: #4CAF50;">' + selectorText + '</div>' +
+           '<div style="font-size: 10px; color: #aaa;">Score: ' + score + '% • ' + reason + '</div>' +
+           more;
+  }
+  
+  // HTML 이스케이프
+  function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+  
+  // 오버레이 위치 업데이트 (record/content.js의 updateOverlayPosition 참고)
+  function updateOverlayPosition(rect) {
+    if (!overlayElement) return;
+    
+    const overlayHeight = overlayElement.offsetHeight;
+    const overlayWidth = overlayElement.offsetWidth;
+    const overlayTop = rect.top - overlayHeight - 10;
+    const overlayBottom = rect.bottom + 10;
+    
+    if (overlayTop >= 0) {
+      overlayElement.style.top = overlayTop + 'px';
+      overlayElement.style.left = rect.left + 'px';
+    } else {
+      overlayElement.style.top = overlayBottom + 'px';
+      overlayElement.style.left = rect.left + 'px';
+    }
+    
+    const maxLeft = window.innerWidth - overlayWidth - 10;
+    const currentLeft = parseInt(overlayElement.style.left, 10) || 0;
+    if (currentLeft > maxLeft) {
+      overlayElement.style.left = Math.max(10, maxLeft) + 'px';
+    }
+    if (currentLeft < 10) {
+      overlayElement.style.left = '10px';
+    }
+  }
+  
+  // 셀렉터 오버레이 생성 (record/content.js의 createSelectorOverlay 참고)
+  function createSelectorOverlay(rect, selectors) {
+    // 기존 오버레이 제거
+    if (overlayElement) {
+      overlayElement.remove();
+      overlayElement = null;
+    }
+    
+    if (!selectors || selectors.length === 0) {
+      return;
+    }
+    
+    const overlay = document.createElement('div');
+    overlay.id = '__testarchitect_selector_overlay__';
+    overlay.style.cssText = 'position: fixed; z-index: 999999; background: rgba(0, 0, 0, 0.85); color: white; padding: 8px 12px; border-radius: 6px; font-family: "Courier New", monospace; font-size: 12px; pointer-events: none; box-shadow: 0 4px 12px rgba(0,0,0,0.3); max-width: 300px; word-break: break-all; line-height: 1.4;';
+    
+    overlay.innerHTML = buildOverlayHtml(selectors[0], selectors);
+    document.body.appendChild(overlay);
+    overlayElement = overlay;
+    updateOverlayPosition(rect);
+  }
+  
+  function removeHighlight() {
+    if (currentHighlightedElement) {
+      try {
+        currentHighlightedElement.style.outline = '';
+        currentHighlightedElement.style.outlineOffset = '';
+      } catch (e) {
+        // 요소가 DOM에서 제거된 경우 무시
+      }
+      currentHighlightedElement = null;
+    }
+    if (overlayElement) {
+      overlayElement.remove();
+      overlayElement = null;
+    }
+  }
+  
+  function highlightElement(element) {
+    if (!element || !isRecording) return;
+    
+    // 같은 요소면 스킵
+    const isSameElement = element === currentHighlightedElement;
+    if (isSameElement && overlayElement) {
+      // 같은 요소면 오버레이 위치만 업데이트
+      const rect = element.getBoundingClientRect();
+      updateOverlayPosition(rect);
+      return;
+    }
+    
+    // 이전 하이라이트 제거
+    if (currentHighlightedElement && currentHighlightedElement !== element) {
+      try {
+        currentHighlightedElement.style.outline = '';
+        currentHighlightedElement.style.outlineOffset = '';
+      } catch (e) {
+        // 요소가 DOM에서 제거된 경우 무시
+      }
+    }
+    
+    // 새 요소 하이라이트
+    currentHighlightedElement = element;
+    try {
+      element.style.outline = '3px solid #2196F3';
+      element.style.outlineOffset = '2px';
+      element.style.transition = 'outline 0.1s ease';
+      
+      // 셀렉터 후보 생성 및 오버레이 표시
+      const rect = element.getBoundingClientRect();
+      let selectorCandidates = [];
+      try {
+        selectorCandidates = getSelectorCandidatesWithUniqueness(element, {
+          requireUnique: false
+        });
+        if (selectorCandidates && selectorCandidates.length > 0) {
+          createSelectorOverlay(rect, selectorCandidates);
+        }
+      } catch (error) {
+        console.error('[DOM Capture] 셀렉터 생성 오류:', error);
+      }
+    } catch (e) {
+      // 스타일 적용 실패 시 무시
+      currentHighlightedElement = null;
+    }
+  }
+  
+  function handleMouseOver(event) {
+    if (!isRecording) return;
+    
+    // mouseout 타임아웃 취소
+    if (mouseoutTimeout) {
+      clearTimeout(mouseoutTimeout);
+      mouseoutTimeout = null;
+    }
+    
+    const target = event.target;
+    
+    // body나 documentElement는 무시
+    if (!target || target === document.body || target === document.documentElement) {
+      removeHighlight();
+      return;
+    }
+    
+    // 오버레이 요소는 무시
+    if (target.id === '__testarchitect_selector_overlay__' || target.closest('#__testarchitect_selector_overlay__')) {
+      return;
+    }
+    
+    // 다른 요소로 이동한 경우
+    if (target !== currentHighlightedElement) {
+      if (hoverTimeout) {
+        clearTimeout(hoverTimeout);
+      }
+      // 약간의 지연 후 하이라이트 (성능 최적화)
+      hoverTimeout = setTimeout(() => {
+        highlightElement(target);
+        hoverTimeout = null;
+      }, 30);
+    } else if (overlayElement) {
+      // 같은 요소면 오버레이 위치만 업데이트
+      const rect = target.getBoundingClientRect();
+      updateOverlayPosition(rect);
+    }
+  }
+  
+  function handleMouseOut(event) {
+    if (!isRecording) return;
+    
+    const relatedTarget = event.relatedTarget;
+    // 오버레이 요소로 이동한 경우 무시
+    if (relatedTarget && (relatedTarget.id === '__testarchitect_selector_overlay__' || relatedTarget.closest('#__testarchitect_selector_overlay__'))) {
+      return;
+    }
+    
+    // hover 타임아웃 취소
+    if (hoverTimeout) {
+      clearTimeout(hoverTimeout);
+      hoverTimeout = null;
+    }
+    
+    // 약간의 지연 후 하이라이트 제거 (빠른 마우스 이동 시 깜빡임 방지)
+    if (mouseoutTimeout) {
+      clearTimeout(mouseoutTimeout);
+    }
+    
+    mouseoutTimeout = setTimeout(() => {
+      const activeElement = document.elementFromPoint(event.clientX, event.clientY);
+      
+      // 활성 요소가 body나 documentElement가 아니고, 하이라이트된 요소도 아니고, 오버레이도 아니면 제거
+      if (activeElement && 
+          activeElement !== document.body && 
+          activeElement !== document.documentElement &&
+          activeElement.id !== '__testarchitect_selector_overlay__' &&
+          !activeElement.closest('#__testarchitect_selector_overlay__') &&
+          activeElement !== currentHighlightedElement) {
+        removeHighlight();
+      }
+      
+      mouseoutTimeout = null;
+    }, 200);
+  }
+  
+  function handleScroll() {
+    if (!isRecording || !currentHighlightedElement || !overlayElement) return;
+    
+    // 스크롤 시 오버레이 위치 업데이트
+    if (scrollTimeout) {
+      clearTimeout(scrollTimeout);
+    }
+    
+    scrollTimeout = setTimeout(() => {
+      if (currentHighlightedElement) {
+        try {
+          const rect = currentHighlightedElement.getBoundingClientRect();
+          // 요소가 뷰포트 밖에 있으면 하이라이트 제거
+          if (rect.bottom < 0 || rect.top > window.innerHeight || 
+              rect.right < 0 || rect.left > window.innerWidth) {
+            removeHighlight();
+          } else if (overlayElement) {
+            // 요소가 보이면 오버레이 위치 업데이트
+            updateOverlayPosition(rect);
+          }
+        } catch (e) {
+          // 요소가 DOM에서 제거된 경우 하이라이트 제거
+          removeHighlight();
+        }
+      }
+      scrollTimeout = null;
+    }, 50);
+  }
+  
+  function setupHoverListeners() {
+    if (!isRecording) return;
+    
+    document.addEventListener('mouseover', handleMouseOver, true);
+    document.addEventListener('mouseout', handleMouseOut, true);
+    window.addEventListener('scroll', handleScroll, true);
+    
+    console.log('[DOM Capture] 요소 하이라이트 리스너 설정 완료');
+  }
+  
+  function removeHoverListeners() {
+    document.removeEventListener('mouseover', handleMouseOver, true);
+    document.removeEventListener('mouseout', handleMouseOut, true);
+    window.removeEventListener('scroll', handleScroll, true);
+    
+    // 타임아웃 정리
+    if (hoverTimeout) {
+      clearTimeout(hoverTimeout);
+      hoverTimeout = null;
+    }
+    if (mouseoutTimeout) {
+      clearTimeout(mouseoutTimeout);
+      mouseoutTimeout = null;
+    }
+    if (scrollTimeout) {
+      clearTimeout(scrollTimeout);
+      scrollTimeout = null;
+    }
+    
+    // 하이라이트 제거
+    removeHighlight();
+    
+    console.log('[DOM Capture] 요소 하이라이트 리스너 제거 완료');
+  }
+  
+  // localStorage에서 lastRecordedUrl 가져오기
+  function getLastRecordedUrl() {
+    try {
+      const stored = localStorage.getItem('testarchitect_lastRecordedUrl');
+      return stored || null;
+    } catch (err) {
+      console.error('[DOM Capture] localStorage 읽기 실패:', err);
+      return null;
+    }
+  }
+  
+  // localStorage에 lastRecordedUrl 저장
+  function saveLastRecordedUrl(url) {
+    try {
+      localStorage.setItem('testarchitect_lastRecordedUrl', url);
+    } catch (err) {
+      console.error('[DOM Capture] localStorage 저장 실패:', err);
+    }
+  }
+  
+  // localStorage에서 녹화 상태 복원 (새 페이지 로드 시)
+  function restoreRecordingState() {
+    try {
+      const stored = localStorage.getItem('testarchitect_isRecording');
+      if (stored === 'true') {
+        isRecording = true;
+        console.log('[DOM Capture] localStorage에서 녹화 상태 복원: 녹화 중');
+        // 녹화 상태 복원 시 URL 체크 인터벌 시작
+        if (!urlCheckInterval) {
+          urlCheckInterval = setInterval(() => {
+            try {
+              checkUrlChange();
+            } catch (err) {
+              console.error('[DOM Capture] URL 변경 체크 실패:', err);
+            }
+          }, 1000);
+        }
+        // 하이라이트 리스너 설정
+        setupHoverListeners();
+      }
+    } catch (err) {
+      console.error('[DOM Capture] localStorage 읽기 실패:', err);
+    }
+  }
+  
+  // localStorage에 녹화 상태 저장
+  function saveRecordingState(recording) {
+    try {
+      localStorage.setItem('testarchitect_isRecording', recording ? 'true' : 'false');
+    } catch (err) {
+      console.error('[DOM Capture] localStorage 저장 실패:', err);
+    }
+  }
+  
+  // 초기화 시 녹화 상태 복원
+  restoreRecordingState();
+  
+  // ============================================================================
+  // 사용자 상호작용으로 인한 URL 변경 추적 (navigate vs verifyUrl 구분)
+  // ============================================================================
+  let lastUserInteractionTimestamp = null; // 마지막 사용자 상호작용 시각
+  let lastUserInteractionType = null; // 'click' | 'keydown' | 'submit' | 'history'
+  const USER_INTERACTION_TO_NAVIGATION_WINDOW = 2000; // 상호작용 후 2초 이내 URL 변경이면 사용자 상호작용으로 인한 것으로 간주
+  
+  // URL 변경 감지 및 navigate/verifyUrl 이벤트 생성
+  async function checkUrlChange() {
+    if (!isRecording) return;
+    
+    const currentUrl = window.location.href;
+    const currentTitle = document.title;
+    let storedLastUrl = lastUrl;
+    
+    try {
+      const storedUrl = getLastRecordedUrl();
+      if (storedUrl && storedUrl !== currentUrl) {
+        storedLastUrl = storedUrl;
+      }
+    } catch (err) {
+      // 무시
+    }
+    
+    const compareUrl = storedLastUrl && storedLastUrl !== currentUrl ? storedLastUrl : lastUrl;
+    const urlChanged = currentUrl !== compareUrl;
+    const titleChanged = currentTitle !== lastTitle;
+    
+    if (urlChanged || titleChanged) {
+      const now = Date.now();
+      const timeSinceLastInteraction = lastUserInteractionTimestamp ? (now - lastUserInteractionTimestamp) : Infinity;
+      
+      // 사용자 상호작용으로 인한 이동인지 확인 (2초 이내 상호작용이 있었으면)
+      const isUserInteractionNavigation = lastUserInteractionTimestamp && 
+                                          timeSinceLastInteraction < USER_INTERACTION_TO_NAVIGATION_WINDOW;
+      
+      console.log('[DOM Capture] URL 변경 감지:', {
+        previous: compareUrl,
+        current: currentUrl,
+        titleChanged: titleChanged,
+        isUserInteractionNavigation: isUserInteractionNavigation,
+        interactionType: lastUserInteractionType,
+        timeSinceLastInteraction: timeSinceLastInteraction
+      });
+      
+      if (isUserInteractionNavigation) {
+        // 사용자 상호작용으로 인한 이동 → verifyUrl assertion 생성
+        const verifyUrlEvent = {
+          action: 'verifyUrl',
+          value: currentUrl,
+          selectors: [],
+          target: null,
+          iframeContext: null,
+          clientRect: null,
+          metadata: { 
+            domEvent: 'navigation', 
+            source: lastUserInteractionType || 'user-interaction' 
+          },
+          domContext: null,
+          page: {
+            url: currentUrl,
+            title: currentTitle
+          },
+          url: currentUrl,
+          primarySelector: currentUrl
+        };
+        
+        sendEvent(verifyUrlEvent);
+        console.log('[DOM Capture] 사용자 상호작용으로 인한 URL 변경 → verifyUrl assertion 생성:', lastUserInteractionType);
+      } else {
+        // 직접 입력으로 인한 이동 → navigate 이벤트 생성
+        const navigateEvent = {
+          action: 'navigate',
+          value: currentUrl,
+          selectors: [],
+          target: null,
+          iframeContext: null,
+          clientRect: null,
+          metadata: { domEvent: 'navigation', source: 'direct' },
+          domContext: null,
+          page: {
+            url: currentUrl,
+            title: currentTitle
+          },
+          url: currentUrl,
+          primarySelector: currentUrl
+        };
+        
+        sendEvent(navigateEvent);
+        console.log('[DOM Capture] 직접 입력으로 인한 URL 변경 → navigate 이벤트 생성');
+      }
+      
+      // localStorage에 저장
+      try {
+        saveLastRecordedUrl(currentUrl);
+      } catch (err) {
+        console.error('[DOM Capture] URL 저장 실패:', err);
+      }
+      
+      // url-changed 메시지도 전송 (recorder.js에서 처리)
+      if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+        try {
+          const urlChangeMessage = {
+            type: 'url-changed',
+            url: currentUrl,
+            previousUrl: compareUrl,
+            timestamp: Date.now(),
+            sessionId: window.__testarchitect_session_id__ || null,
+            isUserInteractionNavigation: isUserInteractionNavigation
+          };
+          wsConnection.send(JSON.stringify(urlChangeMessage));
+        } catch (error) {
+          console.error('[DOM Capture] URL 변경 메시지 전송 실패:', error);
+        }
+      }
+      
+      // 상호작용 추적 정보 초기화 (URL 변경 후)
+      lastUserInteractionTimestamp = null;
+      lastUserInteractionType = null;
+      
+      lastUrl = currentUrl;
+      lastTitle = currentTitle;
+    }
+  }
   
   function connectWebSocket() {
     if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
@@ -831,9 +1401,72 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
           if (message.type === 'recording-start') {
             console.log('[DOM Capture] 녹화 시작');
             isRecording = true;
+            saveRecordingState(true); // localStorage에 저장
+            
+            // 녹화 시작 시 URL 변경 체크 (record/content.js의 startRecording 로직 참고)
+            const currentUrl = window.location.href;
+            const currentTitle = document.title;
+            const storedLastUrl = getLastRecordedUrl();
+            
+            if (storedLastUrl && storedLastUrl !== currentUrl) {
+              lastUrl = storedLastUrl;
+              lastTitle = '';
+              setTimeout(() => {
+                checkUrlChange();
+              }, 100);
+            } else {
+              lastUrl = currentUrl;
+              lastTitle = currentTitle;
+              saveLastRecordedUrl(currentUrl);
+            }
+            
+            // URL 체크 인터벌 시작 (1초마다, record/content.js와 동일)
+            if (!urlCheckInterval) {
+              urlCheckInterval = setInterval(() => {
+                try {
+                  checkUrlChange();
+                } catch (err) {
+                  console.error('[DOM Capture] URL 변경 체크 실패:', err);
+                }
+              }, 1000); // 1초마다 체크 (record/content.js와 동일)
+            }
+            
+            // 페이지 로드 완료 시 URL 체크
+            if (document.readyState === 'complete') {
+              setTimeout(() => {
+                checkUrlChange();
+              }, 500);
+            } else {
+              window.addEventListener('load', () => {
+                setTimeout(() => {
+                  checkUrlChange();
+                }, 500);
+              });
+            }
+            
+            if (document.readyState === 'loading') {
+              document.addEventListener('DOMContentLoaded', () => {
+                setTimeout(() => {
+                  checkUrlChange();
+                }, 300);
+              });
+            }
+            
+            // 요소 하이라이트 리스너 설정
+            setupHoverListeners();
           } else if (message.type === 'recording-stop') {
             console.log('[DOM Capture] 녹화 중지');
             isRecording = false;
+            saveRecordingState(false); // localStorage에 저장
+            
+            // URL 체크 인터벌 중지
+            if (urlCheckInterval) {
+              clearInterval(urlCheckInterval);
+              urlCheckInterval = null;
+            }
+            
+            // 요소 하이라이트 리스너 제거
+            removeHoverListeners();
           }
         } catch (error) {
           console.error('[DOM Capture] 메시지 파싱 오류:', error);
@@ -879,22 +1512,38 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
     }
   }
   
-  // 클릭 이벤트 캡처
-  document.addEventListener('click', (event) => {
+  // ============================================================================
+  // 클릭 이벤트 처리 (record/content.js 참고)
+  // ============================================================================
+  function handleClick(event) {
     if (!isRecording) return;
     
     const target = event.target;
     if (!target || target === document.body || target === document.documentElement) return;
     
+    // 오버레이 요소는 무시
+    if (target.id === '__testarchitect_selector_overlay__' || target.closest('#__testarchitect_selector_overlay__')) {
+      return;
+    }
+    
+    // 우클릭은 별도 처리
+    if (event.button === 2) {
+      handleRightClick(event);
+      return;
+    }
+    
+    // 사용자 상호작용 추적 (URL 변경 감지용)
+    lastUserInteractionTimestamp = Date.now();
+    lastUserInteractionType = 'click';
+    
     const rect = target.getBoundingClientRect();
     
-    // selectorUtils.js를 사용하여 셀렉터 후보 생성 (유일성 검증 포함)
+    // selectorUtils.js를 사용하여 셀렉터 후보 생성
     let selectorCandidates = [];
     try {
       selectorCandidates = getSelectorCandidatesWithUniqueness(target, {
         requireUnique: false
       });
-      console.log('[DOM Capture] 셀렉터 후보 생성 완료:', selectorCandidates.length, '개');
     } catch (error) {
       console.error('[DOM Capture] 셀렉터 생성 오류:', error);
     }
@@ -909,7 +1558,7 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
       },
       value: target.value || target.textContent?.trim() || null,
       selectorCandidates: selectorCandidates,
-      selectors: selectorCandidates.map(c => c.selector || c), // 호환성
+      selectors: selectorCandidates.map(c => c.selector || c),
       clientRect: {
         x: rect.x,
         y: rect.y,
@@ -921,16 +1570,23 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
         title: document.title
       }
     });
-  }, true);
+  }
   
-  // 입력 이벤트 캡처
-  document.addEventListener('input', (event) => {
+  // 더블클릭 이벤트 처리 (record/content.js 참고)
+  function handleDoubleClick(event) {
     if (!isRecording) return;
     
     const target = event.target;
-    if (!target || (target.tagName !== 'INPUT' && target.tagName !== 'TEXTAREA')) return;
+    if (!target || target === document.body || target === document.documentElement) return;
     
-    // selectorUtils.js를 사용하여 셀렉터 후보 생성 (유일성 검증 포함)
+    // 오버레이 요소는 무시
+    if (target.id === '__testarchitect_selector_overlay__' || target.closest('#__testarchitect_selector_overlay__')) {
+      return;
+    }
+    
+    const rect = target.getBoundingClientRect();
+    
+    // selectorUtils.js를 사용하여 셀렉터 후보 생성
     let selectorCandidates = [];
     try {
       selectorCandidates = getSelectorCandidatesWithUniqueness(target, {
@@ -941,47 +1597,348 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
     }
     
     sendEvent({
-      action: 'input',
+      action: 'doubleClick',
       target: {
         tag: target.tagName.toLowerCase(),
         id: target.id || null,
         className: target.className || null,
-        type: target.type || null
+        text: (target.innerText || target.textContent || "").trim().substring(0, 100) || null
       },
-      value: target.value || null,
+      value: target.value || target.textContent?.trim() || null,
       selectorCandidates: selectorCandidates,
-      selectors: selectorCandidates.map(c => c.selector || c), // 호환성
+      selectors: selectorCandidates.map(c => c.selector || c),
+      clientRect: {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height
+      },
       page: {
         url: window.location.href,
         title: document.title
       }
     });
-  }, true);
+  }
   
-  // URL 변경 감지
-  setInterval(() => {
+  // 우클릭 이벤트 처리 (record/content.js 참고)
+  function handleRightClick(event) {
     if (!isRecording) return;
     
-    const currentUrl = window.location.href;
-    const currentTitle = document.title;
+    const target = event.target;
+    if (!target || target === document.body || target === document.documentElement) return;
     
-    if (currentUrl !== lastUrl || currentTitle !== lastTitle) {
+    // 오버레이 요소는 무시
+    if (target.id === '__testarchitect_selector_overlay__' || target.closest('#__testarchitect_selector_overlay__')) {
+      return;
+    }
+    
+    const rect = target.getBoundingClientRect();
+    
+    // selectorUtils.js를 사용하여 셀렉터 후보 생성
+    let selectorCandidates = [];
+    try {
+      selectorCandidates = getSelectorCandidatesWithUniqueness(target, {
+        requireUnique: false
+      });
+    } catch (error) {
+      console.error('[DOM Capture] 셀렉터 생성 오류:', error);
+    }
+    
+    sendEvent({
+      action: 'rightClick',
+      target: {
+        tag: target.tagName.toLowerCase(),
+        id: target.id || null,
+        className: target.className || null,
+        text: (target.innerText || target.textContent || "").trim().substring(0, 100) || null
+      },
+      value: target.value || target.textContent?.trim() || null,
+      selectorCandidates: selectorCandidates,
+      selectors: selectorCandidates.map(c => c.selector || c),
+      clientRect: {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height
+      },
+      page: {
+        url: window.location.href,
+        title: document.title
+      }
+    });
+  }
+  
+  // SELECT 요소의 change 이벤트 처리 (record/content.js 참고)
+  function handleSelect(event) {
+    if (!isRecording) return;
+    
+    const target = event.target;
+    if (!target || target.tagName !== 'SELECT') return;
+    
+    // 오버레이 요소는 무시
+    if (target.id === '__testarchitect_selector_overlay__' || target.closest('#__testarchitect_selector_overlay__')) {
+      return;
+    }
+    
+    const selectedOption = target.options[target.selectedIndex];
+    const value = selectedOption ? (selectedOption.text || selectedOption.value || '') : '';
+    
+    const rect = target.getBoundingClientRect();
+    
+    // selectorUtils.js를 사용하여 셀렉터 후보 생성
+    let selectorCandidates = [];
+    try {
+      selectorCandidates = getSelectorCandidatesWithUniqueness(target, {
+        requireUnique: false
+      });
+    } catch (error) {
+      console.error('[DOM Capture] 셀렉터 생성 오류:', error);
+    }
+    
+    sendEvent({
+      action: 'select',
+      target: {
+        tag: target.tagName.toLowerCase(),
+        id: target.id || null,
+        className: target.className || null
+      },
+      value: value,
+      selectorCandidates: selectorCandidates,
+      selectors: selectorCandidates.map(c => c.selector || c),
+      clientRect: {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height
+      },
+      page: {
+        url: window.location.href,
+        title: document.title
+      }
+    });
+  }
+  
+  // 클릭 이벤트 리스너 등록
+  document.addEventListener('click', handleClick, true);
+  
+  // 더블클릭 이벤트 리스너 등록
+  document.addEventListener('dblclick', handleDoubleClick, true);
+  
+  // 우클릭 이벤트 리스너 등록 (contextmenu)
+  document.addEventListener('contextmenu', handleRightClick, true);
+  
+  // SELECT 요소의 change 이벤트 리스너 등록
+  document.addEventListener('change', handleSelect, true);
+  
+  // ============================================================================
+  // 입력 이벤트 디바운싱 (record/content.js 참고)
+  // ============================================================================
+  const INPUT_DEBOUNCE_DELAY = 800; // 800ms 디바운스 (record/content.js와 동일)
+  const inputTimers = new WeakMap(); // 각 요소별 타이머 관리
+  
+  // 입력 이벤트 처리 (디바운싱 적용)
+  function handleInput(event) {
+    if (!isRecording) return;
+    
+    const target = event.target;
+    if (!target || (target.tagName !== 'INPUT' && target.tagName !== 'TEXTAREA' && !target.isContentEditable)) {
+      return;
+    }
+    
+    // 기존 타이머가 있으면 취소
+    const existingTimer = inputTimers.get(target);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+    
+    // 새 타이머 설정 (800ms 후 이벤트 기록)
+    const timer = setTimeout(() => {
+      const currentValue = target.value || target.textContent || '';
+      
+      // selectorUtils.js를 사용하여 셀렉터 후보 생성
+      let selectorCandidates = [];
+      try {
+        selectorCandidates = getSelectorCandidatesWithUniqueness(target, {
+          requireUnique: false
+        });
+      } catch (error) {
+        console.error('[DOM Capture] 셀렉터 생성 오류:', error);
+      }
+      
+      // 빈 값이면 clear 액션, 아니면 input 액션
+      const action = currentValue === '' ? 'clear' : 'input';
+      
       sendEvent({
-        action: 'goto',
-        value: currentUrl,
-        selectors: [],
+        action: action,
+        target: {
+          tag: target.tagName ? target.tagName.toLowerCase() : null,
+          id: target.id || null,
+          className: target.className || null,
+          type: target.type || null
+        },
+        value: currentValue || null,
+        selectorCandidates: selectorCandidates,
+        selectors: selectorCandidates.map(c => c.selector || c),
         page: {
-          url: currentUrl,
-          title: currentTitle
+          url: window.location.href,
+          title: document.title
         }
       });
       
-      lastUrl = currentUrl;
-      lastTitle = currentTitle;
-    }
-  }, 500);
+      // 타이머 제거
+      inputTimers.delete(target);
+    }, INPUT_DEBOUNCE_DELAY);
+    
+    inputTimers.set(target, timer);
+  }
   
-  // 요소 하이라이트 기능은 일단 제거 (문제 해결 후 다시 추가 가능)
+  // blur 이벤트 처리 (입력 필드에서 포커스를 잃을 때 즉시 기록)
+  function handleBlur(event) {
+    if (!isRecording) return;
+    
+    const target = event.target;
+    if (!target || (target.tagName !== 'INPUT' && target.tagName !== 'TEXTAREA' && !target.isContentEditable)) {
+      return;
+    }
+    
+    // 타이머가 있으면 즉시 실행하고 취소
+    const existingTimer = inputTimers.get(target);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      inputTimers.delete(target);
+      
+      const currentValue = target.value || target.textContent || '';
+      
+      // selectorUtils.js를 사용하여 셀렉터 후보 생성
+      let selectorCandidates = [];
+      try {
+        selectorCandidates = getSelectorCandidatesWithUniqueness(target, {
+          requireUnique: false
+        });
+      } catch (error) {
+        console.error('[DOM Capture] 셀렉터 생성 오류:', error);
+      }
+      
+      // 빈 값이면 clear 액션, 아니면 input 액션
+      const action = currentValue === '' ? 'clear' : 'input';
+      
+      sendEvent({
+        action: action,
+        target: {
+          tag: target.tagName ? target.tagName.toLowerCase() : null,
+          id: target.id || null,
+          className: target.className || null,
+          type: target.type || null
+        },
+        value: currentValue || null,
+        selectorCandidates: selectorCandidates,
+        selectors: selectorCandidates.map(c => c.selector || c),
+        page: {
+          url: window.location.href,
+          title: document.title
+        }
+      });
+    }
+  }
+  
+  // 입력 이벤트 리스너 등록
+  document.addEventListener('input', handleInput, true);
+  
+  // blur 이벤트 리스너 등록 (입력 필드에서 포커스를 잃을 때)
+  document.addEventListener('blur', handleBlur, true);
+  
+  // ============================================================================
+  // history.pushState/replaceState 감지 (SPA 네비게이션)
+  // ============================================================================
+  const originalPushState = history.pushState;
+  const originalReplaceState = history.replaceState;
+  
+  history.pushState = function(...args) {
+    if (isRecording) {
+      // pushState는 사용자 상호작용으로 인한 것으로 간주 (SPA 네비게이션)
+      lastUserInteractionTimestamp = Date.now();
+      lastUserInteractionType = 'history';
+      console.log('[DOM Capture] history.pushState 감지');
+    }
+    return originalPushState.apply(history, args);
+  };
+  
+  history.replaceState = function(...args) {
+    if (isRecording) {
+      // replaceState는 사용자 상호작용으로 인한 것으로 간주 (SPA 네비게이션)
+      lastUserInteractionTimestamp = Date.now();
+      lastUserInteractionType = 'history';
+      console.log('[DOM Capture] history.replaceState 감지');
+    }
+    return originalReplaceState.apply(history, args);
+  };
+  
+  // popstate 이벤트 (뒤로가기/앞으로가기)
+  window.addEventListener('popstate', () => {
+    if (isRecording) {
+      // popstate는 직접 입력으로 간주 (브라우저 네비게이션)
+      lastUserInteractionTimestamp = null;
+      lastUserInteractionType = null;
+      console.log('[DOM Capture] popstate 이벤트 감지');
+      // URL 변경 체크 (약간의 지연 후)
+      setTimeout(() => {
+        checkUrlChange();
+      }, 100);
+    }
+  });
+  
+  // ============================================================================
+  // 키보드 이벤트 감지 (엔터 키로 인한 폼 제출 등)
+  // ============================================================================
+  document.addEventListener('keydown', (event) => {
+    if (!isRecording) return;
+    
+    // 엔터 키 입력 감지 (검색창 등에서 URL 변경 가능)
+    // 주의: 주소창에 직접 입력 후 엔터는 감지할 수 없으므로 navigate로 처리됨
+    if (event.key === 'Enter' || event.keyCode === 13) {
+      const target = event.target;
+      // 페이지 내부의 INPUT, TEXTAREA, 또는 contentEditable 요소에서만 엔터 입력 감지
+      // 주소창은 document.body나 document.documentElement가 target이 되므로 제외됨
+      if (target && 
+          target !== document.body && 
+          target !== document.documentElement &&
+          (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        lastUserInteractionTimestamp = Date.now();
+        lastUserInteractionType = 'keydown';
+        console.log('[DOM Capture] 페이지 내부 엔터 키 입력 감지 (URL 변경 가능):', target.tagName);
+      } else {
+        // 주소창 입력 등은 사용자 상호작용으로 간주하지 않음
+        console.log('[DOM Capture] 엔터 키 입력 감지 (주소창 또는 기타): navigate로 처리됨');
+      }
+    }
+  }, true);
+  
+  // ============================================================================
+  // 폼 제출 이벤트 감지
+  // ============================================================================
+  document.addEventListener('submit', (event) => {
+    if (!isRecording) return;
+    
+    const target = event.target;
+    if (target && target.tagName === 'FORM') {
+      lastUserInteractionTimestamp = Date.now();
+      lastUserInteractionType = 'submit';
+      console.log('[DOM Capture] 폼 제출 감지 (URL 변경 가능)');
+    }
+  }, true);
+  
+  // beforeunload 이벤트에서 URL 저장 (record/content.js와 동일)
+  window.addEventListener('beforeunload', () => {
+    if (isRecording) {
+      try {
+        saveLastRecordedUrl(window.location.href);
+      } catch (err) {
+        console.error('[DOM Capture] beforeunload에서 URL 저장 실패:', err);
+      }
+    }
+    // 하이라이트 리스너 정리
+    removeHoverListeners();
+  });
   
   // WebSocket 연결 시작
   connectWebSocket();
@@ -997,16 +1954,27 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
     const wsUrl = targetTab.webSocketDebuggerUrl.replace('::1', '127.0.0.1').replace('[::1]', '127.0.0.1');
     console.log('🔌 CDP WebSocket 연결 시도:', wsUrl);
     
+    // 기존 연결이 있으면 닫기
+    if (globalCdpWs && globalCdpWs.readyState === WebSocket.OPEN) {
+      console.log('🔌 기존 CDP WebSocket 연결 종료');
+      globalCdpWs.close();
+      globalCdpWs = null;
+    }
+    
     const cdpWs = new WebSocket(wsUrl);
+    globalCdpWs = cdpWs; // 전역 변수에 저장 (URL 변경 감지를 위해 유지)
     
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        cdpWs.close();
-        reject(new Error('CDP WebSocket 연결 타임아웃'));
+        if (cdpWs.readyState !== WebSocket.OPEN) {
+          cdpWs.close();
+          globalCdpWs = null;
+          reject(new Error('CDP WebSocket 연결 타임아웃'));
+        }
       }, 10000);
       
       cdpWs.on('open', () => {
-        console.log('✅ CDP WebSocket 연결 성공');
+        console.log('✅ CDP WebSocket 연결 성공 (URL 변경 감지를 위해 연결 유지)');
         clearTimeout(timeout);
         
         let commandsSent = 0;
@@ -1016,11 +1984,8 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
           commandsSent++;
           if (commandsSent >= totalCommands) {
             console.log('✅ 모든 DOM 이벤트 캡처 스크립트 주입 명령 전송 완료');
-            // 응답을 기다리기 위해 잠시 대기 후 연결 종료
-            setTimeout(() => {
-              cdpWs.close();
-              resolve();
-            }, 2000);
+            // CDP WebSocket은 URL 변경 감지를 위해 계속 열어둠 (닫지 않음)
+            resolve();
           }
         };
         
@@ -1060,7 +2025,7 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
         }));
         checkComplete();
         
-        // CDP 응답 수신 (에러 처리)
+        // CDP 응답 수신 (에러 처리 및 이벤트 감지)
         cdpWs.on('message', (data) => {
           try {
             const message = JSON.parse(data.toString());
@@ -1072,15 +2037,94 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
             
             // Page.frameNavigated 이벤트 감지 (새 페이지로 이동 시)
             if (message.method === 'Page.frameNavigated') {
-              console.log('🔄 새 페이지로 이동 감지, DOM 이벤트 캡처 스크립트 재주입');
-              cdpWs.send(JSON.stringify({
-                id: Date.now(),
-                method: 'Runtime.evaluate',
-                params: {
-                  expression: domCaptureScript,
-                  userGesture: false
+              const frame = message.params && message.params.frame;
+              const newUrl = frame && frame.url;
+              
+              // 메인 프레임만 처리 (서브프레임 무시)
+              if (frame && frame.parentId) {
+                console.log('[CDP] 서브프레임 네비게이션 무시:', newUrl);
+                return;
+              }
+              
+              console.log('🔄 새 페이지로 이동 감지:', newUrl || 'URL 정보 없음');
+              
+              // DOM 이벤트 캡처 스크립트 재주입
+              if (cdpWs.readyState === WebSocket.OPEN) {
+                cdpWs.send(JSON.stringify({
+                  id: Date.now(),
+                  method: 'Runtime.evaluate',
+                  params: {
+                    expression: domCaptureScript,
+                    userGesture: false
+                  }
+                }));
+                console.log('[CDP] 새 페이지에 DOM 캡처 스크립트 재주입 완료');
+              }
+              
+              // URL 변경 정보를 recorderWindow에 전달 (Chrome Extension 없이도 작동)
+              if (newUrl && globalRecordingState) {
+                const timestamp = Date.now();
+                const urlChangeData = {
+                  url: newUrl,
+                  timestamp: timestamp
+                };
+                
+                // url-changed 메시지 전송 (녹화 상태 유지용)
+                if (recorderWindow && !recorderWindow.isDestroyed() && recorderWindow.webContents) {
+                  recorderWindow.webContents.send('url-changed', urlChangeData);
+                  console.log('[CDP] URL 변경 정보를 recorderWindow에 전달:', newUrl);
                 }
-              }));
+                
+                if (mainWindow && mainWindow.webContents) {
+                  mainWindow.webContents.send('url-changed', urlChangeData);
+                }
+                
+                // navigate 이벤트 전송 (record/content.js와 동일한 형식)
+                const navigateEvent = {
+                  action: 'navigate',
+                  value: newUrl,
+                  selectors: [],
+                  target: null,
+                  iframeContext: null,
+                  clientRect: null,
+                  metadata: { domEvent: 'navigation' },
+                  domContext: null,
+                  page: {
+                    url: newUrl,
+                    title: '' // 타이틀은 나중에 업데이트될 수 있음
+                  },
+                  url: newUrl,
+                  primarySelector: newUrl,
+                  timestamp: timestamp
+                };
+                
+                // WebSocket 서버를 통해 dom-event로 전송 (Extension 클라이언트들에게 브로드캐스트)
+                extensionClients.forEach((client) => {
+                  if (client.readyState === WebSocket.OPEN) {
+                    try {
+                      client.send(JSON.stringify({
+                        type: 'dom-event',
+                        event: navigateEvent,
+                        timestamp: timestamp
+                      }));
+                      console.log('[CDP] navigate 이벤트를 Extension 클라이언트에 전송:', newUrl);
+                    } catch (error) {
+                      console.error('[CDP] navigate 이벤트 전송 실패:', error);
+                    }
+                  }
+                });
+                
+                // recorderWindow에도 직접 전달 (iframe 환경)
+                if (recorderWindow && !recorderWindow.isDestroyed() && recorderWindow.webContents) {
+                  recorderWindow.webContents.send('dom-event', navigateEvent);
+                  console.log('[CDP] navigate 이벤트를 recorderWindow에 전달:', newUrl);
+                }
+                
+                // mainWindow에도 전달
+                if (mainWindow && mainWindow.webContents) {
+                  mainWindow.webContents.send('dom-event', navigateEvent);
+                }
+              }
             }
           } catch (error) {
             // 무시 (일부 메시지는 파싱 불가능할 수 있음)
@@ -1091,12 +2135,21 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
       cdpWs.on('error', (error) => {
         clearTimeout(timeout);
         console.error('❌ CDP WebSocket 오류:', error);
-        reject(error);
+        globalCdpWs = null;
+        // 연결 오류 시에도 Promise는 resolve (스크립트 주입은 완료되었을 수 있음)
+        if (commandsSent >= totalCommands) {
+          resolve();
+        } else {
+          reject(error);
+        }
       });
       
       cdpWs.on('close', () => {
         clearTimeout(timeout);
         console.log('🔌 CDP WebSocket 연결 종료');
+        if (globalCdpWs === cdpWs) {
+          globalCdpWs = null;
+        }
       });
     });
     
@@ -1395,75 +2448,6 @@ async function processRecordingData(recordingData) {
   };
 }
 
-/**
- * 녹화 창 열기
- * recorder.html을 새 창으로 엽니다
- */
-function openRecorderWindow(tcId, projectId, sessionId) {
-  // 이미 열려있으면 포커스만 이동
-  if (recorderWindow && !recorderWindow.isDestroyed()) {
-    recorderWindow.focus();
-    return;
-  }
-
-  const recorderPath = path.join(__dirname, '../renderer/recorder.html');
-  
-  recorderWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    minWidth: 800,
-    minHeight: 600,
-    title: `TestArchitect 녹화 - TC ${tcId}`,
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-      preload: config.paths.preload,
-      webSecurity: false // recorder.html에서 WebSocket 연결을 위해 필요할 수 있음
-    },
-    parent: mainWindow, // 메인 윈도우의 자식 창으로 설정
-    modal: false // 모달이 아닌 일반 창
-  });
-
-  // recorder.html 로드
-  recorderWindow.loadFile(recorderPath);
-
-  // 창이 준비되면 로그 출력 및 준비 완료 플래그 설정
-  recorderWindow.webContents.once('did-finish-load', () => {
-    console.log('[Recorder] recorder.html 로드 완료');
-    recorderWindow.isReady = true;
-    
-    // 녹화 중이면 즉시 recording-start 전송
-    if (globalRecordingState) {
-      console.log('[Recorder] 녹화 중이므로 recording-start 메시지 즉시 전송');
-      recorderWindow.webContents.send('recording-start', {
-        timestamp: Date.now()
-      });
-    }
-  });
-  
-  recorderWindow.isReady = false; // 초기 상태
-
-  // 창이 닫히면 참조 제거
-  recorderWindow.on('closed', () => {
-    console.log('[Recorder] recorderWindow 닫힘');
-    recorderWindow = null;
-  });
-
-  // 개발 모드에서 DevTools 자동 열기
-  if (config.dev.enabled && config.dev.autoOpenDevTools) {
-    recorderWindow.webContents.openDevTools();
-  }
-  
-  console.log('[Recorder] recorderWindow 생성 완료');
-  console.log('[Recorder] recorderWindow 상태:', {
-    exists: !!recorderWindow,
-    hasWebContents: !!(recorderWindow && recorderWindow.webContents),
-    isDestroyed: recorderWindow ? recorderWindow.isDestroyed() : 'N/A',
-    isReady: recorderWindow ? recorderWindow.isReady : 'N/A'
-  });
-
-  console.log('✅ 녹화 창 열림:', recorderPath);
-}
 
 /**
  * 메인 윈도우 생성
@@ -1491,6 +2475,75 @@ function createWindow() {
   if (config.dev.enabled && config.dev.autoOpenDevTools) {
     mainWindow.webContents.openDevTools();
   }
+}
+
+/**
+ * 녹화 윈도우 생성
+ * @param {Object} options - 녹화 옵션 (tcId, projectId, sessionId)
+ */
+function createRecorderWindow(options = {}) {
+  // 이미 열려있으면 포커스만 이동
+  if (recorderWindow && !recorderWindow.isDestroyed()) {
+    recorderWindow.focus();
+    // 옵션 업데이트
+    if (options.tcId && options.projectId && options.sessionId) {
+      recorderWindow.webContents.send('recorder-init', {
+        tcId: options.tcId,
+        projectId: options.projectId,
+        sessionId: options.sessionId
+      });
+    }
+    return recorderWindow;
+  }
+
+  const recorderPath = path.join(__dirname, '../renderer/recorder.html');
+  
+  recorderWindow = new BrowserWindow({
+    width: 1000,
+    height: 800,
+    minWidth: 800,
+    minHeight: 600,
+    title: 'TestArchitect - 녹화',
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: config.paths.preload,
+      webSecurity: false // 개발 모드에서 CORS 우회
+    },
+    show: false // 준비될 때까지 숨김
+  });
+
+  // 녹화 윈도우 로드
+  recorderWindow.loadFile(recorderPath);
+
+  // 준비되면 표시
+  recorderWindow.once('ready-to-show', () => {
+    recorderWindow.show();
+    recorderWindow.focus();
+    
+    // 개발 모드에서 DevTools 자동 열기
+    if (config.dev.enabled && config.dev.autoOpenDevTools) {
+      recorderWindow.webContents.openDevTools();
+    }
+  });
+
+  // 윈도우가 닫힐 때 정리
+  recorderWindow.on('closed', () => {
+    recorderWindow = null;
+  });
+
+  // 녹화 옵션을 윈도우에 전달
+  recorderWindow.webContents.once('did-finish-load', () => {
+    if (options.tcId && options.projectId && options.sessionId) {
+      recorderWindow.webContents.send('recorder-init', {
+        tcId: options.tcId,
+        projectId: options.projectId,
+        sessionId: options.sessionId
+      });
+    }
+  });
+
+  return recorderWindow;
 }
 
 /**
@@ -1961,6 +3014,17 @@ ipcMain.handle('open-browser', async (event, options) => {
       // 서버 시작 대기
       await new Promise(resolve => setTimeout(resolve, 500));
     }
+
+    // 녹화 서버가 실행 중인지 확인
+    if (!recordingServer) {
+      startRecordingServer();
+      // 서버 시작 대기
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    // 녹화 윈도우는 더 이상 별도로 열지 않음 (사이드 패널로 통합)
+    // createRecorderWindow는 iframe 내부에서 사용되지 않으므로 주석 처리
+    // createRecorderWindow({ tcId, projectId, sessionId });
     
     // 확장프로그램과 통신하기 위한 URL 생성
     const recordingUrl = `http://localhost:3000/record?tcId=${tcId}&projectId=${projectId}&sessionId=${sessionId}`;
@@ -1971,45 +3035,23 @@ ipcMain.handle('open-browser', async (event, options) => {
     // Chrome 경로 및 확장 프로그램 경로 찾기
     let chromePath;
     let extensionPath;
+    let canLoadExtension = false; // --load-extension 사용 가능 여부
     const platform = process.platform;
     
-    // PATH에서 Chrome 찾기 (우선 시도)
-    function findChromeFromPath() {
-      try {
-        const cmd = platform === 'win32' ? 'where chrome' : 'which google-chrome';
-        const result = execSync(cmd, { encoding: 'utf8', timeout: 2000 }).toString().trim().split('\n')[0];
-        if (result && fs.existsSync(result)) {
-          return result;
-        }
-        return null;
-      } catch (error) {
-        return null;
-      }
-    }
-    
-    // PATH에서 Chrome 찾기 시도
-    chromePath = findChromeFromPath();
-    if (chromePath) {
-      console.log('✅ PATH에서 Chrome 경로 발견:', chromePath);
+    // Chrome for Testing 우선 사용
+    const chromeInfo = ChromeForTestingService.getChromePath();
+    if (chromeInfo) {
+      chromePath = chromeInfo.chromePath;
+      canLoadExtension = chromeInfo.canLoadExtension;
+      console.log('✅ Chrome 경로 확인:', chromePath);
+      console.log('  - Chrome for Testing:', chromeInfo.isChromeForTesting);
+      console.log('  - --load-extension 사용 가능:', canLoadExtension);
     } else {
-      console.log('⚠️ PATH에서 Chrome을 찾을 수 없습니다. 하드코딩된 경로 확인 중...');
-      
-      if (platform === 'win32') {
-        // Windows Chrome 경로 찾기 (하드코딩된 경로)
-        const possibleChromePaths = [
-          'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-          'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-          path.join(os.homedir(), 'AppData\\Local\\Google\\Chrome\\Application\\chrome.exe')
-        ];
-        
-        for (const possiblePath of possibleChromePaths) {
-          if (fs.existsSync(possiblePath)) {
-            chromePath = possiblePath;
-            console.log('✅ 하드코딩된 경로에서 Chrome 발견:', chromePath);
-            break;
-          }
-        }
-      }
+      console.error('❌ Chrome을 찾을 수 없습니다.');
+      return { 
+        success: false, 
+        error: 'Chrome을 찾을 수 없습니다. Chrome을 설치하거나 Chrome for Testing을 빌드에 포함해주세요.' 
+      };
     }
     
     // 확장 프로그램 경로 찾기 (플랫폼별)
@@ -2361,10 +3403,14 @@ ipcMain.handle('open-browser', async (event, options) => {
         console.log('ℹ️ 임시 Chrome 프로필 사용:', tempUserDataDir);
       }
       
-      // 확장 프로그램이 있으면 로드 (선택적)
-      if (extensionPath && fs.existsSync(extensionPath)) {
+      // 확장 프로그램이 있으면 로드 (Chrome for Testing 사용 시에만 가능)
+      if (canLoadExtension && extensionPath && fs.existsSync(extensionPath)) {
         chromeArgs.push(`--load-extension=${extensionPath}`);
-        console.log('✅ 확장 프로그램 로드:', extensionPath);
+        console.log('✅ 확장 프로그램 로드 (--load-extension):', extensionPath);
+      } else if (extensionPath && fs.existsSync(extensionPath)) {
+        console.log('ℹ️ 확장 프로그램 경로 확인됨 (프로필에서 자동 로드):', extensionPath);
+      } else if (canLoadExtension) {
+        console.log('⚠️ 확장 프로그램 경로를 찾을 수 없습니다. 수동으로 설치해주세요.');
       }
       
       // Chrome 실행 인수 검증 (CDP 모드 확인)
@@ -2588,8 +3634,15 @@ ipcMain.handle('open-browser', async (event, options) => {
         }
       }, initialDelay); // 기존 프로필 사용 시 5초, 임시 프로필 사용 시 3초
 
-      // recorder.html 창 열기
-      openRecorderWindow(tcId, projectId, sessionId);
+      // 확장 프로그램에 녹화 시작 명령 전송 (WebSocket으로)
+      broadcastToExtensions({
+        type: 'start-recording',
+        tcId: tcId,
+        projectId: projectId,
+        sessionId: sessionId,
+        url: recordingUrl,
+        timestamp: Date.now()
+      });
       
       return { 
         success: true, 

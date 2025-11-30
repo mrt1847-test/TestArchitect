@@ -297,6 +297,16 @@ function buildPlaywrightLocatorExpressionForAction(base, selectorInfo, pythonLik
  * Playwright Python 액션 생성
  */
 function buildPlaywrightPythonAction(ev, selectorInfo, base = 'page') {
+  // Assertion actions that don't require selector
+  if (ev && (ev.action === 'verifyTitle' || ev.action === 'verifyUrl')) {
+    const value = escapeForPythonString(ev.value || '');
+    if (ev.action === 'verifyTitle') {
+      return `assert ${base}.title() == "${value}"`;
+    }
+    if (ev.action === 'verifyUrl') {
+      return `assert ${base}.url == "${value}"`;
+    }
+  }
   if (!ev || !selectorInfo || !selectorInfo.selector) return null;
   const locatorExpr = buildPlaywrightLocatorExpressionForAction(base, selectorInfo, true);
   const value = escapeForPythonString(ev.value || '');
@@ -337,6 +347,25 @@ function buildPlaywrightPythonAction(ev, selectorInfo, base = 'page') {
   if (ev.action === 'navigate') {
     return `page.goto("${escapeForPythonString(ev.value || ev.url || '')}")`;
   }
+  // Assertion actions
+  if (ev.action === 'verifyText') {
+    const expectedText = escapeForPythonString(value || '');
+    return `assert ${getLocator()}.inner_text() == "${expectedText}"`;
+  }
+  if (ev.action === 'verifyElementPresent') {
+    return `assert ${getLocator()}.is_visible()`;
+  }
+  if (ev.action === 'verifyElementNotPresent') {
+    return `assert ${getLocator()}.is_hidden()`;
+  }
+  if (ev.action === 'verifyTitle') {
+    const expectedTitle = escapeForPythonString(value || '');
+    return `assert ${base}.title() == "${expectedTitle}"`;
+  }
+  if (ev.action === 'verifyUrl') {
+    const expectedUrl = escapeForPythonString(value || '');
+    return `assert ${base}.url == "${expectedUrl}"`;
+  }
   return null;
 }
 
@@ -344,6 +373,16 @@ function buildPlaywrightPythonAction(ev, selectorInfo, base = 'page') {
  * Playwright JavaScript 액션 생성
  */
 function buildPlaywrightJSAction(ev, selectorInfo, base = 'page') {
+  // Assertion actions that don't require selector
+  if (ev && (ev.action === 'verifyTitle' || ev.action === 'verifyUrl')) {
+    const value = escapeForJSString(ev.value || '');
+    if (ev.action === 'verifyTitle') {
+      return `expect(await ${base}.title()).toBe("${value}");`;
+    }
+    if (ev.action === 'verifyUrl') {
+      return `expect(${base}.url()).toBe("${value}");`;
+    }
+  }
   if (!ev || !selectorInfo || !selectorInfo.selector) return null;
   const locatorExpr = buildPlaywrightLocatorExpressionForAction(base, selectorInfo, false);
   const value = escapeForJSString(ev.value || '');
@@ -384,6 +423,25 @@ function buildPlaywrightJSAction(ev, selectorInfo, base = 'page') {
   if (ev.action === 'navigate') {
     return `await page.goto("${escapeForJSString(ev.value || ev.url || '')}");`;
   }
+  // Assertion actions
+  if (ev.action === 'verifyText') {
+    const expectedText = escapeForJSString(value || '');
+    return `expect(await ${getLocator()}.innerText()).toBe("${expectedText}");`;
+  }
+  if (ev.action === 'verifyElementPresent') {
+    return `expect(await ${getLocator()}.isVisible()).toBe(true);`;
+  }
+  if (ev.action === 'verifyElementNotPresent') {
+    return `expect(await ${getLocator()}.isHidden()).toBe(true);`;
+  }
+  if (ev.action === 'verifyTitle') {
+    const expectedTitle = escapeForJSString(value || '');
+    return `expect(await ${base}.title()).toBe("${expectedTitle}");`;
+  }
+  if (ev.action === 'verifyUrl') {
+    const expectedUrl = escapeForJSString(value || '');
+    return `expect(${base}.url()).toBe("${expectedUrl}");`;
+  }
   return null;
 }
 
@@ -391,6 +449,16 @@ function buildPlaywrightJSAction(ev, selectorInfo, base = 'page') {
  * Selenium Python 액션 생성
  */
 function buildSeleniumPythonAction(ev, selectorInfo, driverVar = 'driver') {
+  // Assertion actions that don't require selector
+  if (ev && (ev.action === 'verifyTitle' || ev.action === 'verifyUrl')) {
+    const value = escapeForPythonString(ev.value || '');
+    if (ev.action === 'verifyTitle') {
+      return `assert ${driverVar}.title == "${value}"`;
+    }
+    if (ev.action === 'verifyUrl') {
+      return `assert ${driverVar}.current_url == "${value}"`;
+    }
+  }
   if (!ev || !selectorInfo || !selectorInfo.selector) return null;
   const selectorType = selectorInfo.type || inferSelectorType(selectorInfo.selector);
   const value = escapeForPythonString(ev.value || '');
@@ -448,6 +516,25 @@ function buildSeleniumPythonAction(ev, selectorInfo, driverVar = 'driver') {
   }
   if (ev.action === 'navigate') {
     return `${driverVar}.get("${escapeForPythonString(ev.value || ev.url || '')}")`;
+  }
+  // Assertion actions
+  if (ev.action === 'verifyText') {
+    const expectedText = escapeForPythonString(value || '');
+    return `assert ${element}.text == "${expectedText}"`;
+  }
+  if (ev.action === 'verifyElementPresent') {
+    return `assert ${element}.is_displayed()`;
+  }
+  if (ev.action === 'verifyElementNotPresent') {
+    return `assert not ${element}.is_displayed()`;
+  }
+  if (ev.action === 'verifyTitle') {
+    const expectedTitle = escapeForPythonString(value || '');
+    return `assert ${driverVar}.title == "${expectedTitle}"`;
+  }
+  if (ev.action === 'verifyUrl') {
+    const expectedUrl = escapeForPythonString(value || '');
+    return `assert ${driverVar}.current_url == "${expectedUrl}"`;
   }
   return null;
 }

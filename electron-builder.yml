@@ -31,6 +31,10 @@ extraResources:
     to: ".playwright"
     filter:
       - "**/*"
+  - from: "chrome-for-testing"
+    to: "chrome-for-testing"
+    filter:
+      - "**/*"
 
 win:
   target:

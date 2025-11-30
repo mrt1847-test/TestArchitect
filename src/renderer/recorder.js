@@ -110,9 +110,10 @@ const aiCodeReviewState = {
 // 요소 선택 워크플로우 상태 관리 (popup.js 이식)
 const selectionState = {
   active: false,
-  stage: 'idle', // idle | await-root | await-candidate | await-action | await-child
-  stack: [],
-  pendingAction: null,
+  stage: 'idle', // 'idle' | 'await-root' | 'await-candidate' | 'await-action' | 'await-child' | 'await-parent'
+  stack: [], // 선택된 노드 스택
+  pendingAction: null, // 'verifyText' | 'verifyElementPresent' | 'waitForElement' | 'click' | 'type' 등
+  pendingStepIndex: null, // assertion을 추가할 스텝 인덱스
   pendingAttribute: '',
   codePreview: ''
 };
@@ -120,6 +121,7 @@ const selectionState = {
 // WebSocket 연결
 function connectWebSocket() {
   if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+    console.log('[Recorder] WebSocket이 이미 연결되어 있습니다.');
     return;
   }
 
@@ -132,6 +134,13 @@ function connectWebSocket() {
     wsConnection.onopen = () => {
       console.log('[Recorder] WebSocket 연결 성공');
       logMessage('WebSocket 연결 성공', 'success');
+      
+      // 연결 성공 시 Extension에 등록 메시지 전송
+      wsConnection.send(JSON.stringify({
+        type: 'register',
+        source: 'recorder-window',
+        timestamp: Date.now()
+      }));
     };
 
     wsConnection.onmessage = (event) => {
@@ -140,6 +149,7 @@ function connectWebSocket() {
         handleWebSocketMessage(message);
       } catch (error) {
         console.error('[Recorder] WebSocket 메시지 파싱 오류:', error);
+        console.error('[Recorder] 원본 메시지:', event.data.substring(0, 200));
       }
     };
 
@@ -151,11 +161,21 @@ function connectWebSocket() {
     wsConnection.onclose = () => {
       console.log('[Recorder] WebSocket 연결 종료');
       wsConnection = null;
-      // 자동 재연결 시도
-      setTimeout(connectWebSocket, 2000);
+      // 녹화 중이면 중지
+      if (recording) {
+        recording = false;
+        if (startBtn) startBtn.disabled = false;
+        if (stopBtn) stopBtn.disabled = true;
+        logMessage('WebSocket 연결이 끊어져 녹화가 중지되었습니다.', 'error');
+      }
+      // 자동 재연결 시도 (녹화 중이 아닐 때만)
+      if (!recording) {
+        setTimeout(connectWebSocket, 2000);
+      }
     };
   } catch (error) {
     console.error('[Recorder] WebSocket 연결 실패:', error);
+    logMessage('WebSocket 연결 실패: ' + error.message, 'error');
   }
 }
 
@@ -168,10 +188,25 @@ function handleWebSocketMessage(message) {
 
     case 'dom-event':
       // Content Script에서 전송된 DOM 이벤트
-      console.log('[Recorder] DOM 이벤트 수신:', message.event?.action || message.action);
-      // message.event가 있으면 사용, 없으면 message 자체가 event일 수 있음
-      const eventData = message.event || message;
-      handleDomEvent(eventData);
+      // iframe 환경에서는 postMessage로도 받으므로 WebSocket은 무시
+      // 별도 윈도우 환경에서만 WebSocket 사용
+      console.log('[Recorder] 📨 DOM 이벤트 수신 (WebSocket):', {
+        action: message.event?.action || message.action,
+        timestamp: message.timestamp || Date.now(),
+        sessionId: message.sessionId || 'N/A',
+        url: message.event?.page?.url || 'N/A',
+        isIframe: window.parent !== window
+      });
+      
+      if (window.parent === window) {
+        // 별도 윈도우: WebSocket 사용
+        console.log('[Recorder] ✅ 별도 윈도우 환경 - DOM 이벤트 처리');
+        const eventData = message.event || message;
+        handleDomEvent(eventData);
+      } else {
+        // iframe 환경: WebSocket 무시 (postMessage 사용)
+        console.log('[Recorder] ⚠️ iframe 환경 - WebSocket dom-event 무시 (postMessage 사용)');
+      }
       break;
 
     case 'element-hover':
@@ -196,9 +231,49 @@ function handleWebSocketMessage(message) {
       }
       break;
 
+    case 'url-changed':
+    case 'page-navigated':
+      // URL 변경 감지 (페이지 전환)
+      console.log('[Recorder] URL 변경 감지:', message.url);
+      
+      // 녹화 중인 경우에만 처리
+      if (recording) {
+        logMessage(`페이지 전환: ${message.url}`, 'info');
+        
+        // URL 변경 이벤트를 스텝으로 추가 (선택적)
+        // 필요시 navigate 이벤트를 추가할 수 있음
+        // const navigateEvent = {
+        //   action: 'navigate',
+        //   target: message.url,
+        //   timestamp: message.timestamp || Date.now(),
+        //   type: 'navigation'
+        // };
+        // handleDomEvent(navigateEvent);
+        
+        console.log('[Recorder] URL 변경 처리 완료 (녹화 상태 유지)');
+      } else {
+        console.log('[Recorder] URL 변경 감지되었지만 녹화 중이 아니므로 무시');
+      }
+      break;
+
     case 'replay-step-result':
       // 리플레이 스텝 결과 처리
       handleReplayStepResult(message);
+      break;
+
+    case 'ELEMENT_SELECTION_PICKED':
+      // 요소 선택 완료
+      handleElementSelectionPicked(message);
+      break;
+
+    case 'ELEMENT_SELECTION_ERROR':
+      // 요소 선택 오류
+      handleElementSelectionError(message);
+      break;
+
+    case 'ELEMENT_SELECTION_CANCELLED':
+      // 요소 선택 취소
+      handleElementSelectionCancelled();
       break;
 
     default:
@@ -221,15 +296,30 @@ function handleDomEvent(event) {
     normalizedEvent.selectors = normalizedEvent.selectorCandidates.map(c => c.selector || c);
   }
   
+  // 중복 체크: 같은 타임스탬프와 액션의 이벤트가 이미 있는지 확인
+  const isDuplicate = allEvents.some(existing => {
+    return existing.timestamp === normalizedEvent.timestamp &&
+           existing.action === normalizedEvent.action &&
+           existing.primarySelector === normalizedEvent.primarySelector;
+  });
+  
+  if (isDuplicate) {
+    console.log('[Recorder] 중복 이벤트 무시:', normalizedEvent.action);
+    return;
+  }
+  
   allEvents.push(normalizedEvent);
   const index = allEvents.length - 1;
   
   // Timeline에 아이템 추가
   appendTimelineItem(normalizedEvent, index);
   
+  // 빈 상태 메시지 업데이트 (이벤트 추가 후)
+  updateStepsEmptyState();
+  
   // 자동으로 마지막 이벤트 선택
   currentEventIndex = index;
-  document.querySelectorAll('.timeline-item').forEach(item => item.classList.remove('selected'));
+  document.querySelectorAll('.recorder-step').forEach(item => item.classList.remove('selected'));
   const lastItem = timeline?.querySelector(`[data-event-index="${index}"]`);
   if (lastItem) {
     lastItem.classList.add('selected');
@@ -436,49 +526,341 @@ function refreshCodeEditorMode() {
   }
 }
 
-// Timeline 아이템 추가 (popup.js의 appendTimelineItem 기반)
+// 액션 타입별 아이콘 매핑
+function getActionIcon(action) {
+  const iconMap = {
+    'click': '👆',
+    'doubleClick': '👆👆',
+    'rightClick': '🖱',
+    'hover': '👋',
+    'type': '⌨',
+    'input': '⌨',
+    'clear': '🗑',
+    'select': '📋',
+    'navigate': '🌐',
+    'goto': '🌐',
+    'open': '🌐',
+    'wait': '⏱',
+    'waitForElement': '⏳',
+    'verifyText': '✓',
+    'verifyElementPresent': '✓',
+    'verifyElementNotPresent': '✗',
+    'verifyTitle': '📄',
+    'verifyUrl': '🔗'
+  };
+  return iconMap[action] || '•';
+}
+
+// 액션 라벨 포맷팅
+function formatActionLabel(action) {
+  const labelMap = {
+    'click': 'Click',
+    'doubleClick': 'Double click',
+    'rightClick': 'Right click',
+    'hover': 'Hover',
+    'type': 'Type',
+    'input': 'Type',
+    'clear': 'Clear',
+    'select': 'Select',
+    'navigate': 'Navigate',
+    'goto': 'Navigate',
+    'open': 'Navigate',
+    'wait': 'Wait',
+    'waitForElement': 'Wait for element',
+    'verifyText': 'Verify text',
+    'verifyElementPresent': 'Verify element present',
+    'verifyElementNotPresent': 'Verify element not present',
+    'verifyTitle': 'Verify title',
+    'verifyUrl': 'Verify URL'
+  };
+  return labelMap[action] || action;
+}
+
+// 타겟 정보 포맷팅
+function formatTargetInfo(ev) {
+  if (ev.target) {
+    if (ev.target.id) return `#${ev.target.id}`;
+    if (ev.target.className) return `.${ev.target.className.split(' ')[0]}`;
+    if (ev.target.tagName) return ev.target.tagName.toLowerCase();
+  }
+  return null;
+}
+
+// Timeline 아이템 추가 (확장 프로그램 버전 기반)
 function appendTimelineItem(ev, index) {
   if (!timeline) return;
   
   const div = document.createElement('div');
-  div.className = 'timeline-item';
+  div.className = 'recorder-step';
   div.dataset.eventIndex = index;
   
-  const timestamp = ev.timestamp ? new Date(ev.timestamp) : null;
-  const timeLabel = timestamp
-    ? `${String(timestamp.getHours()).padStart(2, '0')}:${String(timestamp.getMinutes()).padStart(2, '0')}:${String(timestamp.getSeconds()).padStart(2, '0')}`
-    : '--:--:--';
-  const actionLabel = ev.action || 'event';
+  const action = ev.action || 'event';
+  const actionIcon = getActionIcon(action);
+  const actionLabel = formatActionLabel(action);
   const usedSelector = resolveTimelineSelector(ev);
+  const targetInfo = formatTargetInfo(ev);
   
-  const row = document.createElement('div');
-  row.className = 'timeline-row';
-  const timeSpan = document.createElement('span');
-  timeSpan.className = 'time';
-  timeSpan.textContent = timeLabel;
-  const eventSpan = document.createElement('span');
-  eventSpan.className = 'event';
-  eventSpan.textContent = actionLabel;
-  row.appendChild(timeSpan);
-  row.appendChild(eventSpan);
-
-  const selectorLine = document.createElement('div');
-  selectorLine.className = 'selector-line';
-  const selectorValue = document.createElement('span');
-  selectorValue.className = 'value';
-  selectorValue.textContent = usedSelector || '';
-  selectorLine.appendChild(selectorValue);
-
-  div.appendChild(row);
-  div.appendChild(selectorLine);
-  div.style.cursor = 'pointer';
+  // 단계 번호
+  const stepNumber = document.createElement('div');
+  stepNumber.className = 'recorder-step-number';
+  stepNumber.textContent = index + 1;
   
-  div.addEventListener('click', () => {
+  // 아이콘
+  const stepIcon = document.createElement('div');
+  stepIcon.className = 'recorder-step-icon';
+  stepIcon.textContent = actionIcon;
+  
+  // 콘텐츠 영역
+  const stepContent = document.createElement('div');
+  stepContent.className = 'recorder-step-content';
+  
+  // 액션 라인
+  const actionLine = document.createElement('div');
+  actionLine.className = 'recorder-step-action';
+  actionLine.textContent = actionLabel;
+  
+  // 타겟 정보
+  if (targetInfo || usedSelector) {
+    const targetLine = document.createElement('div');
+    targetLine.className = 'recorder-step-target';
+    targetLine.textContent = targetInfo || usedSelector || '';
+    stepContent.appendChild(actionLine);
+    stepContent.appendChild(targetLine);
+  } else {
+    stepContent.appendChild(actionLine);
+  }
+  
+  // 셀렉터 정보 (있는 경우)
+  if (usedSelector && usedSelector !== targetInfo) {
+    const selectorLine = document.createElement('div');
+    selectorLine.className = 'recorder-step-selector';
+    selectorLine.textContent = usedSelector;
+    stepContent.appendChild(selectorLine);
+  }
+  
+  // 액션 버튼들
+  const stepActions = document.createElement('div');
+  stepActions.className = 'recorder-step-actions';
+  
+  const deleteBtn = document.createElement('button');
+  deleteBtn.className = 'recorder-step-btn';
+  deleteBtn.textContent = '🗑';
+  deleteBtn.title = '삭제';
+  deleteBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (confirm('이 단계를 삭제하시겠습니까?')) {
+      deleteCurrentEvent();
+    }
+  });
+  
+  // 더보기 버튼 (펼치기/접기)
+  const expandBtn = document.createElement('button');
+  expandBtn.className = 'recorder-step-expand';
+  expandBtn.innerHTML = '▼';
+  expandBtn.title = '상세 정보 펼치기/접기';
+  expandBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const isExpanded = div.classList.contains('expanded');
+    const details = div.querySelector('.recorder-step-details');
+    
+    if (!isExpanded) {
+      // 펼칠 때
+      div.classList.add('expanded');
+      if (details) {
+        // 실제 높이 계산을 위해 임시로 표시
+        details.style.maxHeight = 'none';
+        const scrollHeight = details.scrollHeight;
+        details.style.maxHeight = '0px';
+        // 리플로우 후 실제 높이 설정
+        requestAnimationFrame(() => {
+          details.style.maxHeight = `${scrollHeight + 20}px`;
+        });
+      }
+      expandBtn.innerHTML = '▲';
+    } else {
+      // 접을 때
+      if (details) {
+        details.style.maxHeight = '0px';
+        setTimeout(() => {
+          div.classList.remove('expanded');
+          details.style.maxHeight = ''; // 인라인 스타일 제거
+        }, 300); // transition 시간과 맞춤
+      }
+      expandBtn.innerHTML = '▼';
+    }
+  });
+  
+  stepActions.appendChild(expandBtn);
+  stepActions.appendChild(deleteBtn);
+  
+  // 상세 정보 영역 (기본적으로 숨김)
+  const stepDetails = document.createElement('div');
+  stepDetails.className = 'recorder-step-details';
+  
+  // Type 정보
+  const typeRow = document.createElement('div');
+  typeRow.className = 'step-detail-row';
+  const typeLabel = document.createElement('span');
+  typeLabel.className = 'step-detail-label';
+  typeLabel.textContent = 'type:';
+  const typeValue = document.createElement('span');
+  typeValue.className = 'step-detail-value';
+  typeValue.textContent = action;
+  typeRow.appendChild(typeLabel);
+  typeRow.appendChild(typeValue);
+  stepDetails.appendChild(typeRow);
+  
+  // Selectors 정보
+  if (usedSelector || (ev.selectorCandidates && ev.selectorCandidates.length > 0)) {
+    const selectorsRow = document.createElement('div');
+    selectorsRow.className = 'step-detail-row';
+    const selectorsLabel = document.createElement('span');
+    selectorsLabel.className = 'step-detail-label';
+    selectorsLabel.textContent = 'selectors:';
+    selectorsRow.appendChild(selectorsLabel);
+    
+    const selectorsContainer = document.createElement('div');
+    selectorsContainer.className = 'step-detail-selectors';
+    
+    // Primary selector
+    if (usedSelector) {
+      const selectorItem = document.createElement('div');
+      selectorItem.className = 'step-detail-selector-item';
+      const selectorLabel = document.createElement('span');
+      selectorLabel.className = 'step-detail-selector-label';
+      selectorLabel.textContent = 'selector #1:';
+      const selectorValue = document.createElement('span');
+      selectorValue.className = 'step-detail-selector-value';
+      selectorValue.textContent = usedSelector;
+      selectorItem.appendChild(selectorLabel);
+      selectorItem.appendChild(selectorValue);
+      selectorsContainer.appendChild(selectorItem);
+    }
+    
+    // Additional selectors from candidates
+    if (ev.selectorCandidates && ev.selectorCandidates.length > 0) {
+      let selectorIndex = 2;
+      ev.selectorCandidates.slice(0, 3).forEach((candidate) => {
+        const selector = candidate.selector || candidate;
+        if (selector && selector !== usedSelector) {
+          const selectorItem = document.createElement('div');
+          selectorItem.className = 'step-detail-selector-item';
+          const selectorLabel = document.createElement('span');
+          selectorLabel.className = 'step-detail-selector-label';
+          selectorLabel.textContent = `selector #${selectorIndex}:`;
+          const selectorValue = document.createElement('span');
+          selectorValue.className = 'step-detail-selector-value';
+          selectorValue.textContent = selector;
+          selectorItem.appendChild(selectorLabel);
+          selectorItem.appendChild(selectorValue);
+          selectorsContainer.appendChild(selectorItem);
+          selectorIndex++;
+        }
+      });
+    }
+    
+    selectorsRow.appendChild(selectorsContainer);
+    stepDetails.appendChild(selectorsRow);
+  }
+  
+  // Value 정보 (type 액션인 경우)
+  if (ev.action === 'type' && ev.value) {
+    const valueRow = document.createElement('div');
+    valueRow.className = 'step-detail-row';
+    const valueLabel = document.createElement('span');
+    valueLabel.className = 'step-detail-label';
+    valueLabel.textContent = 'value:';
+    const valueValue = document.createElement('span');
+    valueValue.className = 'step-detail-value';
+    valueValue.textContent = ev.value;
+    valueRow.appendChild(valueLabel);
+    valueRow.appendChild(valueValue);
+    stepDetails.appendChild(valueRow);
+  }
+  
+  // 스텝에 귀속된 Assertion 추가 섹션
+  const assertionSection = document.createElement('div');
+  assertionSection.className = 'step-assertion-section';
+  
+  const addAssertionBtn = document.createElement('button');
+  addAssertionBtn.className = 'step-add-assertion-btn';
+  addAssertionBtn.textContent = 'Add assertion';
+  addAssertionBtn.type = 'button';
+  
+  const assertionMenu = document.createElement('div');
+  assertionMenu.className = 'step-assertion-menu hidden';
+  
+  const menuHeader = document.createElement('div');
+  menuHeader.className = 'assertion-menu-header';
+  menuHeader.textContent = 'Assertion 타입 선택';
+  assertionMenu.appendChild(menuHeader);
+  
+  const menuButtons = document.createElement('div');
+  menuButtons.className = 'assertion-menu-buttons';
+  
+  const assertionTypes = [
+    { type: 'verifyText', label: '텍스트 검증' },
+    { type: 'verifyElementPresent', label: '요소 존재 검증' },
+    { type: 'verifyElementNotPresent', label: '요소 부재 검증' },
+    { type: 'verifyTitle', label: '타이틀 검증' },
+    { type: 'verifyUrl', label: 'URL 검증' }
+  ];
+  
+  assertionTypes.forEach(({ type, label }) => {
+    const btn = document.createElement('button');
+    btn.className = 'assertion-menu-btn';
+    btn.textContent = label;
+    btn.setAttribute('data-assertion', type);
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      assertionMenu.classList.add('hidden');
+      handleStepAssertion(index, type, ev);
+    });
+    menuButtons.appendChild(btn);
+  });
+  
+  assertionMenu.appendChild(menuButtons);
+  
+  addAssertionBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    assertionMenu.classList.toggle('hidden');
+  });
+  
+  assertionSection.appendChild(addAssertionBtn);
+  assertionSection.appendChild(assertionMenu);
+  stepDetails.appendChild(assertionSection);
+  
+  // 메인 영역 (번호, 아이콘, 콘텐츠, 액션 버튼)
+  const stepMain = document.createElement('div');
+  stepMain.className = 'recorder-step-main';
+  stepMain.appendChild(stepNumber);
+  stepMain.appendChild(stepIcon);
+  stepMain.appendChild(stepContent);
+  stepMain.appendChild(stepActions);
+  
+  // 조립
+  div.appendChild(stepMain);
+  div.appendChild(stepDetails);
+  
+  // 클릭 이벤트 (선택만, 펼치기는 expandBtn에서 처리)
+  div.addEventListener('click', (e) => {
+    // expandBtn이나 stepActions를 클릭한 경우는 제외
+    if (e.target.closest('.recorder-step-expand') || e.target.closest('.recorder-step-actions')) {
+      return;
+    }
+    
     // 이전 선택 해제
-    document.querySelectorAll('.timeline-item').forEach(item => item.classList.remove('selected'));
+    document.querySelectorAll('.recorder-step').forEach(item => item.classList.remove('selected'));
     // 현재 선택
     div.classList.add('selected');
     currentEventIndex = index;
+    
+    // Step Details 패널 표시
+    const stepDetailsPanel = document.getElementById('step-details-panel');
+    if (stepDetailsPanel) {
+      stepDetailsPanel.classList.remove('hidden');
+    }
+    
     // 해당 이벤트의 셀렉터 표시
     showSelectors(ev.selectorCandidates || [], ev, index);
     showIframe(ev.iframeContext);
@@ -489,8 +871,26 @@ function appendTimelineItem(ev, index) {
 }
 
 /**
- * 타임라인을 이벤트 목록과 동기화
- * popup.js의 syncTimelineFromEvents 이식 (개선)
+ * 빈 상태 메시지 업데이트
+ */
+function updateStepsEmptyState() {
+  const stepsEmpty = document.getElementById('steps-empty');
+  const timeline = document.getElementById('timeline');
+  
+  if (stepsEmpty && timeline) {
+    // timeline에 recorder-step이 있는지 확인
+    const hasSteps = timeline.querySelectorAll('.recorder-step').length > 0;
+    
+    if (hasSteps || allEvents.length > 0) {
+      stepsEmpty.classList.add('hidden');
+    } else {
+      stepsEmpty.classList.remove('hidden');
+    }
+  }
+}
+
+/**
+ * 타임라인을 이벤트 목록과 동기화 (확장 프로그램 버전 기반)
  */
 function syncTimelineFromEvents(events, options = {}) {
   const {
@@ -503,9 +903,32 @@ function syncTimelineFromEvents(events, options = {}) {
     ? events.map((ev) => normalizeEventRecord(ev))
     : [];
 
-  // AI 상태 관리 (간소화 버전 - 나중에 AI 기능 완성 시 확장)
-  // const nextAiState = new Map();
-  // ... AI 상태 관리 로직은 5단계에서 구현
+  // AI 상태 관리
+  const nextAiState = new Map();
+  normalizedEvents.forEach((event) => {
+    const key = getAiStateKey(event);
+    if (!key) return;
+    const existing = resetAiState ? null : aiSuggestionState.get(key);
+    const hasCandidates = Array.isArray(event.aiSelectorCandidates) && event.aiSelectorCandidates.length > 0;
+    if (existing && existing.status === 'loading') {
+      nextAiState.set(key, existing);
+    } else if (hasCandidates) {
+      nextAiState.set(key, {
+        status: 'loaded',
+        error: null,
+        updatedAt: event.aiSelectorsUpdatedAt || (existing && existing.updatedAt) || null
+      });
+    } else if (existing) {
+      nextAiState.set(key, existing);
+    } else {
+      nextAiState.set(key, { status: 'idle', error: null });
+    }
+  });
+  aiSuggestionState.clear();
+  nextAiState.forEach((state, key) => aiSuggestionState.set(key, state));
+
+  // 빈 상태 메시지 업데이트
+  updateStepsEmptyState();
 
   allEvents = normalizedEvents;
   if (timeline) {
@@ -513,8 +936,10 @@ function syncTimelineFromEvents(events, options = {}) {
     normalizedEvents.forEach((event, index) => {
       appendTimelineItem(event, index);
     });
-    const items = timeline.querySelectorAll('.timeline-item');
+    const items = timeline.querySelectorAll('.recorder-step');
     items.forEach((item) => item.classList.remove('selected'));
+    // 빈 상태 메시지 업데이트
+    updateStepsEmptyState();
   }
 
   let indexToSelect = -1;
@@ -535,12 +960,24 @@ function syncTimelineFromEvents(events, options = {}) {
     const selectedEvent = normalizedEvents[indexToSelect];
     showSelectors(selectedEvent.selectorCandidates || [], selectedEvent, indexToSelect);
     showIframe(selectedEvent.iframeContext);
+    
+    // Step Details 패널 표시
+    const stepDetailsPanel = document.getElementById('step-details-panel');
+    if (stepDetailsPanel) {
+      stepDetailsPanel.classList.remove('hidden');
+    }
   } else {
     currentEventIndex = -1;
     if (selectorList) {
       selectorList.innerHTML = '';
     }
     showIframe(null);
+    
+    // Step Details 패널 숨기기
+    const stepDetailsPanel = document.getElementById('step-details-panel');
+    if (stepDetailsPanel) {
+      stepDetailsPanel.classList.add('hidden');
+    }
   }
 
   updateDeleteButtonState();
@@ -1163,6 +1600,7 @@ function isAiConfigured() {
  */
 function loadAiSettingsFromStorage() {
   try {
+    // localStorage에서 로드 (chrome.storage 대신)
     const stored = JSON.parse(localStorage.getItem('aiSettings') || '{}');
     aiSettings = {
       endpoint: sanitizeAiSettingValue(stored.endpoint),
@@ -1207,6 +1645,7 @@ function saveAiSettings() {
   setAiSettingsStatus('저장 중...', 'pending');
   
   try {
+    // localStorage에 저장 (chrome.storage.local 대신)
     localStorage.setItem('aiSettings', JSON.stringify(nextSettings));
     aiSettings = nextSettings;
     aiSettingsDirty = false;
@@ -1937,12 +2376,20 @@ function applySelectionAction(actionType, options = {}) {
           const textValue = prompt('검증할 텍스트를 입력하세요:');
           if (textValue === null) {
             selectionState.pendingAction = null;
+            selectionState.pendingStepIndex = null;
             return;
           }
           value = textValue;
         }
       }
-      addVerifyAction(pending, path, value);
+      
+      // pendingStepIndex가 있으면 addAssertionAfterStep 사용, 없으면 addVerifyAction 사용
+      if (selectionState.pendingStepIndex !== null) {
+        addAssertionAfterStep(selectionState.pendingStepIndex, pending, path, value);
+        selectionState.pendingStepIndex = null;
+      } else {
+        addVerifyAction(pending, path, value);
+      }
       selectionState.pendingAction = null;
       cancelSelectionWorkflow('', 'info');
       return;
@@ -2174,6 +2621,8 @@ function handleInteractionAction(interactionType) {
  */
 function addVerifyAction(verifyType, path, value) {
   const timestamp = Date.now();
+  const currentUrl = window.location.href || '';
+  const currentTitle = document.title || '';
   let eventRecord = null;
   
   if (path && path.length > 0) {
@@ -2207,7 +2656,10 @@ function addVerifyAction(verifyType, path, value) {
       tag: null,
       selectorCandidates: selectors,
       iframeContext,
-      page: { url: '', title: '' },
+      page: {
+        url: currentUrl,
+        title: currentTitle
+      },
       frame: { iframeContext },
       target: null,
       clientRect: null,
@@ -2229,6 +2681,12 @@ function addVerifyAction(verifyType, path, value) {
     };
   } else {
     // 타이틀/URL 검증 (요소 불필요)
+    if (verifyType === 'verifyTitle') {
+      value = value || currentTitle;
+    } else if (verifyType === 'verifyUrl') {
+      value = value || currentUrl;
+    }
+    
     eventRecord = {
       version: 2,
       timestamp,
@@ -2237,7 +2695,10 @@ function addVerifyAction(verifyType, path, value) {
       tag: null,
       selectorCandidates: [],
       iframeContext: null,
-      page: { url: '', title: '' },
+      page: {
+        url: currentUrl,
+        title: currentTitle
+      },
       frame: { iframeContext: null },
       target: null,
       clientRect: null,
@@ -2262,7 +2723,10 @@ function addVerifyAction(verifyType, path, value) {
   updateCode({ preloadedEvents: allEvents });
   syncTimelineFromEvents(allEvents, { selectLast: true });
   
-  logMessage(`${verifyType} 액션을 추가했습니다.`, 'success');
+  if (verifyActionsContainer) {
+    verifyActionsContainer.classList.add('hidden');
+  }
+  setElementStatus(`${verifyType} 액션을 추가했습니다.`, 'success');
 }
 
 /**
@@ -2435,12 +2899,55 @@ function addInteractionAction(interactionType, path, value) {
 }
 
 /**
- * 선택 미리보기 라인 생성 (간소화)
+ * 선택 미리보기 라인 생성
  */
 function buildSelectionPreviewLines(path, framework, language) {
   if (!path || !path.length) return [];
-  // 간단한 구현 - 나중에 완성
-  return [`// 선택 경로: ${path.length}개 요소`];
+  
+  const lines = [];
+  const lastItem = path[path.length - 1];
+  if (!lastItem || !lastItem.selector) return [];
+  
+  const selector = lastItem.selector;
+  const selectorType = lastItem.type || inferSelectorType(selector);
+  
+  if (framework === 'playwright') {
+    if (language === 'python' || language === 'python-class') {
+      if (selectorType === 'css' || selectorType === 'xpath') {
+        lines.push(`page.locator("${selector}")`);
+      } else if (selectorType === 'id') {
+        lines.push(`page.locator("#${selector.replace(/^#/, '')}")`);
+      } else {
+        lines.push(`page.locator("${selector}")`);
+      }
+    } else if (language === 'javascript' || language === 'typescript') {
+      if (selectorType === 'css' || selectorType === 'xpath') {
+        lines.push(`page.locator("${selector}")`);
+      } else {
+        lines.push(`page.locator("${selector}")`);
+      }
+    }
+  } else if (framework === 'selenium') {
+    if (language === 'python' || language === 'python-class') {
+      if (selectorType === 'id') {
+        lines.push(`driver.find_element(By.ID, "${selector.replace(/^#/, '')}")`);
+      } else if (selectorType === 'css') {
+        lines.push(`driver.find_element(By.CSS_SELECTOR, "${selector}")`);
+      } else if (selectorType === 'xpath') {
+        lines.push(`driver.find_element(By.XPATH, "${selector}")`);
+      } else {
+        lines.push(`driver.find_element(By.CSS_SELECTOR, "${selector}")`);
+      }
+    }
+  } else if (framework === 'cypress') {
+    if (selectorType === 'css' || selectorType === 'id') {
+      lines.push(`cy.get("${selector}")`);
+    } else {
+      lines.push(`cy.get("${selector}")`);
+    }
+  }
+  
+  return lines.length > 0 ? lines : [`// 선택 경로: ${path.length}개 요소`];
 }
 
 // ============================================================================
@@ -2921,13 +3428,28 @@ function startRecording() {
 
   setCodeText('');
   updateDeleteButtonState();
+  
+  // 빈 상태 메시지 표시
+  updateStepsEmptyState();
 
   // WebSocket으로 녹화 시작 신호 전송
   if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+    const tcId = tcIdInput?.value;
+    const projectId = projectIdInput?.value;
     wsConnection.send(JSON.stringify({
       type: 'recording-start',
+      tcId: tcId ? parseInt(tcId, 10) : null,
+      projectId: projectId ? parseInt(projectId, 10) : null,
       timestamp: Date.now()
     }));
+    console.log('[Recorder] WebSocket으로 녹화 시작 신호 전송');
+  } else {
+    console.warn('[Recorder] WebSocket이 연결되지 않았습니다. 녹화를 시작할 수 없습니다.');
+    logMessage('WebSocket 연결이 필요합니다. 브라우저를 먼저 열어주세요.', 'error');
+    recording = false;
+    if (startBtn) startBtn.disabled = false;
+    if (stopBtn) stopBtn.disabled = true;
+    return;
   }
 
   logMessage('녹화 시작', 'success');
@@ -2948,6 +3470,7 @@ function stopRecording() {
       type: 'recording-stop',
       timestamp: Date.now()
     }));
+    console.log('[Recorder] WebSocket으로 녹화 중지 신호 전송');
   }
 
   updateCode();
@@ -2976,7 +3499,7 @@ function reset() {
 // 이벤트 삭제
 /**
  * 현재 선택된 이벤트 삭제
- * popup.js의 deleteCurrentEvent 이식 (개선)
+ * 확장 프로그램 버전 기반
  */
 function deleteCurrentEvent() {
   if (currentEventIndex < 0 || currentEventIndex >= allEvents.length) return;
@@ -2996,6 +3519,14 @@ function deleteCurrentEvent() {
   
   updateDeleteButtonState();
   updateCode({ preloadedEvents: normalized });
+  
+  // 단계 상세 정보 패널 닫기 (삭제된 경우)
+  if (nextIndex === -1) {
+    const stepDetailsPanel = document.getElementById('step-details-panel');
+    if (stepDetailsPanel) {
+      stepDetailsPanel.classList.add('hidden');
+    }
+  }
   
   logMessage('이벤트 삭제됨', 'info');
 }
@@ -3356,6 +3887,347 @@ function setupEventListeners() {
   // Action 메뉴 및 오버레이 토글 설정
   setupActionMenu();
   setupOverlayToggle();
+  
+  // 설정 패널 토글
+  const settingsToggleBtn = document.getElementById('settings-toggle-btn');
+  const settingsPanel = document.getElementById('settings-panel');
+  if (settingsToggleBtn && settingsPanel) {
+    settingsToggleBtn.addEventListener('click', () => {
+      settingsPanel.classList.toggle('hidden');
+    });
+  }
+  
+  // 단계 상세 정보 닫기
+  const stepDetailsClose = document.getElementById('step-details-close');
+  const stepDetailsPanel = document.getElementById('step-details-panel');
+  if (stepDetailsClose && stepDetailsPanel) {
+    stepDetailsClose.addEventListener('click', () => {
+      stepDetailsPanel.classList.add('hidden');
+      // 선택 해제
+      document.querySelectorAll('.recorder-step').forEach(item => item.classList.remove('selected'));
+      currentEventIndex = -1;
+      updateDeleteButtonState();
+    });
+  }
+  
+  // 코드 미리보기 접기/펼치기
+  const codeAreaToggle = document.getElementById('code-area-toggle');
+  const codeAreaContent = document.getElementById('code-area-content');
+  const codeArea = document.getElementById('code-area');
+  const codeAreaHeader = codeArea?.querySelector('.code-area-header');
+  
+  if (codeAreaToggle && codeAreaContent && codeArea) {
+    const toggleCodeArea = () => {
+      codeArea.classList.toggle('collapsed');
+      codeAreaToggle.classList.toggle('collapsed');
+      codeAreaToggle.textContent = codeArea.classList.contains('collapsed') ? '▶' : '▼';
+    };
+    
+    // 토글 버튼 클릭
+    codeAreaToggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleCodeArea();
+    });
+    
+    // 헤더 클릭도 토글 가능
+    if (codeAreaHeader) {
+      codeAreaHeader.addEventListener('click', (e) => {
+        // 토글 버튼을 클릭한 경우는 제외
+        if (!e.target.closest('.code-area-toggle')) {
+          toggleCodeArea();
+        }
+      });
+    }
+  }
+  
+  // Replay Log 접기/펼치기
+  const replayLogToggle = document.getElementById('replay-log-toggle');
+  const replayLogContent = document.getElementById('replay-log-content');
+  const replayLog = document.getElementById('replay-log');
+  const replayLogHeader = replayLog?.querySelector('.replay-log-header');
+  
+  if (replayLogToggle && replayLogContent && replayLog) {
+    const toggleReplayLog = () => {
+      replayLog.classList.toggle('collapsed');
+      replayLogContent.classList.toggle('collapsed');
+      replayLogToggle.classList.toggle('collapsed');
+      replayLogToggle.textContent = replayLogContent.classList.contains('collapsed') ? '▶' : '▼';
+    };
+    
+    // 토글 버튼 클릭
+    replayLogToggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleReplayLog();
+    });
+    
+    // 헤더 클릭도 토글 가능
+    if (replayLogHeader) {
+      replayLogHeader.addEventListener('click', (e) => {
+        // 토글 버튼을 클릭한 경우는 제외
+        if (!e.target.closest('.replay-log-toggle')) {
+          toggleReplayLog();
+        }
+      });
+    }
+  }
+  
+  // Global assertion 버튼 이벤트 핸들러
+  const globalAddAssertionBtn = document.getElementById('global-add-assertion-btn');
+  const globalAssertionMenu = document.getElementById('global-assertion-menu');
+  if (globalAddAssertionBtn && globalAssertionMenu) {
+    globalAddAssertionBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      globalAssertionMenu.classList.toggle('hidden');
+      // 다른 메뉴 닫기
+      const actionMenu = document.getElementById('action-menu');
+      if (actionMenu) actionMenu.classList.add('hidden');
+    });
+    
+    // Global assertion 메뉴 외부 클릭 시 닫기
+    document.addEventListener('click', (e) => {
+      if (globalAddAssertionBtn && globalAssertionMenu && 
+          !globalAddAssertionBtn.contains(e.target) && 
+          !globalAssertionMenu.contains(e.target)) {
+        globalAssertionMenu.classList.add('hidden');
+      }
+    });
+    
+    // Global assertion 타입 선택 처리
+    globalAssertionMenu.addEventListener('click', (e) => {
+      const button = e.target.closest('button[data-assertion]');
+      if (!button) return;
+      
+      const assertionType = button.getAttribute('data-assertion');
+      globalAssertionMenu.classList.add('hidden');
+      
+      // 독립적인 assertion 추가 (맨 끝에 추가)
+      handleGlobalAssertion(assertionType);
+    });
+  }
+}
+
+/**
+ * Global assertion 처리 (맨 끝에 추가)
+ */
+/**
+ * 스텝에 assertion 추가 처리
+ * @param {number} stepIndex - assertion을 추가할 기반 스텝의 인덱스
+ * @param {string} assertionType - assertion 타입 (verifyText, verifyElementPresent, verifyElementNotPresent, verifyTitle, verifyUrl)
+ * @param {Object} stepEvent - 기반 스텝의 이벤트 데이터
+ */
+function handleStepAssertion(stepIndex, assertionType, stepEvent) {
+  // assertion 타입에 따라 처리
+  if (assertionType === 'verifyTitle' || assertionType === 'verifyUrl') {
+    // 타이틀/URL 검증은 요소 선택 불필요 - 바로 추가
+    addAssertionAfterStep(stepIndex, assertionType, null, null);
+    return;
+  }
+  
+  // 요소 검증은 요소 선택 필요
+  // 셀렉터 선택 우선순위: 기반 스텝의 셀렉터 재사용 > 새 요소 선택
+  if (stepEvent && stepEvent.selectorCandidates && stepEvent.selectorCandidates.length > 0) {
+    // 기반 스텝의 셀렉터를 재사용 (같은 요소에 대한 assertion)
+    const selectors = stepEvent.selectorCandidates;
+    const primarySelector = stepEvent.primarySelector || (selectors[0] && selectors[0].selector);
+    
+    let value = null;
+    if (assertionType === 'verifyText') {
+      // 텍스트 검증은 현재 요소의 텍스트를 가져와야 함
+      const textValue = prompt('검증할 텍스트를 입력하세요 (비워두면 현재 요소의 텍스트 사용):');
+      if (textValue === null) return; // 취소
+      value = textValue || null;
+    }
+    
+    // path 형태로 변환
+    const path = selectors.map(sel => ({
+      selector: sel.selector || sel,
+      type: sel.type,
+      textValue: sel.textValue,
+      xpathValue: sel.xpathValue,
+      matchMode: sel.matchMode,
+      iframeContext: stepEvent.iframeContext
+    }));
+    
+    addAssertionAfterStep(stepIndex, assertionType, path, value);
+  } else {
+    // 요소 선택 모드로 전환
+    if (!selectionState.active) {
+      startSelectionWorkflow();
+    }
+    setElementStatus('검증할 요소를 선택하세요.', 'info');
+    // assertion을 pending으로 설정하고 스텝 인덱스 저장
+    selectionState.pendingAction = assertionType;
+    selectionState.pendingStepIndex = stepIndex;
+    if (verifyActionsContainer) {
+      verifyActionsContainer.classList.add('hidden');
+    }
+    if (elementActionsContainer) {
+      elementActionsContainer.classList.remove('hidden');
+    }
+    
+    // step-details-panel도 표시해야 element-panel이 보임
+    const stepDetailsPanel = document.getElementById('step-details-panel');
+    if (stepDetailsPanel) {
+      stepDetailsPanel.classList.remove('hidden');
+    }
+    ensureElementPanelVisibility();
+  }
+}
+
+/**
+ * 스텝 다음에 assertion 추가
+ * @param {number} stepIndex - assertion을 추가할 스텝의 인덱스
+ * @param {string} assertionType - assertion 타입
+ * @param {Array} path - 요소 선택 경로 (있는 경우)
+ * @param {string} value - 검증 값 (있는 경우)
+ */
+function addAssertionAfterStep(stepIndex, assertionType, path, value) {
+  const timestamp = Date.now();
+  const currentUrl = window.location.href || '';
+  const currentTitle = document.title || '';
+  let eventRecord = null;
+  
+  if (path && path.length > 0) {
+    // 요소 기반 검증
+    const selectors = path.map((item, idx) => {
+      if (!item || !item.selector) return null;
+      const type = item.type || inferSelectorType(item.selector);
+      return {
+        selector: item.selector,
+        type,
+        textValue: item.textValue || null,
+        xpathValue: item.xpathValue || null,
+        matchMode: item.matchMode || null,
+        score: idx === path.length - 1 ? 100 : 80
+      };
+    }).filter(Boolean);
+    
+    if (!selectors.length) {
+      alert('셀렉터를 찾을 수 없습니다.');
+      return;
+    }
+    
+    const targetEntry = selectors[selectors.length - 1];
+    const iframeContext = path[path.length - 1]?.iframeContext || null;
+    
+    eventRecord = {
+      version: 2,
+      timestamp,
+      action: assertionType,
+      value: value || null,
+      tag: null,
+      selectorCandidates: selectors,
+      iframeContext,
+      page: {
+        url: currentUrl,
+        title: currentTitle
+      },
+      frame: { iframeContext },
+      target: null,
+      clientRect: null,
+      metadata: {
+        schemaVersion: 2,
+        userAgent: navigator.userAgent
+      },
+      manual: {
+        id: `verify-${timestamp}`,
+        type: assertionType,
+        resultName: null,
+        attributeName: null
+      },
+      primarySelector: targetEntry.selector,
+      primarySelectorType: targetEntry.type,
+      primarySelectorText: targetEntry.textValue,
+      primarySelectorXPath: targetEntry.xpathValue,
+      primarySelectorMatchMode: targetEntry.matchMode
+    };
+  } else {
+    // 타이틀/URL 검증 (요소 불필요)
+    if (assertionType === 'verifyTitle') {
+      value = value || currentTitle;
+    } else if (assertionType === 'verifyUrl') {
+      value = value || currentUrl;
+    }
+    
+    eventRecord = {
+      version: 2,
+      timestamp,
+      action: assertionType,
+      value: value,
+      tag: null,
+      selectorCandidates: [],
+      iframeContext: null,
+      page: {
+        url: currentUrl,
+        title: currentTitle
+      },
+      frame: { iframeContext: null },
+      target: null,
+      clientRect: null,
+      metadata: {
+        schemaVersion: 2,
+        userAgent: navigator.userAgent
+      },
+      manual: {
+        id: `verify-${timestamp}`,
+        type: assertionType,
+        resultName: null,
+        attributeName: null
+      },
+      primarySelector: null,
+      primarySelectorType: null
+    };
+  }
+  
+  // 현재 이벤트 배열에 삽입 (stepIndex 다음에)
+  const insertIndex = stepIndex + 1;
+  const updatedEvents = [...allEvents];
+  updatedEvents.splice(insertIndex, 0, eventRecord);
+  
+  // 타임라인 업데이트 및 코드 갱신
+  const normalized = syncTimelineFromEvents(updatedEvents, {
+    preserveSelection: false,
+    selectLast: false,
+    resetAiState: false
+  });
+  // allEvents가 syncTimelineFromEvents에서 업데이트되므로 normalized를 사용
+  updateCode({ preloadedEvents: normalized });
+  
+  logMessage(`Assertion 추가: ${assertionType}`, 'success');
+}
+
+function handleGlobalAssertion(assertionType) {
+  if (!assertionType) return;
+  
+  // verifyTitle, verifyUrl은 요소 선택 불필요
+  if (assertionType === 'verifyTitle' || assertionType === 'verifyUrl') {
+    addVerifyAction(assertionType, null, null);
+    return;
+  }
+  
+  // 요소 검증은 요소 선택 필요
+  if (!selectionState.active) {
+    startSelectionWorkflow();
+  }
+  setElementStatus('검증할 요소를 선택하세요.', 'info');
+  // assertion을 pending으로 설정 (stepIndex 없음 = 맨 끝에 추가)
+  selectionState.pendingAction = assertionType;
+  selectionState.pendingStepIndex = null;
+  if (verifyActionsContainer) {
+    verifyActionsContainer.classList.add('hidden');
+  }
+  if (elementActionsContainer) {
+    elementActionsContainer.classList.remove('hidden');
+  }
+  
+  // step-details-panel도 표시해야 element-panel이 보임
+  const stepDetailsPanel = document.getElementById('step-details-panel');
+  if (stepDetailsPanel) {
+    stepDetailsPanel.classList.remove('hidden');
+  }
+  
+  // 요소 패널이 보이도록 보장
+  ensureElementPanelVisibility();
 }
 
 // IPC 이벤트 리스너 설정 (Electron 환경)
@@ -3371,15 +4243,36 @@ function setupIpcListeners() {
   
   console.log('[Recorder] IPC 리스너 설정 시작');
   
-  // Main 프로세스에서 전송된 DOM 이벤트 수신
-  electronAPI.onIpcMessage('dom-event', (data) => {
-    console.log('[Recorder] IPC로 DOM 이벤트 수신:', data.action, 'recording 상태:', recording);
-    if (!recording) {
-      console.warn('[Recorder] 녹화 중이 아니므로 이벤트 무시');
-      return;
+  // 녹화 윈도우 초기화 (Main 프로세스에서 전송)
+  electronAPI.onIpcMessage('recorder-init', (data) => {
+    console.log('[Recorder] 녹화 윈도우 초기화:', data);
+    if (data.tcId && tcIdInput) {
+      tcIdInput.value = data.tcId;
     }
-    handleDomEvent(data);
+    if (data.projectId && projectIdInput) {
+      projectIdInput.value = data.projectId;
+    }
+    // sessionId는 나중에 사용할 수 있음
+    logMessage('녹화 준비 완료', 'success');
   });
+  
+  // Main 프로세스에서 전송된 DOM 이벤트 수신
+  // 주의: iframe 환경에서는 postMessage로도 받으므로 중복 방지를 위해 IPC는 무시
+  // WebSocket과 postMessage만 사용 (iframe 환경)
+  if (window.parent !== window) {
+    // iframe 환경: IPC는 무시하고 postMessage만 사용
+    console.log('[Recorder] iframe 환경 감지: IPC dom-event 리스너 등록 안 함 (postMessage 사용)');
+  } else {
+    // 별도 윈도우 환경: IPC 사용
+    electronAPI.onIpcMessage('dom-event', (data) => {
+      console.log('[Recorder] IPC로 DOM 이벤트 수신:', data.action, 'recording 상태:', recording);
+      if (!recording) {
+        console.warn('[Recorder] 녹화 중이 아니므로 이벤트 무시');
+        return;
+      }
+      handleDomEvent(data);
+    });
+  }
   
   // 녹화 시작 신호 수신 (Main 프로세스에서)
   electronAPI.onIpcMessage('recording-start', (data) => {
@@ -3503,6 +4396,94 @@ function init() {
   logMessage('녹화 모듈 준비 완료', 'success');
   console.log('[Recorder] 초기화 완료');
 }
+
+// 부모 윈도우로부터 메시지 수신 (iframe 환경)
+// postMessage로 받은 메시지 처리 (iframe 환경)
+window.addEventListener('message', (event) => {
+  if (!event.data || typeof event.data !== 'object') return;
+  
+  switch (event.data.type) {
+    case 'recorder-init':
+      console.log('[Recorder] 부모 윈도우로부터 초기화 메시지 수신:', event.data);
+      if (event.data.tcId && tcIdInput) {
+        tcIdInput.value = event.data.tcId;
+      }
+      if (event.data.projectId && projectIdInput) {
+        projectIdInput.value = event.data.projectId;
+      }
+      logMessage('녹화 준비 완료', 'success');
+      break;
+      
+    case 'dom-event':
+      // postMessage로 받은 이벤트는 이미 WebSocket이나 IPC로 처리되었을 수 있으므로
+      // iframe 환경에서만 처리 (별도 윈도우에서는 WebSocket/IPC 사용)
+      if (window.parent !== window) {
+        console.log('[Recorder] 부모 윈도우로부터 DOM 이벤트 수신 (postMessage):', event.data.event?.action);
+        if (event.data.event) {
+          handleDomEvent(event.data.event);
+        }
+      } else {
+        console.log('[Recorder] postMessage dom-event 무시 (별도 윈도우에서는 WebSocket/IPC 사용)');
+      }
+      break;
+      
+    case 'recording-start':
+      console.log('[Recorder] 부모 윈도우로부터 녹화 시작 신호 수신');
+      if (!recording) {
+        startRecording();
+      }
+      break;
+      
+    case 'recording-stop':
+      console.log('[Recorder] 부모 윈도우로부터 녹화 중지 신호 수신');
+      if (recording) {
+        stopRecording();
+      }
+      break;
+      
+    case 'element-hover':
+      console.log('[Recorder] 부모 윈도우로부터 요소 하이라이트 수신');
+      if (event.data.data) {
+        handleElementHover(event.data.data);
+      }
+      break;
+      
+    case 'element-hover-clear':
+      console.log('[Recorder] 부모 윈도우로부터 요소 하이라이트 해제');
+      clearElementHover();
+      break;
+      
+    case 'url-changed':
+      // URL 변경 감지 (페이지 전환)
+      console.log('[Recorder] ========== URL 변경 감지 (postMessage) ==========');
+      console.log('[Recorder] URL 변경 정보:', {
+        url: event.data.url,
+        previousUrl: event.data.previousUrl || 'N/A',
+        tabId: event.data.tabId || 'N/A',
+        timestamp: event.data.timestamp || Date.now()
+      });
+      console.log('[Recorder] 현재 녹화 상태:', recording ? '녹화 중' : '녹화 중지');
+      console.log('[Recorder] WebSocket 연결 상태:', wsConnection ? {
+        readyState: wsConnection.readyState,
+        url: wsConnection.url
+      } : '연결 없음');
+      
+      // 녹화 중인 경우에만 처리
+      if (recording) {
+        logMessage(`페이지 전환: ${event.data.url}`, 'info');
+        console.log('[Recorder] ✅ URL 변경 처리 완료 (녹화 상태 유지)');
+        console.log('[Recorder] ⚠️ 주의: Content Script가 새 페이지에서 이벤트 리스너를 재등록해야 합니다');
+        console.log('[Recorder] ⚠️ Background Script가 Content Script에 RECORDING_START 메시지를 다시 보내야 합니다');
+      } else {
+        console.log('[Recorder] ⚠️ URL 변경 감지되었지만 녹화 중이 아니므로 무시');
+      }
+      console.log('[Recorder] ============================================');
+      break;
+      
+    default:
+      break;
+  }
+});
 
 // DOMContentLoaded 이벤트 대기
 if (document.readyState === 'loading') {

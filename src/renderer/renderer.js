@@ -505,14 +505,134 @@ function setupEventListeners() {
           recordBtn.disabled = false; // 중지 가능하도록 활성화
           recordBtn.innerHTML = '<span class="btn-icon">⏸️</span> 녹화 중지';
           
+          // 녹화 사이드 패널 열기
+          openRecorderSidePanel();
+          
+          // iframe에 초기화 메시지 전송
+          const iframe = document.getElementById('recorder-iframe');
+          if (iframe) {
+            // iframe이 이미 로드되어 있으면 즉시 전송
+            if (iframe.contentWindow) {
+              iframe.contentWindow.postMessage({
+                type: 'recorder-init',
+                tcId: currentTC.id,
+                projectId: currentProject.id,
+                sessionId: result.sessionId
+              }, '*');
+            } else {
+              // iframe이 아직 로드되지 않았으면 로드 대기
+              iframe.onload = () => {
+                iframe.contentWindow.postMessage({
+                  type: 'recorder-init',
+                  tcId: currentTC.id,
+                  projectId: currentProject.id,
+                  sessionId: result.sessionId
+                }, '*');
+              };
+            }
+          }
+          
           // 녹화 데이터 수신 대기
           window.electronAPI.onRecordingData((data) => {
             handleRecordingData(data);
+            // iframe으로도 전달
+            const iframe = document.getElementById('recorder-iframe');
+            if (iframe && iframe.contentWindow) {
+              iframe.contentWindow.postMessage({
+                type: 'recording-data',
+                data: data
+              }, '*');
+            }
           });
 
           // 녹화 중지 신호 수신 대기
           window.electronAPI.onRecordingStop((data) => {
             handleRecordingStop(data);
+            // iframe으로도 전달
+            const iframe = document.getElementById('recorder-iframe');
+            if (iframe && iframe.contentWindow) {
+              iframe.contentWindow.postMessage({
+                type: 'recording-stop',
+                data: data
+              }, '*');
+            }
+          });
+          
+          // DOM 이벤트 수신 대기 (iframe으로 전달)
+          window.electronAPI.onIpcMessage('dom-event', (data) => {
+            const iframe = document.getElementById('recorder-iframe');
+            if (iframe && iframe.contentWindow) {
+              iframe.contentWindow.postMessage({
+                type: 'dom-event',
+                event: data
+              }, '*');
+            }
+          });
+          
+          // 녹화 시작/중지 신호 수신 (iframe으로 전달)
+          window.electronAPI.onIpcMessage('recording-start', (data) => {
+            const iframe = document.getElementById('recorder-iframe');
+            if (iframe && iframe.contentWindow) {
+              iframe.contentWindow.postMessage({
+                type: 'recording-start',
+                data: data
+              }, '*');
+            }
+          });
+          
+          window.electronAPI.onIpcMessage('recording-stop', (data) => {
+            const iframe = document.getElementById('recorder-iframe');
+            if (iframe && iframe.contentWindow) {
+              iframe.contentWindow.postMessage({
+                type: 'recording-stop',
+                data: data
+              }, '*');
+            }
+          });
+          
+          window.electronAPI.onIpcMessage('element-hover', (data) => {
+            const iframe = document.getElementById('recorder-iframe');
+            if (iframe && iframe.contentWindow) {
+              iframe.contentWindow.postMessage({
+                type: 'element-hover',
+                data: data
+              }, '*');
+            }
+          });
+          
+          window.electronAPI.onIpcMessage('element-hover-clear', (data) => {
+            const iframe = document.getElementById('recorder-iframe');
+            if (iframe && iframe.contentWindow) {
+              iframe.contentWindow.postMessage({
+                type: 'element-hover-clear',
+                data: data
+              }, '*');
+            }
+          });
+          
+          // URL 변경 감지 (iframe으로 전달)
+          window.electronAPI.onIpcMessage('url-changed', (data) => {
+            const iframe = document.getElementById('recorder-iframe');
+            if (iframe && iframe.contentWindow) {
+              iframe.contentWindow.postMessage({
+                type: 'url-changed',
+                url: data.url,
+                tabId: data.tabId,
+                timestamp: data.timestamp
+              }, '*');
+            }
+            addLog('info', `페이지 전환: ${data.url}`);
+          });
+          
+          // 요소 선택 결과 수신 (iframe으로 전달)
+          window.electronAPI.onIpcMessage('element-selection-result', (data) => {
+            const iframe = document.getElementById('recorder-iframe');
+            if (iframe && iframe.contentWindow) {
+              iframe.contentWindow.postMessage({
+                type: 'element-selection-result',
+                ...data
+              }, '*');
+            }
           });
         } else {
           showMessageDialog('오류', `브라우저 열기 실패: ${result.error}`);
@@ -752,6 +872,16 @@ function setupEventListeners() {
       } else if (view === 'settings') {
         // 설정 기능 (향후 구현)
         console.log('✅ 설정 뷰 (향후 구현)');
+      } else if (view === 'recorder') {
+        // 녹화 사이드패널 토글
+        const recorderPanel = document.getElementById('recorder-side-panel');
+        if (recorderPanel) {
+          if (recorderPanel.classList.contains('hidden')) {
+            openRecorderSidePanel();
+          } else {
+            closeRecorderSidePanel();
+          }
+        }
       }
     });
   });
@@ -797,25 +927,43 @@ function setupBottomPanel() {
     bottomPanel.classList.toggle('collapsed');
     toggleBottomPanel.textContent = bottomPanel.classList.contains('collapsed') ? '▲' : '▼';
   });
+}
 
-  // 탭 전환
-  panelTabs.forEach(tab => {
-    tab.addEventListener('click', () => {
-      const panelName = tab.dataset.panel;
-      
-      // 탭 활성화
-      panelTabs.forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-      
-      // 컨텐츠 표시
-      panelTabContents.forEach(content => {
-        content.classList.remove('active');
-        if (content.id === `panel-${panelName}`) {
-          content.classList.add('active');
-        }
-      });
+// 녹화 사이드 패널 관리
+function openRecorderSidePanel() {
+  const sidePanel = document.getElementById('recorder-side-panel');
+  const mainWrapper = document.querySelector('.main-content-wrapper');
+  const iframe = document.getElementById('recorder-iframe');
+  
+  if (sidePanel && mainWrapper) {
+    sidePanel.classList.remove('hidden');
+    mainWrapper.classList.add('recorder-panel-open');
+    
+    // iframe이 로드되지 않았으면 로드
+    if (iframe && !iframe.src.includes('recorder.html')) {
+      iframe.src = 'recorder.html';
+    }
+  }
+}
+
+function closeRecorderSidePanel() {
+  const sidePanel = document.getElementById('recorder-side-panel');
+  const mainWrapper = document.querySelector('.main-content-wrapper');
+  
+  if (sidePanel && mainWrapper) {
+    sidePanel.classList.add('hidden');
+    mainWrapper.classList.remove('recorder-panel-open');
+  }
+}
+
+function setupRecorderSidePanel() {
+  const toggleBtn = document.getElementById('recorder-panel-toggle');
+  
+  if (toggleBtn) {
+    toggleBtn.addEventListener('click', () => {
+      closeRecorderSidePanel();
     });
-  });
+  }
 }
 
 function setupContextMenu() {
@@ -4026,6 +4174,17 @@ async function init() {
       }
     } else {
       console.error('❌ setupBottomPanel 함수가 정의되지 않았습니다.');
+    }
+    
+    if (typeof setupRecorderSidePanel === 'function') {
+      try {
+        setupRecorderSidePanel();
+        console.log('✅ setupRecorderSidePanel 완료');
+      } catch (error) {
+        console.error('❌ setupRecorderSidePanel 실패:', error);
+      }
+    } else {
+      console.error('❌ setupRecorderSidePanel 함수가 정의되지 않았습니다.');
     }
     
     if (typeof setupContextMenu === 'function') {

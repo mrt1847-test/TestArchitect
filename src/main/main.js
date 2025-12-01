@@ -8,14 +8,32 @@ if (process.platform === 'win32') {
   // Windows 콘솔 인코딩을 UTF-8로 설정
   process.stdout.setDefaultEncoding('utf8');
   process.stderr.setDefaultEncoding('utf8');
-  // chcp 65001 (UTF-8) 설정
+  
+  // PowerShell 및 CMD 모두에서 작동하도록 여러 방법 시도
   try {
+    // 방법 1: chcp 65001 (CMD용)
     require('child_process').execSync('chcp 65001 >nul 2>&1', { shell: true });
   } catch (e) {
     // 무시
   }
+  
+  try {
+    // 방법 2: PowerShell용 인코딩 설정 (PowerShell이면 실행)
+    const shell = process.env.SHELL || process.env.COMSPEC || '';
+    if (shell.toLowerCase().includes('powershell') || process.env.TERM_PROGRAM === 'vscode') {
+      // PowerShell에서는 [Console]::OutputEncoding을 설정
+      require('child_process').execSync(
+        '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8',
+        { shell: 'powershell.exe', encoding: 'utf8' }
+      );
+    }
+  } catch (e) {
+    // PowerShell 명령 실패 시 무시 (CMD에서는 작동하지 않음)
+  }
+  
   // 환경 변수 설정
   process.env.PYTHONIOENCODING = 'utf-8';
+  process.env.CHCP = '65001'; // 일부 프로그램에서 사용
 }
 
 const { app, BrowserWindow, ipcMain, Menu, globalShortcut } = require('electron');
@@ -909,7 +927,7 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
   // ============================================================================
   let wsConnection = null;
   let isRecording = false;
-  let urlCheckInterval = null;
+  let lastProcessedUrl = null; // 마지막으로 처리된 URL (중복 이벤트 방지)
   
   // ============================================================================
   // URL 정규화 함수: 의미 있는 부분만 비교 (쿼리 파라미터 제외)
@@ -932,109 +950,6 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
       return url;
     }
   }
-  
-  // ============================================================================
-  // URL Tracker: 하이브리드 방식 (window 객체 + localStorage)
-  // ============================================================================
-  // window 객체에 URL tracker 객체 생성 (스크립트 재주입 시에도 값 유지)
-  if (!window.__testarchitect_url_tracker__) {
-    window.__testarchitect_url_tracker__ = {
-      lastUrl: null,
-      lastTitle: null,
-      initialized: false
-    };
-  }
-  
-  // URL Tracker 초기화 함수
-  function initializeUrlTracker() {
-    const tracker = window.__testarchitect_url_tracker__;
-    const currentUrl = window.location.href;
-    const currentTitle = document.title;
-    
-    // 이미 초기화되었으면 window 객체에서 복원
-    if (tracker.initialized && tracker.lastUrl) {
-      console.log('[DOM Capture] window 객체에서 lastUrl 복원:', tracker.lastUrl);
-      return;
-    }
-    
-    // 첫 초기화: localStorage에서 복원 시도
-    try {
-      const storedUrl = localStorage.getItem('testarchitect_lastRecordedUrl');
-      const recordingLastUrl = getRecordingLastUrl();
-      
-      // 우선순위: recordingLastUrl > storedUrl
-      const urlToUse = recordingLastUrl || storedUrl;
-      
-      if (urlToUse) {
-        const normalizedCurrentUrl = normalizeUrl(currentUrl);
-        const normalizedUrlToUse = normalizeUrl(urlToUse);
-        
-        if (normalizedUrlToUse !== normalizedCurrentUrl) {
-          // 정규화된 URL이 다르면 실제 페이지 이동
-          tracker.lastUrl = urlToUse;
-          tracker.lastTitle = null;
-          console.log('[DOM Capture] localStorage에서 lastUrl 복원 (이전 페이지):', tracker.lastUrl);
-          console.log('[DOM Capture] 현재 페이지 URL:', currentUrl);
-          console.log('[DOM Capture] 정규화 비교 - 이전:', normalizedUrlToUse, '현재:', normalizedCurrentUrl);
-        } else {
-          // 정규화된 URL이 같지만 원본이 다를 수 있음
-          if (urlToUse !== currentUrl) {
-            // 원본 URL이 다르면 urlToUse 유지
-            tracker.lastUrl = urlToUse;
-            tracker.lastTitle = null;
-            console.log('[DOM Capture] lastUrl 유지 (정규화된 URL 동일, 원본 URL 다름):', tracker.lastUrl);
-          } else {
-            // 원본도 같으면 현재 URL로 초기화
-            tracker.lastUrl = currentUrl;
-            tracker.lastTitle = currentTitle;
-            console.log('[DOM Capture] lastUrl 초기화 (같은 URL):', tracker.lastUrl);
-          }
-        }
-      } else {
-        // 저장된 URL이 없으면 현재 URL로 초기화 (첫 로드)
-        tracker.lastUrl = currentUrl;
-        tracker.lastTitle = currentTitle;
-        console.log('[DOM Capture] lastUrl 초기화 (localStorage 없음, 첫 로드):', tracker.lastUrl);
-      }
-      
-      tracker.initialized = true;
-    } catch (err) {
-      tracker.lastUrl = currentUrl;
-      tracker.lastTitle = currentTitle;
-      tracker.initialized = true;
-      console.log('[DOM Capture] lastUrl 초기화 (에러):', tracker.lastUrl);
-    }
-  }
-  
-  // URL Tracker 업데이트 함수 (window 객체만 업데이트)
-  // localStorage 저장은 별도로 처리 (이전 페이지 URL 저장용)
-  function updateUrlTracker(newUrl, newTitle) {
-    const tracker = window.__testarchitect_url_tracker__;
-    tracker.lastUrl = newUrl;
-    tracker.lastTitle = newTitle || document.title;
-    // localStorage 저장은 checkUrlChange에서 별도로 처리 (이전 페이지 URL 저장)
-  }
-  
-  // URL Tracker 값 가져오기
-  function getUrlTracker() {
-    const tracker = window.__testarchitect_url_tracker__;
-    return {
-      lastUrl: tracker.lastUrl,
-      lastTitle: tracker.lastTitle
-    };
-  }
-  
-  // URL Tracker 초기화 실행
-  initializeUrlTracker();
-  
-  // 편의를 위한 로컬 변수 (window 객체의 참조)
-  let lastUrl = null;
-  let lastTitle = null;
-  
-  // 초기화 후 값 설정
-  const tracker = getUrlTracker();
-  lastUrl = tracker.lastUrl;
-  lastTitle = tracker.lastTitle;
   
   // ============================================================================
   // 요소 하이라이트 기능 (record/content.js 참고)
@@ -1320,56 +1235,6 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
     console.log('[DOM Capture] 요소 하이라이트 리스너 제거 완료');
   }
   
-  // localStorage에서 lastRecordedUrl 가져오기
-  function getLastRecordedUrl() {
-    try {
-      const stored = localStorage.getItem('testarchitect_lastRecordedUrl');
-      return stored || null;
-    } catch (err) {
-      console.error('[DOM Capture] localStorage 읽기 실패:', err);
-      return null;
-    }
-  }
-  
-  // localStorage에 lastRecordedUrl 저장
-  function saveLastRecordedUrl(url) {
-    try {
-      localStorage.setItem('testarchitect_lastRecordedUrl', url);
-    } catch (err) {
-      console.error('[DOM Capture] localStorage 저장 실패:', err);
-    }
-  }
-  
-  // localStorage에서 recordingLastUrl 가져오기 (외부에서 관리)
-  function getRecordingLastUrl() {
-    try {
-      const stored = localStorage.getItem('testarchitect_recordingLastUrl');
-      return stored || null;
-    } catch (err) {
-      console.error('[DOM Capture] recordingLastUrl 읽기 실패:', err);
-      return null;
-    }
-  }
-  
-  // localStorage에 recordingLastUrl 저장 (외부에서 관리)
-  function saveRecordingLastUrl(url) {
-    try {
-      localStorage.setItem('testarchitect_recordingLastUrl', url);
-      console.log('[DOM Capture] recordingLastUrl 저장:', url);
-    } catch (err) {
-      console.error('[DOM Capture] recordingLastUrl 저장 실패:', err);
-    }
-  }
-  
-  // recordingLastUrl 초기화 (녹화 종료 시 선택적)
-  function clearRecordingLastUrl() {
-    try {
-      localStorage.removeItem('testarchitect_recordingLastUrl');
-      console.log('[DOM Capture] recordingLastUrl 초기화');
-    } catch (err) {
-      console.error('[DOM Capture] recordingLastUrl 초기화 실패:', err);
-    }
-  }
   
   // localStorage에서 녹화 상태 복원 (새 페이지 로드 시)
   function restoreRecordingState() {
@@ -1378,16 +1243,6 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
       if (stored === 'true') {
         isRecording = true;
         console.log('[DOM Capture] localStorage에서 녹화 상태 복원: 녹화 중');
-        // 녹화 상태 복원 시 URL 체크 인터벌 시작
-        if (!urlCheckInterval) {
-          urlCheckInterval = setInterval(() => {
-            try {
-              checkUrlChange();
-            } catch (err) {
-              console.error('[DOM Capture] URL 변경 체크 실패:', err);
-            }
-          }, 1000);
-        }
         // 하이라이트 리스너 설정
         setupHoverListeners();
       }
@@ -1409,11 +1264,9 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
   restoreRecordingState();
   
   // ============================================================================
-  // 사용자 상호작용으로 인한 URL 변경 추적 (navigate vs verifyUrl 구분)
-  // 개선된 가중치 기반 스코어링 시스템
+  // Chrome Recorder 방식: 사용자 상호작용 추적 (CDP 이벤트 우선, 폴백용)
   // ============================================================================
   const USER_INTERACTION_TO_NAVIGATION_WINDOW = 2000; // 상호작용 후 2초 이내 URL 변경이면 사용자 상호작용으로 인한 것으로 간주
-  const NAVIGATION_DETECTION_THRESHOLD = 20; // 스코어 임계값 (테스트로 조정 가능)
   
   // 상호작용 저장 (sessionStorage 사용: 탭 단위, 페이지 간 공유)
   function saveLastInteraction(type, detail) {
@@ -1434,6 +1287,9 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
       console.error('[DOM Capture] 상호작용 저장 실패:', err);
     }
   }
+  
+  // CDP에서 호출할 수 있도록 window에 노출
+  window.__testarchitect_saveLastInteraction = saveLastInteraction;
   
   // 상호작용 로드
   function getLastInteraction() {
@@ -1473,278 +1329,35 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
     }
   }
   
-  // ============================================================================
-  // 개선된 Navigation 타입 감지 함수 (가중치 기반 스코어링)
-  // ============================================================================
-  function detectNavigationType(currentUrl, previousUrl) {
-    const now = Date.now();
-    let score = 0;
-    const reasons = [];
-    
-    // 1. Navigation API 확인
-    let navType = null;
-    let navTypeNumber = null;
-    try {
-      const navEntries = performance.getEntriesByType('navigation');
-      if (navEntries && navEntries.length > 0) {
-        navType = navEntries[0].type;
-        if (navType === 'navigate') navTypeNumber = 0;
-        else if (navType === 'reload') navTypeNumber = 1;
-        else if (navType === 'back_forward') navTypeNumber = 2;
-      } else if (performance.navigation) {
-        navTypeNumber = performance.navigation.type;
-        navType = navTypeNumber === 0 ? 'navigate' : (navTypeNumber === 1 ? 'reload' : 'back_forward');
-      }
-    } catch (e) {
-      console.warn('[DOM Capture] Navigation API 접근 실패:', e);
-    }
-    
-    // 2. Referrer 확인
-    const referrer = document.referrer || '';
-    const hasReferrer = referrer.length > 0;
-    let isSameOriginReferrer = false;
-    try {
-      if (hasReferrer) {
-        isSameOriginReferrer = new URL(referrer).origin === window.location.origin;
-      }
-    } catch (e) {
-      isSameOriginReferrer = false;
-    }
-    
-    // 3. User Gesture 확인 (sessionStorage/localStorage)
-    const lastInteraction = getLastInteraction();
-    let validInteraction = null;
-    if (lastInteraction && lastInteraction.timestamp) {
-      const timeSince = now - lastInteraction.timestamp;
-      if (timeSince < USER_INTERACTION_TO_NAVIGATION_WINDOW) {
-        validInteraction = lastInteraction;
-      } else {
-        // 오래된 값은 무시
-        clearLastInteraction();
-      }
-    }
-    
-    const hasRecentGesture = validInteraction !== null;
-    const interactionType = validInteraction ? validInteraction.type : null;
-    const interactionDetail = validInteraction ? validInteraction.detail : null;
-    const timeSinceLastInteraction = validInteraction ? (now - validInteraction.timestamp) : Infinity;
-    
-    // 4. History API 확인
-    const wasHistoryAPI = interactionType === 'history';
-    
-    // 5. 가중치 기반 스코어링
-    // 사용자 상호작용 신호를 먼저 계산 (양수 점수)
-    let interactionScore = 0;
-    if (hasRecentGesture) {
-      const timeMs = Math.round(timeSinceLastInteraction);
-      // 상호작용 타입별 가중치 차등
-      if (interactionType === 'submit') {
-        interactionScore = 50; // form submit은 매우 강력한 신호
-        reasons.push('recent submit gesture (' + timeMs + 'ms ago)');
-      } else if (interactionType === 'history' && interactionDetail && interactionDetail.method === 'pushState') {
-        interactionScore = 40; // pushState는 강력한 신호
-        reasons.push('recent history.pushState (' + timeMs + 'ms ago)');
-      } else if (interactionType === 'pointer' || interactionType === 'click') {
-        // 링크나 버튼 클릭인지 확인
-        if (interactionDetail && (interactionDetail.isLink || interactionDetail.isButton)) {
-          interactionScore = 35;
-          reasons.push('recent pointer/click on link/button (' + timeMs + 'ms ago)');
-        } else {
-          interactionScore = 30;
-          reasons.push('recent pointer/click gesture (' + timeMs + 'ms ago)');
-        }
-      } else if (interactionType === 'keydown') {
-        // 페이지 내부 입력 필드에서 엔터
-        if (interactionDetail && (interactionDetail.tag === 'INPUT' || interactionDetail.tag === 'TEXTAREA')) {
-          interactionScore = 40;
-          reasons.push('recent keydown on input (' + timeMs + 'ms ago)');
-        } else {
-          interactionScore = 20;
-          reasons.push('recent keydown gesture (' + timeMs + 'ms ago)');
-        }
-      } else {
-        interactionScore = 30;
-        reasons.push('recent ' + (interactionType || 'unknown') + ' gesture (' + timeMs + 'ms ago)');
-      }
-      score += interactionScore;
-    }
-    
-    if (wasHistoryAPI) {
-      score += 30;
-      reasons.push('history API used');
-    }
-    if (isSameOriginReferrer && hasRecentGesture) {
-      score += 20;
-      reasons.push('same origin referrer + gesture');
-    }
-    
-    // 직접 입력 신호 (음수 점수) - 상호작용이 있을 때는 보수적으로 적용
-    if (navTypeNumber === 1) {
-      // reload는 직접 입력으로 간주 (상호작용과 무관)
-      score -= 50;
-      reasons.push('reload navigation');
-    } else if (navTypeNumber === 2) {
-      // back/forward는 직접 입력으로 간주 (상호작용과 무관)
-      score -= 15;
-      reasons.push('back/forward navigation');
-    } else if (navTypeNumber === 0) {
-      // navigate 타입인 경우
-      if (hasRecentGesture) {
-        // 상호작용이 있으면 referrer 체크를 보수적으로 적용
-        if (!hasReferrer) {
-          score -= 10; // 상호작용이 있을 때는 약하게 차감
-          reasons.push('navType=0, no referrer (but has gesture)');
-        } else if (!isSameOriginReferrer) {
-          score -= 5; // 상호작용이 있을 때는 약하게 차감
-          reasons.push('navType=0, different origin referrer (but has gesture)');
-        }
-      } else {
-        // 상호작용이 없으면 강하게 차감
-        if (!hasReferrer) {
-          score -= 30;
-          reasons.push('navType=0, no referrer, no gesture');
-        } else if (!isSameOriginReferrer) {
-          score -= 20;
-          reasons.push('navType=0, different origin referrer, no gesture');
-        }
-        if (!wasHistoryAPI) {
-          score -= 25;
-          reasons.push('no recent gesture');
-        }
-      }
-    } else {
-      // navTypeNumber가 null이거나 알 수 없는 경우
-      if (!hasRecentGesture && !wasHistoryAPI) {
-        score -= 25;
-        reasons.push('no recent gesture');
-      }
-    }
-    
-    // 판단
-    const isUserInteractionNavigation = score >= NAVIGATION_DETECTION_THRESHOLD;
-    
-    // 상세 로그
-    console.log('[DOM Capture] Navigation 타입 감지:', JSON.stringify({
-      navType: navType,
-      navTypeNumber: navTypeNumber,
-      hasReferrer: hasReferrer,
-      referrer: referrer.substring(0, 100),
-      isSameOriginReferrer: isSameOriginReferrer,
-      hasRecentGesture: hasRecentGesture,
-      interactionType: interactionType,
-      interactionDetail: interactionDetail,
-      timeSinceLastInteraction: timeSinceLastInteraction,
-      wasHistoryAPI: wasHistoryAPI,
-      score: score,
-      reasons: reasons,
-      isUserInteractionNavigation: isUserInteractionNavigation,
-      threshold: NAVIGATION_DETECTION_THRESHOLD
-    }, null, 2));
-    
-    return {
-      isUserInteractionNavigation: isUserInteractionNavigation,
-      interactionType: interactionType,
-      score: score,
-      reasons: reasons,
-      navType: navType,
-      navTypeNumber: navTypeNumber,
-      hasReferrer: hasReferrer,
-      hasRecentGesture: hasRecentGesture,
-      timeSinceLastInteraction: timeSinceLastInteraction
-    };
-  }
+  // CDP에서 호출할 수 있도록 window에 노출
+  window.__testarchitect_clearLastInteraction = clearLastInteraction;
   
-  // URL 변경 감지 및 navigate/verifyUrl 이벤트 생성
-  async function checkUrlChange() {
-    if (!isRecording) {
-      console.log('[DOM Capture] checkUrlChange: 녹화 중이 아님, 스킵');
-      return;
-    }
+  // ============================================================================
+  // Chrome Recorder 방식: CDP에서 네비게이션 이벤트를 직접 생성하는 함수
+  // ============================================================================
+  function createNavigationEventFromCDP(url, isUserInteraction, source) {
+    // Chrome Recorder 방식: CDP에서 호출되면 녹화 중이므로 localStorage에서도 확인
+    const recordingState = isRecording || localStorage.getItem('testarchitect_isRecording') === 'true';
     
-    const currentUrl = window.location.href;
-    const currentTitle = document.title;
-    
-    // 정규화된 URL로 비교 (쿼리 파라미터 변경 무시)
-    const normalizedCurrentUrl = normalizeUrl(currentUrl);
-    const normalizedLastUrl = normalizeUrl(lastUrl);
-    
-    // window 객체에서 최신 값 가져오기
-    const tracker = getUrlTracker();
-    lastUrl = tracker.lastUrl;
-    lastTitle = tracker.lastTitle;
-    
-    // 디버깅: 초기 상태 확인
-    if (!lastUrl || lastUrl === '') {
-      console.log('[DOM Capture] checkUrlChange: lastUrl이 비어있음, 초기화:', currentUrl);
-      updateUrlTracker(currentUrl, currentTitle);
-      lastUrl = currentUrl;
-      lastTitle = currentTitle;
-      // 초기화 시에는 이벤트 생성하지 않음 (첫 로드)
-      return;
-    }
-    
-    let storedLastUrl = lastUrl;
-    
-    try {
-      // 우선순위: 1) recordingLastUrl (외부에서 관리), 2) lastRecordedUrl (이전 방식), 3) lastUrl
-      const recordingLastUrl = getRecordingLastUrl();
-      const storedUrl = getLastRecordedUrl();
-      
-      if (recordingLastUrl && recordingLastUrl !== currentUrl) {
-        // 외부에서 관리하는 recordingLastUrl 우선 사용
-        storedLastUrl = recordingLastUrl;
-        console.log('[DOM Capture] checkUrlChange: recordingLastUrl 사용 (외부 관리):', recordingLastUrl);
-      } else if (storedUrl && storedUrl !== currentUrl) {
-        // 이전 방식의 lastRecordedUrl 사용
-        storedLastUrl = storedUrl;
-        console.log('[DOM Capture] checkUrlChange: localStorage에서 이전 URL 발견:', storedUrl);
-      }
-    } catch (err) {
-      // 무시
-    }
-    
-    const compareUrl = storedLastUrl && storedLastUrl !== currentUrl ? storedLastUrl : lastUrl;
-    const normalizedCompareUrl = normalizeUrl(compareUrl);
-    
-    // 정규화된 URL로 비교 (쿼리 파라미터 변경은 무시)
-    const urlChanged = normalizedCurrentUrl !== normalizedCompareUrl;
-    const titleChanged = currentTitle !== lastTitle;
-    
-    // 디버깅: 항상 로그 출력 (URL 변경 여부와 관계없이)
-    console.log('[DOM Capture] checkUrlChange 실행:', {
-      currentUrl: currentUrl,
-      lastUrl: lastUrl,
-      compareUrl: compareUrl,
-      normalizedCurrentUrl: normalizedCurrentUrl,
-      normalizedLastUrl: normalizedLastUrl,
-      normalizedCompareUrl: normalizedCompareUrl,
-      urlChanged: urlChanged,
-      titleChanged: titleChanged,
-      isRecording: isRecording
+    console.log('[DOM Capture] createNavigationEventFromCDP 호출:', {
+      url: url,
+      isUserInteraction: isUserInteraction,
+      source: source,
+      isRecording: isRecording,
+      localStorageRecording: localStorage.getItem('testarchitect_isRecording'),
+      recordingState: recordingState
     });
     
-    // 실제 페이지 이동은 URL 변경으로만 판단 (타이틀만 변경된 경우는 무시)
-    // 타이틀은 JavaScript로 동적으로 변경될 수 있으므로 페이지 이동 지표로 사용하지 않음
-    if (urlChanged) {
-      // 개선된 Navigation 타입 감지 (가중치 기반 스코어링)
-      const navDetection = detectNavigationType(currentUrl, compareUrl);
-      const isUserInteractionNavigation = navDetection.isUserInteractionNavigation;
-      const interactionType = navDetection.interactionType;
-      
-      console.log('[DOM Capture] URL 변경 감지:', JSON.stringify({
-        previous: compareUrl,
-        current: currentUrl,
-        normalizedPrevious: normalizedCompareUrl,
-        normalizedCurrent: normalizedCurrentUrl,
-        urlChanged: urlChanged,
-        titleChanged: titleChanged,
-        isUserInteractionNavigation: isUserInteractionNavigation,
-        interactionType: interactionType,
-        detectionScore: navDetection.score,
-        detectionReasons: navDetection.reasons
-      }, null, 2));
-      
-      if (isUserInteractionNavigation) {
+    if (!recordingState) {
+      console.warn('[DOM Capture] createNavigationEventFromCDP: 녹화 중이 아님, 스킵');
+      return;
+    }
+    
+    const currentUrl = url || window.location.href;
+    const currentTitle = document.title;
+    
+    
+    if (isUserInteraction) {
         // 사용자 상호작용으로 인한 이동 → verifyUrl assertion 생성
         const verifyUrlEvent = {
           action: 'verifyUrl',
@@ -1755,9 +1368,8 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
           clientRect: null,
           metadata: { 
             domEvent: 'navigation', 
-            source: interactionType || 'user-interaction',
-            detectionScore: navDetection.score,
-            detectionReasons: navDetection.reasons
+          source: source || 'cdp-user-interaction',
+          cdpDetected: true
           },
           domContext: null,
           page: {
@@ -1768,11 +1380,22 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
           primarySelector: currentUrl
         };
         
-        // 1단계: 이벤트 전송 (먼저 이벤트를 수집)
+      console.log('[DOM Capture] CDP에서 verifyUrl 이벤트 생성 시작:', {
+        source: source,
+        url: currentUrl,
+        isRecording: isRecording,
+        localStorageRecording: localStorage.getItem('testarchitect_isRecording')
+      });
         sendEvent(verifyUrlEvent);
-        console.log('[DOM Capture] 사용자 상호작용으로 인한 URL 변경 → verifyUrl assertion 생성:', interactionType);
+      console.log('[DOM Capture] CDP에서 verifyUrl 이벤트 전송 완료:', source, currentUrl);
       } else {
         // 직접 입력으로 인한 이동 → navigate 이벤트 생성
+      // ⭐ replaceState pending 정리 (주소창 직접 입력인 경우)
+      if (window.__testarchitect_replaceStatePending) {
+        console.log('[DOM Capture] createNavigationEventFromCDP: navigate 이벤트 생성 → replaceState pending 정리');
+        delete window.__testarchitect_replaceStatePending;
+      }
+      
         const navigateEvent = {
           action: 'navigate',
           value: currentUrl,
@@ -1780,7 +1403,11 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
           target: null,
           iframeContext: null,
           clientRect: null,
-          metadata: { domEvent: 'navigation', source: 'direct' },
+        metadata: { 
+          domEvent: 'navigation', 
+          source: source || 'cdp-direct',
+          cdpDetected: true
+        },
           domContext: null,
           page: {
             url: currentUrl,
@@ -1790,65 +1417,32 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
           primarySelector: currentUrl
         };
         
-        // 1단계: 이벤트 전송 (먼저 이벤트를 수집)
+      console.log('[DOM Capture] CDP에서 navigate 이벤트 생성 시작:', {
+        source: source,
+        url: currentUrl,
+        isRecording: isRecording,
+        localStorageRecording: localStorage.getItem('testarchitect_isRecording')
+      });
         sendEvent(navigateEvent);
-        console.log('[DOM Capture] 직접 입력으로 인한 URL 변경 → navigate 이벤트 생성');
-      }
+      console.log('[DOM Capture] CDP에서 navigate 이벤트 전송 완료:', source, currentUrl);
+    }
+    
+    // 처리된 URL 저장 (Chrome Recorder 방식: CDP에서 처리한 경우를 표시)
+    try {
+      lastProcessedUrl = currentUrl;
       
-      // 2단계: localStorage 갱신 (이벤트 수집 후에만 저장)
-      // 중요: 저장해야 하는 것은 "현재 페이지 URL"이 아니라 "이전 페이지 URL"임
-      // 다음 페이지 로드 시 이전 페이지를 올바르게 추적하기 위해 compareUrl(이전 페이지)를 localStorage에 저장
-      // window 객체에는 현재 페이지 URL을 저장 (다음 체크를 위해)
-      // 이벤트 수집이 완료된 후에 저장하여, 다음 페이지 로드 시 올바른 이전 페이지 정보를 복원할 수 있음
-      try {
-        // localStorage에는 이전 페이지 URL 저장 (다음 페이지 로드 시 복원용)
-        saveLastRecordedUrl(compareUrl);
-        
-        // recordingLastUrl 업데이트 (외부에서 관리하는 값)
-        // 현재 페이지 URL을 저장 (다음 녹화 세션에서 사용)
-        saveRecordingLastUrl(currentUrl);
-        
-        console.log('[DOM Capture] 이벤트 수집 완료 후 localStorage 갱신:');
-        console.log('[DOM Capture] - lastRecordedUrl (이전 페이지):', compareUrl);
-        console.log('[DOM Capture] - recordingLastUrl (현재 페이지, 외부 관리):', currentUrl);
-        
-        // window 객체에는 현재 페이지 URL 저장 (다음 체크를 위해)
-        updateUrlTracker(currentUrl, currentTitle);
+      // CDP에서 처리한 시간 기록
+      window.__testarchitect_lastProcessTime = Date.now();
+      
+      console.log('[DOM Capture] CDP 네비게이션 이벤트 생성 완료 - URL 저장:', currentUrl);
       } catch (err) {
         console.error('[DOM Capture] URL 저장 실패:', err);
-      }
-      
-      // url-changed 메시지도 전송 (recorder.js에서 처리)
-      if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-        try {
-          const urlChangeMessage = {
-            type: 'url-changed',
-            url: currentUrl,
-            previousUrl: compareUrl,
-            timestamp: Date.now(),
-            sessionId: window.__testarchitect_session_id__ || null,
-            isUserInteractionNavigation: isUserInteractionNavigation
-          };
-          wsConnection.send(JSON.stringify(urlChangeMessage));
-        } catch (error) {
-          console.error('[DOM Capture] URL 변경 메시지 전송 실패:', error);
-        }
-      }
-      
-      // 상호작용 추적 정보 초기화 (URL 변경 후)
-      clearLastInteraction();
-      
-      // URL Tracker 업데이트: window 객체에 현재 페이지 URL 저장 (다음 체크를 위해)
-      // 중요: localStorage에는 이미 이전 페이지 URL(compareUrl)이 저장되어 있음
-      const tracker = window.__testarchitect_url_tracker__;
-      tracker.lastUrl = currentUrl;
-      tracker.lastTitle = currentTitle;
-      lastUrl = currentUrl;
-      lastTitle = currentTitle;
-      
-      console.log('[DOM Capture] checkUrlChange 완료 - URL Tracker 업데이트 (window 객체):', currentUrl);
     }
   }
+  
+  // CDP에서 호출할 수 있도록 window에 노출
+  window.__testarchitect_createNavigationEvent = createNavigationEventFromCDP;
+  
   
   function connectWebSocket() {
     if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
@@ -1874,65 +1468,10 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
             isRecording = true;
             saveRecordingState(true); // localStorage에 저장
             
-            // 녹화 시작 시 URL 변경 체크 (record/content.js의 startRecording 로직 참고)
-            const currentUrl = window.location.href;
-            const currentTitle = document.title;
+            // Chrome Recorder 방식: CDP 이벤트가 URL 변경을 처리
+            console.log('[DOM Capture] recording-start: 녹화 시작');
             
-            // recordingLastUrl 확인 (외부에서 관리되는 값)
-            const recordingLastUrl = getRecordingLastUrl();
-            
-            if (recordingLastUrl && recordingLastUrl !== currentUrl) {
-              // 이전 녹화 세션의 마지막 URL이 있으면 사용
-              updateUrlTracker(recordingLastUrl, '');
-              lastUrl = recordingLastUrl;
-              lastTitle = '';
-              console.log('[DOM Capture] recording-start: recordingLastUrl에서 복원:', recordingLastUrl);
-              console.log('[DOM Capture] recording-start: 현재 페이지 URL:', currentUrl);
-              setTimeout(() => {
-                checkUrlChange();
-              }, 100);
-            } else {
-              // 첫 녹화 시작 또는 같은 URL
-              // 현재 URL을 recordingLastUrl로 저장 (외부에서 관리)
-              saveRecordingLastUrl(currentUrl);
-              updateUrlTracker(currentUrl, currentTitle);
-              lastUrl = currentUrl;
-              lastTitle = currentTitle;
-              console.log('[DOM Capture] recording-start: 첫 녹화 시작, recordingLastUrl 저장:', currentUrl);
-            }
-            
-            // URL 체크 인터벌 시작 (1초마다, record/content.js와 동일)
-            if (!urlCheckInterval) {
-              urlCheckInterval = setInterval(() => {
-                try {
-                  checkUrlChange();
-                } catch (err) {
-                  console.error('[DOM Capture] URL 변경 체크 실패:', err);
-                }
-              }, 1000); // 1초마다 체크 (record/content.js와 동일)
-            }
-            
-            // 페이지 로드 완료 시 URL 체크
-            if (document.readyState === 'complete') {
-              setTimeout(() => {
-                checkUrlChange();
-              }, 500);
-            } else {
-              window.addEventListener('load', () => {
-                setTimeout(() => {
-                  checkUrlChange();
-                }, 500);
-              });
-            }
-            
-            if (document.readyState === 'loading') {
-              document.addEventListener('DOMContentLoaded', () => {
-                setTimeout(() => {
-                  checkUrlChange();
-                }, 300);
-              });
-            }
-            
+            // Chrome Recorder 방식: CDP 이벤트만 사용, 주기적 체크 없음
             // 요소 하이라이트 리스너 설정
             setupHoverListeners();
           } else if (message.type === 'recording-stop') {
@@ -1942,12 +1481,6 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
             
             // recordingLastUrl은 유지 (다음 녹화 세션에서 사용)
             // clearRecordingLastUrl() 호출하지 않음
-            
-            // URL 체크 인터벌 중지
-            if (urlCheckInterval) {
-              clearInterval(urlCheckInterval);
-              urlCheckInterval = null;
-            }
             
             // 요소 하이라이트 리스너 제거
             removeHoverListeners();
@@ -1973,12 +1506,26 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
   
   // 이벤트 전송 함수
   function sendEvent(eventData) {
-    if (!isRecording) {
-      console.log('[DOM Capture] 녹화 중이 아니어서 이벤트 전송 스킵:', eventData.action);
+    // Chrome Recorder 방식: localStorage에서도 녹화 상태 확인 (CDP 이벤트 대응)
+    const recordingState = isRecording || localStorage.getItem('testarchitect_isRecording') === 'true';
+    
+    console.log('[DOM Capture] sendEvent 호출:', {
+      action: eventData.action,
+      url: eventData.page?.url || eventData.url || '',  // page.url을 우선 사용
+      value: eventData.value || '',  // value는 별도로 표시
+      isRecording: isRecording,
+      localStorageRecording: localStorage.getItem('testarchitect_isRecording'),
+      recordingState: recordingState,
+      wsConnection: !!wsConnection,
+      wsReady: wsConnection ? wsConnection.readyState === WebSocket.OPEN : false
+    });
+    
+    if (!recordingState) {
+      console.warn('[DOM Capture] 녹화 중이 아니어서 이벤트 전송 스킵:', eventData.action);
       return;
     }
     if (!wsConnection || wsConnection.readyState !== WebSocket.OPEN) {
-      console.log('[DOM Capture] WebSocket 연결이 없어서 이벤트 전송 스킵:', eventData.action);
+      console.warn('[DOM Capture] WebSocket 연결이 없어서 이벤트 전송 스킵:', eventData.action);
       return;
     }
     
@@ -1989,7 +1536,7 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
         timestamp: Date.now(),
         sessionId: window.__testarchitect_session_id__ || null
       };
-      console.log('[DOM Capture] 이벤트 전송:', eventData.action);
+      console.log('[DOM Capture] 이벤트 전송:', eventData.action, eventData.page?.url || eventData.url || eventData.value || '');
       wsConnection.send(JSON.stringify(message));
     } catch (error) {
       console.error('[DOM Capture] 이벤트 전송 실패:', error);
@@ -2001,6 +1548,12 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
   // ============================================================================
   function handleClick(event) {
     if (!isRecording) return;
+    
+    // Event.isTrusted 확인 - 사용자 상호작용인지 확인 (Chrome Recorder 방식)
+    if (!event.isTrusted) {
+      // JavaScript로 생성된 이벤트는 무시 (사용자 상호작용 아님)
+      return;
+    }
     
     const target = event.target;
     if (!target || target === document.body || target === document.documentElement) return;
@@ -2025,7 +1578,28 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
       isLink: target.tagName === 'A' || target.closest('a') !== null,
       isButton: target.tagName === 'BUTTON' || target.closest('button') !== null
     };
+    
+    // 🔍 디버그: 클릭한 요소 타입 정보 출력
+    console.log('🖱️ [DOM Capture] 클릭 이벤트 발생:', {
+      timestamp: Date.now(),
+      elementType: targetInfo.isLink ? '링크(<a>)' : targetInfo.isButton ? '버튼(<button>)' : '기타 요소',
+      tag: targetInfo.tag,
+      id: targetInfo.id,
+      className: targetInfo.className,
+      href: targetInfo.href,
+      isLink: targetInfo.isLink,
+      isButton: targetInfo.isButton,
+      text: target.textContent ? target.textContent.substring(0, 50) : null
+    });
+    
     saveLastInteraction('click', targetInfo);
+    
+    // 🔍 디버그: 상호작용 정보 저장 확인
+    console.log('💾 [DOM Capture] 상호작용 정보 저장 완료:', {
+      type: 'click',
+      targetInfo: targetInfo,
+      timestamp: Date.now()
+    });
     
     const rect = target.getBoundingClientRect();
     
@@ -2115,6 +1689,11 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
   function handleRightClick(event) {
     if (!isRecording) return;
     
+    // Event.isTrusted 확인 - 사용자 상호작용인지 확인
+    if (!event.isTrusted) {
+      return;
+    }
+    
     const target = event.target;
     if (!target || target === document.body || target === document.documentElement) return;
     
@@ -2162,6 +1741,11 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
   // SELECT 요소의 change 이벤트 처리 (record/content.js 참고)
   function handleSelect(event) {
     if (!isRecording) return;
+    
+    // Event.isTrusted 확인 - 사용자 상호작용인지 확인
+    if (!event.isTrusted) {
+      return;
+    }
     
     const target = event.target;
     if (!target || target.tagName !== 'SELECT') return;
@@ -2216,6 +1800,12 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
   ['pointerdown', 'mousedown'].forEach(eventType => {
     document.addEventListener(eventType, (e) => {
       if (!isRecording) return;
+      
+      // Event.isTrusted 확인 - 사용자 상호작용인지 확인
+      if (!e.isTrusted) {
+        return;
+      }
+      
       const target = e.target;
       if (!target || target === document.body || target === document.documentElement) return;
       if (target.id === '__testarchitect_selector_overlay__' || target.closest('#__testarchitect_selector_overlay__')) return;
@@ -2362,12 +1952,38 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
   document.addEventListener('blur', handleBlur, true);
   
   // ============================================================================
-  // history.pushState/replaceState 감지 (SPA 네비게이션)
+  // SPA URL 변경 감지 (Chrome Recorder 방식)
   // ============================================================================
+  // history.pushState/replaceState override + popstate + hashchange
+  // recorder-url-changed 커스텀 이벤트 발생 → verify step 생성
+  
+  // 1. history.pushState / replaceState override
   const originalPushState = history.pushState;
   const originalReplaceState = history.replaceState;
   
+  function dispatchUrlChangedEvent(method, url) {
+    if (isRecording && url) {
+      // 약간의 지연을 두어 URL이 완전히 변경될 시간 확보
+      setTimeout(() => {
+        const currentUrl = window.location.href;
+        // recorder-url-changed 커스텀 이벤트 발생
+        window.dispatchEvent(new CustomEvent('recorder-url-changed', {
+          detail: {
+            url: currentUrl,
+            method: method,
+            timestamp: Date.now()
+          }
+        }));
+        console.log('[DOM Capture] recorder-url-changed 이벤트 발생:', {
+          method: method,
+          url: currentUrl
+        });
+      }, 10);
+    }
+  }
+  
   history.pushState = function(state, title, url) {
+    const result = originalPushState.apply(history, arguments);
     if (isRecording) {
       // pushState는 사용자 상호작용으로 인한 것으로 간주 (SPA 네비게이션)
       saveLastInteraction('history', {
@@ -2376,39 +1992,173 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
         state: state ? (typeof state === 'object' ? 'object' : String(state)) : null
       });
       console.log('[DOM Capture] history.pushState 감지:', url);
+      // recorder-url-changed 이벤트 발생
+      dispatchUrlChangedEvent('pushState', url);
     }
-    return originalPushState.apply(history, arguments);
+    return result;
   };
   
   history.replaceState = function(state, title, url) {
+    const result = originalReplaceState.apply(history, arguments);
     if (isRecording) {
-      // replaceState는 프로그래밍 방식의 변경이므로 사용자 상호작용으로 간주하지 않음
-      // 하지만 기록은 남김 (디버깅용)
-      console.log('[DOM Capture] history.replaceState 감지 (프로그래밍 방식, 사용자 상호작용 아님):', url);
+      console.log('[DOM Capture] history.replaceState 감지:', url);
+      
+      // ⭐ 주소창 직접 입력일 수 있으므로 CDP 이벤트를 기다림
+      // CDP에서 typed/addressBar reason이 오면 navigate로 처리해야 함
+      const currentUrl = window.location.href;
+      window.__testarchitect_replaceStatePending = {
+        url: currentUrl,
+        method: 'replaceState',
+        timestamp: Date.now()
+      };
+      
+      console.log('[DOM Capture] history.replaceState: CDP 이벤트 대기 중 (주소창 직접 입력 가능)', {
+        url: currentUrl,
+        pending: true
+      });
+      
+      // CDP 이벤트를 기다리는 시간 (최대 1000ms)
+      // CDP 이벤트가 오지 않으면 SPA로 처리
+      setTimeout(() => {
+        if (window.__testarchitect_replaceStatePending) {
+          const pending = window.__testarchitect_replaceStatePending;
+          delete window.__testarchitect_replaceStatePending;
+          console.log('[DOM Capture] history.replaceState: CDP 이벤트 미도착, SPA로 처리', {
+            url: pending.url,
+            method: pending.method
+          });
+          // SPA로 처리
+          dispatchUrlChangedEvent(pending.method, pending.url);
+        }
+      }, 1000);
     }
-    return originalReplaceState.apply(history, arguments);
+    return result;
   };
   
-  // popstate 이벤트 (뒤로가기/앞으로가기)
-  window.addEventListener('popstate', () => {
+  // 2. popstate 이벤트 (뒤로가기/앞으로가기)
+  window.addEventListener('popstate', (event) => {
     if (isRecording) {
-      // popstate는 직접 입력으로 간주 (브라우저 네비게이션)
-      clearLastInteraction();
-      console.log('[DOM Capture] popstate 이벤트 감지 (직접 입력으로 간주)');
-      // URL 변경 체크 (약간의 지연 후)
-      setTimeout(() => {
-        checkUrlChange();
-      }, 100);
+      // popstate는 브라우저 네비게이션 (사용자 상호작용)
+      console.log('[DOM Capture] popstate 이벤트 감지 (뒤로가기/앞으로가기)');
+      // recorder-url-changed 이벤트 발생
+      dispatchUrlChangedEvent('popstate', window.location.href);
     }
   });
   
-  // popstate 이벤트는 History API 래핑 부분에서 이미 처리됨
+  // 3. hashchange 이벤트 (#fragment 변경)
+  window.addEventListener('hashchange', (event) => {
+    if (isRecording) {
+      console.log('[DOM Capture] hashchange 이벤트 감지:', window.location.href);
+      // recorder-url-changed 이벤트 발생
+      dispatchUrlChangedEvent('hashchange', window.location.href);
+    }
+  });
+  
+  // 연속 pushState 디바운싱 (짧은 시간에 여러 pushState가 발생해도 하나의 step으로 처리)
+  let spaUrlChangeTimeout = null;
+  let lastSpaUrl = null;
+  let lastSpaMethod = null;
+  
+  // recorder-url-changed 이벤트 리스너 (WebSocket으로 전송)
+  window.addEventListener('recorder-url-changed', (event) => {
+    if (!isRecording) return;
+    
+    const { url, method, timestamp } = event.detail;
+    
+    // ⭐ replaceState의 경우 CDP 이벤트를 기다리는 중이면 스킵
+    if (method === 'replaceState' && window.__testarchitect_replaceStatePending) {
+      console.log('[DOM Capture] recorder-url-changed: replaceState pending 중이므로 스킵 (CDP 이벤트 대기)');
+      return;
+    }
+    
+    // CDP의 navigatedWithinDocument와 중복 방지
+    // CDP에서 처리한 경우 window.__testarchitect_lastProcessTime를 확인
+    const lastProcessTime = window.__testarchitect_lastProcessTime || 0;
+    const timeSinceLastProcess = Date.now() - lastProcessTime;
+    
+    // CDP에서 최근 500ms 이내에 처리했다면 스킵 (중복 방지)
+    if (timeSinceLastProcess < 500) {
+      console.log('[DOM Capture] recorder-url-changed: CDP에서 최근 처리했으므로 스킵 (중복 방지)', {
+        url: url,
+        method: method,
+        timeSinceLastProcess: timeSinceLastProcess
+      });
+      return;
+    }
+    
+    console.log('[DOM Capture] recorder-url-changed 이벤트 처리:', {
+      url: url,
+      method: method,
+      timestamp: timestamp
+    });
+    
+    // 연속 pushState 디바운싱 (300ms 내에 같은 URL이면 마지막 것만 처리)
+    if (spaUrlChangeTimeout) {
+      clearTimeout(spaUrlChangeTimeout);
+    }
+    
+    lastSpaUrl = url;
+    lastSpaMethod = method;
+    
+    spaUrlChangeTimeout = setTimeout(() => {
+      if (!lastSpaUrl) return;
+      
+      // 사용자 상호작용 정보 확인
+      const lastInteraction = getLastInteraction();
+      const isUserInteraction = lastInteraction && 
+                               (lastInteraction.type === 'click' || 
+                                lastInteraction.type === 'submit' || 
+                                lastInteraction.type === 'history') &&
+                               (Date.now() - lastInteraction.timestamp) < USER_INTERACTION_TO_NAVIGATION_WINDOW;
+      
+      // verifyUrl 이벤트 생성 (SPA URL 변경은 항상 verify)
+      const verifyUrlEvent = {
+        action: 'verifyUrl',
+        value: lastSpaUrl,
+        selectors: [],
+        target: null,
+        iframeContext: null,
+        clientRect: null,
+        metadata: {
+          domEvent: 'navigation',
+          source: 'spa-' + lastSpaMethod, // spa-pushState, spa-replaceState, spa-popstate, spa-hashchange
+          cdpDetected: false, // Content Script에서 감지
+          isSPANavigation: true
+        },
+        domContext: null,
+        page: {
+          url: lastSpaUrl,
+          title: document.title
+        },
+        url: lastSpaUrl,
+        primarySelector: lastSpaUrl
+      };
+      
+      console.log('[DOM Capture] SPA URL 변경 → verifyUrl 이벤트 생성:', {
+        url: lastSpaUrl,
+        method: lastSpaMethod,
+        isUserInteraction: isUserInteraction
+      });
+      
+      sendEvent(verifyUrlEvent);
+      
+      // 초기화
+      lastSpaUrl = null;
+      lastSpaMethod = null;
+      spaUrlChangeTimeout = null;
+    }, 300); // 300ms 디바운싱
+  });
   
   // ============================================================================
   // 키보드 이벤트 감지 (엔터 키로 인한 폼 제출 등)
   // ============================================================================
   document.addEventListener('keydown', (event) => {
     if (!isRecording) return;
+    
+    // Event.isTrusted 확인 - 사용자 상호작용인지 확인
+    if (!event.isTrusted) {
+      return;
+    }
     
     // 엔터 키 입력 감지 (검색창 등에서 URL 변경 가능)
     // 주의: 주소창에 직접 입력 후 엔터는 감지할 수 없으므로 navigate로 처리됨
@@ -2441,6 +2191,11 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
   document.addEventListener('submit', (event) => {
     if (!isRecording) return;
     
+    // Event.isTrusted 확인 - 사용자 상호작용인지 확인
+    if (!event.isTrusted) {
+      return;
+    }
+    
     const target = event.target;
     if (target && target.tagName === 'FORM') {
       saveLastInteraction('submit', {
@@ -2452,8 +2207,6 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
   }, true);
   
   // beforeunload 이벤트에서 하이라이트 리스너만 정리
-  // URL 저장은 checkUrlChange에서 URL 변경 감지 시에만 수행
-  // beforeunload에서 저장하면 타이밍 이슈로 잘못된 URL이 저장될 수 있음
   window.addEventListener('beforeunload', () => {
     // 하이라이트 리스너 정리
     removeHoverListeners();
@@ -2497,7 +2250,7 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
         clearTimeout(timeout);
         
         let commandsSent = 0;
-        const totalCommands = 4;
+        const totalCommands = 7; // Page.getFrameTree 추가
         
         const checkComplete = () => {
           commandsSent++;
@@ -2522,9 +2275,24 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
         }));
         checkComplete();
         
-        // Page.addScriptToEvaluateOnNewDocument 실행 (새 페이지 로드 시 자동 실행)
+        // Network.enable - Network 이벤트 활성화 (Document 요청 감지용)
+        cdpWs.send(JSON.stringify({
+          id: 6,
+          method: 'Network.enable'
+        }));
+        checkComplete();
+        
+        // Page.setLifecycleEventsEnabled - 페이지 생명주기 이벤트 활성화
         cdpWs.send(JSON.stringify({
           id: 3,
+          method: 'Page.setLifecycleEventsEnabled',
+          params: { enabled: true }
+        }));
+        checkComplete();
+        
+        // Page.addScriptToEvaluateOnNewDocument 실행 (새 페이지 로드 시 자동 실행)
+        cdpWs.send(JSON.stringify({
+          id: 4,
           method: 'Page.addScriptToEvaluateOnNewDocument',
           params: {
             source: domCaptureScript
@@ -2534,7 +2302,7 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
         
         // Runtime.evaluate로 현재 페이지에도 주입
         cdpWs.send(JSON.stringify({
-          id: 4,
+          id: 5,
           method: 'Runtime.evaluate',
           params: {
             expression: domCaptureScript,
@@ -2544,66 +2312,769 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
         }));
         checkComplete();
         
+        // Page.setBypassCSP - CSP 우회 (필요한 경우, 선택적)
+        // 주의: 보안상의 이유로 필요한 경우에만 활성화
+        // checkComplete(); // 현재는 사용하지 않음
+        
         // CDP 응답 수신 (에러 처리 및 이벤트 감지)
+        // Chrome Recorder 방식: navigationReason과 navigationType을 저장하기 위한 변수
+        let lastNavigationReason = null;
+        let lastNavigationFrameId = null;
+        let lastNavigationUrl = null;
+        let lastNavigationType = null; // Page.frameStartedNavigating의 navigationType 저장
+        
+        // Redirect 체인 추적: loaderId -> 최종 URL 매핑
+        const redirectChain = new Map(); // loaderId -> url (같은 loaderId로 들어온 마지막 URL이 최종 URL)
+        
+        // 네비게이션 컨텍스트: frameId -> { 
+        //   loaderId, url, navigationType, navigationReason, started,
+        //   candidateNavigate, documentRequested, lifecycleCommit, reason
+        // }
+        const navigationContext = new Map();
+        
+        // 메인 프레임 ID 저장 (Page.getFrameTree로 확인)
+        let mainFrameIdFromTree = null;
+        let mainFrameIdConfirmed = false; // Page.getFrameTree 응답 받았는지 확인
+        
+        // 메인 프레임 판단 헬퍼 함수 (강화된 로직)
+        const isMainFrame = (frameId, parentFrameId, reason, disposition) => {
+          // 1. Page.getFrameTree에서 확인한 메인 프레임 ID와 일치 (가장 확실)
+          if (mainFrameIdFromTree && frameId === mainFrameIdFromTree) {
+            return true;
+          }
+          
+          // 2. parentFrameId가 없고, disposition이 currentTab이면 메인 프레임 가능성 높음
+          if (!parentFrameId && disposition === 'currentTab') {
+            // 주소창 직접 입력 (typed) 또는 초기 프레임 로드 (initialFrameNavigation)는 메인 프레임
+            if (reason === 'typed' || reason === 'initialFrameNavigation') {
+              return true;
+            }
+            // 다른 reason이어도 parentFrameId가 없으면 메인 프레임으로 간주
+            return true;
+          }
+          
+          // 3. frameId가 없거나 'main'이면 메인 프레임 (폴백)
+          if (!frameId || frameId === 'main' || frameId === null || frameId === undefined) {
+            return true;
+          }
+          
+          return false;
+        };
+        
+        // Page.getFrameTree로 메인 프레임 ID 확인
+        cdpWs.send(JSON.stringify({
+          id: 7,
+          method: 'Page.getFrameTree'
+        }));
+        
         cdpWs.on('message', (data) => {
           try {
             const message = JSON.parse(data.toString());
             if (message.error) {
               console.error('❌ CDP 명령 오류:', message.error);
-            } else if (message.id && message.id <= 4) {
+            } else if (message.id && message.id <= 7) {
               console.log(`✅ CDP 명령 ${message.id} 완료`);
+              
+              // Page.getFrameTree 응답 처리
+              if (message.id === 7 && message.result && message.result.frameTree) {
+                const frameTree = message.result.frameTree;
+                mainFrameIdFromTree = frameTree.frame.id;
+                mainFrameIdConfirmed = true;
+                console.log('🎯 [CDP] 메인 프레임 ID 확인:', {
+                  mainFrameId: mainFrameIdFromTree,
+                  url: frameTree.frame.url ? frameTree.frame.url.substring(0, 100) : null
+                });
+              }
             }
             
-            // Page.frameNavigated 이벤트 감지 (새 페이지로 이동 시)
-            if (message.method === 'Page.frameNavigated') {
-              const frame = message.params && message.params.frame;
-              const newUrl = frame && frame.url;
+            // 🔍 디버그: Page 관련 CDP 메시지 로그
+            if (message.method && (
+              message.method.includes('Page.') || 
+              message.method.includes('Navigation')
+            )) {
+              // params의 실제 값 표시 (URL은 축약)
+              const paramsDetail = message.params ? Object.keys(message.params).reduce((acc, key) => {
+                let value = message.params[key];
+                if (key === 'url' && typeof value === 'string') {
+                  // URL은 100자로 제한
+                  value = value.length > 100 ? value.substring(0, 100) + '...' : value;
+                } else if (key === 'frame' && typeof value === 'object') {
+                  // frame 객체는 주요 필드만 표시
+                  value = {
+                    id: value.id,
+                    url: value.url ? (value.url.length > 50 ? value.url.substring(0, 50) + '...' : value.url) : value.url,
+                    parentId: value.parentId
+                  };
+                }
+                acc[key] = value;
+                return acc;
+              }, {}) : null;
               
-              // 메인 프레임만 처리 (서브프레임 무시)
-              if (frame && frame.parentId) {
-                console.log('[CDP] 서브프레임 네비게이션 무시:', newUrl);
+              // frameId가 있는 경우 메인 프레임 여부 표시
+              const frameId = message.params && message.params.frameId;
+              const isMainFrame = !frameId || frameId === 'main' || frameId === null || frameId === undefined;
+              
+              console.log('📡 [CDP] 메시지 수신:', {
+                method: message.method,
+                params: paramsDetail,
+                isMainFrame: isMainFrame,
+                frameId: frameId || 'null/undefined',
+                timestamp: Date.now()
+              });
+            }
+            
+            // ============================================================================
+            // Page.frameRequestedNavigation 이벤트 감지 (최신 Chrome 방식)
+            // ============================================================================
+            // FrameRequestedNavigationEvent: { frameId, reason, url, disposition }
+            // reason: "linkClicked" | "formSubmitted" | "scriptInitiated" | "reload" | "typed" | etc.
+            // disposition: 'currentTab' | 'newTab' | 'newWindow' | 'download'
+            // Recorder의 핵심: reason으로 navigate/verify 판단 시작
+            if (message.method === 'Page.frameRequestedNavigation') {
+              const frameId = message.params && message.params.frameId;
+              const reason = message.params && message.params.reason; // ⭐ 핵심: reason 직접 추출
+              const url = message.params && message.params.url;
+              const disposition = message.params && message.params.disposition;
+              const parentFrameId = message.params && message.params.parentFrameId;
+              
+              // ⭐ 모든 frameRequestedNavigation 이벤트 로그 출력 (디버깅)
+              const isMainFrameResult = isMainFrame(frameId, parentFrameId, reason, disposition);
+              console.log('📡 [CDP] Page.frameRequestedNavigation (모든 프레임):', {
+                frameId: frameId || 'null/undefined',
+                reason: reason || 'unknown',
+                url: url ? url.substring(0, 100) : null,
+                disposition: disposition || 'unknown',
+                parentFrameId: parentFrameId || 'none',
+                isMainFrameFromTree: mainFrameIdFromTree ? (frameId === mainFrameIdFromTree) : 'unknown',
+                isMainFrameByParent: !parentFrameId,
+                isMainFrameByReason: (reason === 'typed' || reason === 'initialFrameNavigation') && !parentFrameId && disposition === 'currentTab',
+                isMainFrameFinal: isMainFrameResult,
+                mainFrameIdConfirmed: mainFrameIdConfirmed
+              });
+              
+              // 메인 프레임 판단 (강화된 로직 사용)
+              if (!isMainFrameResult) {
+                console.log('[CDP] Page.frameRequestedNavigation: 서브프레임 무시:', {
+                  frameId: frameId,
+                  url: url ? url.substring(0, 100) : null,
+                  reason: reason,
+                  parentFrameId: parentFrameId
+                });
                 return;
               }
               
-              console.log('🔄 새 페이지로 이동 감지:', newUrl || 'URL 정보 없음');
+              // disposition이 'currentTab'이 아니면 현재 탭 네비게이션이 아니므로 무시
+              if (disposition !== 'currentTab') {
+                console.log('[CDP] Page.frameRequestedNavigation: currentTab이 아니므로 무시:', {
+                  disposition: disposition,
+                  url: url ? url.substring(0, 100) : null
+                });
+                return;
+              }
               
-              // DOM 이벤트 캡처 스크립트 재주입
-              if (cdpWs.readyState === WebSocket.OPEN) {
+              console.log('🔗 [CDP] Page.frameRequestedNavigation 감지 (원인 저장):', {
+                frameId: frameId || 'main',
+                reason: reason || 'unknown',
+                url: url ? url.substring(0, 100) : null,
+                disposition: disposition || 'unknown'
+              });
+              
+              // ⭐ 주소창 직접 입력 감지: replaceState pending 취소
+              if (reason === 'typed' && window.__testarchitect_replaceStatePending) {
+                console.log('[CDP] Page.frameRequestedNavigation: typed 감지 → replaceState pending 취소 (navigate로 처리)');
+                delete window.__testarchitect_replaceStatePending;
+              }
+              
+              // ⭐ 메인 프레임 ID 동적 업데이트 (Page.getFrameTree 응답 전에 이벤트가 올 수 있음)
+              // parentFrameId가 없고, disposition이 currentTab이면 메인 프레임으로 간주
+              if (!mainFrameIdConfirmed && !parentFrameId && disposition === 'currentTab') {
+                if (reason === 'typed' || reason === 'initialFrameNavigation') {
+                  // 주소창 직접 입력이나 초기 프레임 로드는 확실히 메인 프레임
+                  if (!mainFrameIdFromTree || mainFrameIdFromTree !== frameId) {
+                    mainFrameIdFromTree = frameId;
+                    console.log('🎯 [CDP] 메인 프레임 ID 동적 업데이트 (frameRequestedNavigation):', {
+                      mainFrameId: mainFrameIdFromTree,
+                      reason: reason,
+                      url: url ? url.substring(0, 100) : null
+                    });
+                  }
+                }
+              }
+              
+              // frameRequestedNavigation은 "의도"만 알려줌
+              // reason을 저장하고, 실제 이벤트 생성은 lifecycle.commit에서 수행
+              const mainFrameId = frameId || 'main';
+              
+              // 네비게이션 컨텍스트 초기화 또는 업데이트
+              if (!navigationContext.has(mainFrameId)) {
+                navigationContext.set(mainFrameId, {
+                  url: url,
+                  reason: reason, // ⭐ reason 직접 저장
+                  navigationReason: lastNavigationReason, // navigationInitiatedByUser에서 받은 값 (폴백)
+                  navigationType: null,
+                  started: false,
+                  loaderId: null,
+                  candidateNavigate: false,
+                  documentRequested: false,
+                  lifecycleCommit: false
+                });
+              } else {
+                const nav = navigationContext.get(mainFrameId);
+                nav.url = url;
+                nav.reason = reason; // ⭐ reason 직접 저장
+                nav.navigationReason = lastNavigationReason;
+              }
+              
+              console.log('[CDP] Page.frameRequestedNavigation: 네비게이션 컨텍스트 저장', {
+                frameId: mainFrameId,
+                url: url,
+                reason: reason,
+                navigationReason: lastNavigationReason
+              });
+            }
+            
+            // ============================================================================
+            // Page.frameStartedNavigating 이벤트 감지 (최신 Chrome 방식)
+            // ============================================================================
+            // FrameStartedNavigatingEvent: { frameId, loaderId, url, navigationType?, isErrorPage? }
+            // navigationType: "differentDocument" | "sameDocument" (⭐ 핵심: 문서 교체 여부)
+            // 또는 "reload" | "linkClicked" | "formSubmitted" | "other" (구버전)
+            // 핵심: loaderId로 redirect 체인을 묶고, differentDocument면 candidateNavigate = true
+            if (message.method === 'Page.frameStartedNavigating') {
+              const frameId = message.params && message.params.frameId;
+              const loaderId = message.params && message.params.loaderId;
+              const url = message.params && message.params.url;
+              const navigationType = message.params && message.params.navigationType;
+              const isErrorPage = message.params && message.params.isErrorPage;
+              
+              // 메인 프레임 판단 (강화된 로직 사용)
+              // frameStartedNavigating에는 reason과 disposition이 없으므로 frameId와 mainFrameIdFromTree로만 판단
+              const isMainFrameResult = mainFrameIdFromTree ? (frameId === mainFrameIdFromTree) :
+                                       !frameId || frameId === 'main' || frameId === null || frameId === undefined;
+              
+              if (!isMainFrameResult) {
+                console.log('[CDP] Page.frameStartedNavigating: 서브프레임 무시:', {
+                  frameId: frameId,
+                  url: url ? url.substring(0, 100) : null,
+                  navigationType: navigationType,
+                  isMainFrameFromTree: mainFrameIdFromTree ? (frameId === mainFrameIdFromTree) : 'unknown'
+                });
+                return;
+              }
+              
+              const mainFrameId = frameId || 'main';
+              
+              // 필터링: chrome://, about: 내부 페이지 제거 (단, about:srcdoc은 iframe이므로 무시)
+              if (url && (url.startsWith('chrome://') || (url.startsWith('about:') && url !== 'about:blank'))) {
+                console.log('[CDP] Page.frameStartedNavigating: 내부 페이지 무시:', url);
+                return;
+              }
+              
+              // 필터링: 에러 페이지는 verify만 가능 (navigate 불가)
+              if (isErrorPage === true) {
+                console.log('[CDP] Page.frameStartedNavigating: 에러 페이지 감지:', url);
+                // 에러 페이지는 별도 처리 (현재는 스킵)
+                return;
+              }
+              
+              console.log('🚀 [CDP] Page.frameStartedNavigating 감지 (네비게이션 시작):', {
+                frameId: mainFrameId,
+                loaderId: loaderId || 'unknown',
+                url: url ? url.substring(0, 100) : null,
+                navigationType: navigationType || 'unknown',
+                isErrorPage: isErrorPage || false
+              });
+              
+              // loaderId로 redirect 체인 추적 (같은 loaderId의 마지막 URL이 최종 URL)
+              if (loaderId && url) {
+                redirectChain.set(loaderId, url);
+                console.log('[CDP] Page.frameStartedNavigating: redirect 체인 업데이트', {
+                  loaderId: loaderId,
+                  url: url,
+                  chainLength: redirectChain.size
+                });
+              }
+              
+              // 네비게이션 컨텍스트 업데이트
+              if (!navigationContext.has(mainFrameId)) {
+                navigationContext.set(mainFrameId, {
+                  url: url,
+                  reason: null,
+                  navigationReason: lastNavigationReason,
+                  navigationType: navigationType,
+                  started: true,
+                  loaderId: loaderId,
+                  candidateNavigate: false,
+                  documentRequested: false,
+                  lifecycleCommit: false
+                });
+              } else {
+                const nav = navigationContext.get(mainFrameId);
+                nav.navigationType = navigationType;
+                nav.started = true;
+                nav.loaderId = loaderId;
+                if (url) {
+                  nav.url = url;
+                }
+              }
+              
+              // ⭐ 핵심: navigationType이 "differentDocument"면 candidateNavigate = true
+              const nav = navigationContext.get(mainFrameId);
+              if (navigationType === 'differentDocument') {
+                nav.candidateNavigate = true;
+                console.log('[CDP] Page.frameStartedNavigating: differentDocument 감지 → candidateNavigate = true');
+              } else if (navigationType === 'sameDocument') {
+                nav.candidateNavigate = false;
+                console.log('[CDP] Page.frameStartedNavigating: sameDocument 감지 → candidateNavigate = false (SPA)');
+              }
+              
+              // navigationType 저장 (navigate/verifyUrl 구분에 사용)
+              lastNavigationType = navigationType || null;
+              lastNavigationFrameId = mainFrameId;
+              lastNavigationUrl = url;
+              
+              console.log('[CDP] Page.frameStartedNavigating: 네비게이션 컨텍스트 업데이트', {
+                navigationType: navigationType,
+                candidateNavigate: nav.candidateNavigate,
+                loaderId: loaderId
+              });
+            }
+            
+            // ============================================================================
+            // Page.navigationInitiatedByUser 이벤트 감지 (Chrome Recorder 핵심 신호)
+            // ============================================================================
+            // 이 이벤트는 Page.frameNavigated보다 먼저 발생하므로, navigationReason을 저장해두었다가
+            // Page.frameNavigated에서 활용
+            // 우선순위: navigationInitiatedByUser > frameRequestedNavigation
+            if (message.method === 'Page.navigationInitiatedByUser') {
+              const frameId = message.params && message.params.frameId;
+              const navigationReason = message.params && message.params.navigationReason;
+              
+              // 메인 프레임만 처리
+              if (frameId && frameId !== 'main') {
+                console.log('[CDP] 서브프레임 navigationInitiatedByUser 무시:', navigationReason);
+                return;
+              }
+              
+              lastNavigationReason = navigationReason;
+              lastNavigationFrameId = frameId;
+              
+              // ⭐ 주소창 직접 입력 감지: replaceState pending 취소
+              if (navigationReason === 'addressBar' && window.__testarchitect_replaceStatePending) {
+                console.log('[CDP] Page.navigationInitiatedByUser: addressBar 감지 → replaceState pending 취소 (navigate로 처리)');
+                delete window.__testarchitect_replaceStatePending;
+              }
+              
+              console.log('🎯 [CDP] Page.navigationInitiatedByUser 감지:', {
+                frameId: frameId || 'main',
+                navigationReason: navigationReason || 'unknown',
+                description: navigationReason === 'addressBar' ? '주소창 직접 입력' : 
+                             navigationReason === 'linkClick' ? '링크 클릭' : 
+                             navigationReason === 'formSubmissionGet' || navigationReason === 'formSubmissionPost' ? '폼 제출' :
+                             '기타'
+              });
+              
+              // Chrome Recorder 방식: navigationReason에 따라 즉시 판단 가능
+              // 하지만 실제 URL 변경은 Page.frameNavigated에서 처리하므로 여기서는 정보만 저장
+            }
+            
+            // ============================================================================
+            // Page.navigatedWithinDocument 이벤트 감지 (SPA 내부 네비게이션 - pushState/replaceState)
+            // ============================================================================
+            // 최신 Chrome: SPA 내부 네비게이션은 navigatedWithinDocument로 처리
+            // 사용자 상호작용으로 인한 것으로 간주하여 verifyUrl 생성
+            if (message.method === 'Page.navigatedWithinDocument') {
+              const url = message.params && message.params.url;
+              const frameId = message.params && message.params.frameId;
+              
+              // 메인 프레임만 처리
+              if (frameId && frameId !== 'main') {
+                console.log('[CDP] 서브프레임 내부 네비게이션 무시:', url);
+                return;
+              }
+              
+              console.log('📄 [CDP] Page.navigatedWithinDocument 감지 (SPA 내부 네비게이션):', url);
+              
+              // SPA 내부 네비게이션은 사용자 상호작용으로 인한 것으로 간주 → verifyUrl 생성
+              if (cdpWs.readyState === WebSocket.OPEN && url && globalRecordingState) {
+                try {
+                  const escapedUrl = JSON.stringify(url);
                 cdpWs.send(JSON.stringify({
                   id: Date.now(),
                   method: 'Runtime.evaluate',
                   params: {
-                    expression: domCaptureScript,
+                      expression: `
+                        (function() {
+                          const currentUrl = window.location.href;
+                          const targetUrl = ${escapedUrl};
+                          
+                          // URL이 변경되었는지 확인
+                          if (currentUrl === targetUrl || currentUrl.startsWith(targetUrl.split('?')[0])) {
+                            // SPA 내부 네비게이션은 사용자 상호작용으로 간주 → verifyUrl
+                            if (window.__testarchitect_createNavigationEvent) {
+                              window.__testarchitect_createNavigationEvent(currentUrl, true, 'cdp-navigatedWithinDocument');
+                              console.log('[DOM Capture] Page.navigatedWithinDocument: verifyUrl 이벤트 생성 완료', currentUrl);
+                            } else {
+                              console.error('[DOM Capture] window.__testarchitect_createNavigationEvent 함수가 없습니다!');
+                            }
+                          }
+                        })();
+                      `,
                     userGesture: false
                   }
                 }));
-                console.log('[CDP] 새 페이지에 DOM 캡처 스크립트 재주입 완료');
+                } catch (err) {
+                  console.error('[CDP] navigatedWithinDocument 이벤트 생성 실패:', err);
+                }
               }
               
-              // URL 변경 정보를 recorderWindow에 전달 (Chrome Extension 없이도 작동)
-              if (newUrl && globalRecordingState) {
+              // URL 변경 정보 전달
+              if (url && globalRecordingState) {
                 const timestamp = Date.now();
                 const urlChangeData = {
-                  url: newUrl,
-                  timestamp: timestamp
+                  url: url,
+                  timestamp: timestamp,
+                  isSPANavigation: true,
+                  source: 'cdp-navigatedWithinDocument'
                 };
                 
-                // url-changed 메시지 전송 (녹화 상태 유지용)
                 if (recorderWindow && !recorderWindow.isDestroyed() && recorderWindow.webContents) {
                   recorderWindow.webContents.send('url-changed', urlChangeData);
-                  console.log('[CDP] URL 변경 정보를 recorderWindow에 전달:', newUrl);
                 }
-                
                 if (mainWindow && mainWindow.webContents) {
                   mainWindow.webContents.send('url-changed', urlChangeData);
                 }
-                
-                // 주의: navigate/verifyUrl 이벤트는 injected script의 checkUrlChange에서 생성됨
-                // CDP에서는 URL 변경 알림만 전달하고, 실제 이벤트 생성은 injected script에서 처리
-                // 이렇게 하면 스코어 기반 로직이 제대로 동작함
-                console.log('[CDP] URL 변경 감지 (injected script의 checkUrlChange에서 이벤트 생성 예정):', newUrl);
               }
             }
+            
+            // ============================================================================
+            // Page.lifecycleEvent 이벤트 감지 (페이지 생명주기)
+            // ============================================================================
+            // Recorder 핵심: lifecycle.commit에서 최종 판단 수행
+            // commit → DOMContentLoaded → load 순서
+            if (message.method === 'Page.lifecycleEvent') {
+              const frameId = message.params && message.params.frameId;
+              const name = message.params && message.params.name;
+              const loaderId = message.params && message.params.loaderId;
+              
+              // ⭐ 모든 lifecycle 이벤트 로그 (디버깅)
+              const isMainFrameFromTree = mainFrameIdFromTree ? (frameId === mainFrameIdFromTree) : 'unknown';
+              const nav = navigationContext.get(frameId || 'main');
+              
+              console.log('🔄 [CDP] Page.lifecycleEvent (모든 프레임):', {
+                frameId: frameId || 'null/undefined',
+                name: name || 'unknown',
+                loaderId: loaderId || 'none',
+                isMainFrameFromTree: isMainFrameFromTree,
+                hasNavigationContext: !!nav,
+                navigationContextStarted: nav?.started || false,
+                navigationContextReason: nav?.reason || 'none',
+                navigationContextCandidateNavigate: nav?.candidateNavigate || false,
+                navigationContextDocumentRequested: nav?.documentRequested || false,
+                navigationContextLifecycleCommit: nav?.lifecycleCommit || false
+              });
+              
+              // 메인 프레임 판단 (강화된 로직)
+              // lifecycleEvent에는 reason과 disposition이 없으므로 frameId와 mainFrameIdFromTree로만 판단
+              const isMainFrameResult = mainFrameIdFromTree ? (frameId === mainFrameIdFromTree) :
+                                       !frameId || frameId === 'main' || frameId === null || frameId === undefined;
+              
+              if (!isMainFrameResult) {
+                console.log('[CDP] Page.lifecycleEvent: 서브프레임 무시:', {
+                  frameId: frameId,
+                  name: name,
+                  isMainFrameFromTree: isMainFrameFromTree,
+                  mainFrameIdFromTree: mainFrameIdFromTree || 'not set'
+                });
+                return;
+              }
+              
+              const mainFrameId = frameId || 'main';
+              
+              console.log('🔄 [CDP] Page.lifecycleEvent 감지 (메인 프레임):', {
+                frameId: mainFrameId,
+                name: name,
+                loaderId: loaderId || 'none'
+              });
+              
+              // 네비게이션 컨텍스트 확인
+              const mainNav = navigationContext.get(mainFrameId);
+              if (!mainNav || !mainNav.started) {
+                console.log('[CDP] Page.lifecycleEvent: 네비게이션 컨텍스트 없음 또는 started=false:', {
+                  frameId: mainFrameId,
+                  name: name,
+                  hasNav: !!mainNav,
+                  started: mainNav?.started || false
+                });
+                return;
+              }
+              
+              // lifecycle.commit 시점에서 최종 판단 및 이벤트 생성
+              if (name === 'commit') {
+                mainNav.lifecycleCommit = true;
+                console.log('✅ [CDP] Page.lifecycleEvent: commit 감지 (메인 프레임) → lifecycleCommit = true', {
+                  frameId: mainFrameId,
+                  loaderId: loaderId || 'none',
+                  url: mainNav.url || 'none',
+                  reason: mainNav.reason || 'none',
+                  candidateNavigate: mainNav.candidateNavigate,
+                  documentRequested: mainNav.documentRequested
+                });
+                
+                // ⭐ Recorder 최종 판단 로직
+                // candidateNavigate + documentRequested → navigate
+                // 그 외 → verify
+                const shouldNavigate = mainNav.candidateNavigate && mainNav.documentRequested;
+                const reason = mainNav.reason || mainNav.navigationReason;
+                
+                // reason 기반 추가 판단
+                // scriptInitiated는 navigate로 기록 안 함 (SPA pushState)
+                if (reason === 'scriptInitiated') {
+                  console.log('[CDP] Page.lifecycleEvent: scriptInitiated 감지 → verify로 처리');
+                  // verify로 처리 (이벤트는 navigatedWithinDocument에서 생성됨)
+                  navigationContext.delete(mainFrameId);
+                  return;
+                }
+                
+                // initialFrameNavigation은 초기 프레임 로드이므로 verifyUrl로 처리
+                if (reason === 'initialFrameNavigation') {
+                  console.log('[CDP] Page.lifecycleEvent: initialFrameNavigation 감지 → verifyUrl로 처리');
+                  stepType = 'verifyUrl';
+                  isUserInteraction = true;
+                  // 계속 진행하여 이벤트 생성
+                }
+                
+                // typed, reload, linkClicked, formSubmitted 등은 reason 기반 판단
+                let isUserInteraction = false;
+                let stepType = 'navigate';
+                
+                // History 관련 reason 처리
+                if (reason === 'restore' || reason === 'restoreWithPost' || 
+                    reason === 'historySameDocument' || reason === 'historyDifferentDocument') {
+                  // History 네비게이션 → navigate (뒤로/앞으로)
+                  stepType = 'navigate';
+                  isUserInteraction = false; // 브라우저 네비게이션
+                  console.log('[CDP] Page.lifecycleEvent: history 네비게이션 감지', reason);
+                }
+                // Document 타입 관련 reason 처리
+                else if (reason === 'sameDocument') {
+                  // same-document → verify (SPA 내부 네비게이션)
+                  stepType = 'verifyUrl';
+                  isUserInteraction = true;
+                  console.log('[CDP] Page.lifecycleEvent: sameDocument 감지 → verifyUrl');
+                } else if (reason === 'differentDocument') {
+                  // different-document → navigate (페이지 로드)
+                  stepType = 'navigate';
+                  isUserInteraction = false;
+                  console.log('[CDP] Page.lifecycleEvent: differentDocument 감지 → navigate');
+                }
+                // Reload 관련 reason 처리
+                else if (reason === 'reload' || reason === 'reloadBypassingCache') {
+                  // 새로고침 → navigate
+                  stepType = 'navigate';
+                  isUserInteraction = false;
+                  console.log('[CDP] Page.lifecycleEvent: reload 감지', reason);
+                }
+                // 기존 로직 (shouldNavigate 기반 판단)
+                else if (shouldNavigate) {
+                  // candidateNavigate + documentRequested → navigate
+                  stepType = 'navigate';
+                  // reason이 linkClicked, formSubmitted면 verifyUrl
+                  if (reason === 'linkClicked' || reason === 'formSubmitted') {
+                    stepType = 'verifyUrl';
+                    isUserInteraction = true;
+                  } else if (reason === 'typed' || reason === 'reload' || reason === 'reloadBypassingCache') {
+                    stepType = 'navigate';
+                    isUserInteraction = false;
+                  }
+                } else {
+                  // candidateNavigate가 false거나 documentRequested가 false → verify
+                  stepType = 'verifyUrl';
+                  isUserInteraction = true;
+                }
+                
+                console.log('🎯 [CDP] Page.lifecycleEvent: 최종 판단 (메인 프레임)', {
+                  frameId: mainFrameId,
+                  loaderId: loaderId || 'none',
+                  candidateNavigate: mainNav.candidateNavigate,
+                  documentRequested: mainNav.documentRequested,
+                  lifecycleCommit: mainNav.lifecycleCommit,
+                  reason: reason,
+                  stepType: stepType,
+                  isUserInteraction: isUserInteraction,
+                  finalUrl: finalUrl
+                });
+                
+                // loaderId 기준으로 redirect 체인의 최종 URL 확정
+                let finalUrl = mainNav.url;
+                if (mainNav.loaderId && redirectChain.has(mainNav.loaderId)) {
+                  finalUrl = redirectChain.get(mainNav.loaderId);
+                  console.log('[CDP] Page.lifecycleEvent: redirect 체인에서 최종 URL 확정', {
+                    loaderId: mainNav.loaderId,
+                    finalUrl: finalUrl,
+                    originalUrl: mainNav.url
+                  });
+                }
+                
+                // 최종 URL로 이벤트 생성
+                if (finalUrl && globalRecordingState) {
+                  console.log('[CDP] Page.lifecycleEvent: 최종 URL로 이벤트 생성 시작', {
+                    finalUrl: finalUrl,
+                    stepType: stepType,
+                    isUserInteraction: isUserInteraction
+                  });
+                  
+                  // 약간의 지연을 두어 URL이 완전히 변경될 시간 확보
+                  setTimeout(() => {
+                    if (cdpWs.readyState === WebSocket.OPEN) {
+                      try {
+                        const escapedUrl = JSON.stringify(finalUrl);
+                        const escapedIsUserInteraction = JSON.stringify(isUserInteraction);
+                        
+                        cdpWs.send(JSON.stringify({
+                          id: Date.now(),
+                          method: 'Runtime.evaluate',
+                          params: {
+                            expression: `
+                              (function() {
+                                const currentUrl = window.location.href;
+                                const targetUrl = ${escapedUrl};
+                                const isUserInteraction = ${escapedIsUserInteraction};
+                                
+                                console.log('[DOM Capture] Page.lifecycleEvent: 최종 URL 확인', {
+                                  currentUrl: currentUrl,
+                                  targetUrl: targetUrl,
+                                  isUserInteraction: isUserInteraction,
+                                  stepType: '${stepType}'
+                                });
+                                
+                                // URL 비교 (더 유연한 방식)
+                                const currentUrlObj = new URL(currentUrl);
+                                const targetUrlObj = new URL(targetUrl);
+                                const urlMatches = currentUrl === targetUrl || 
+                                                  (currentUrlObj.origin + currentUrlObj.pathname === targetUrlObj.origin + targetUrlObj.pathname) ||
+                                                  currentUrl.includes(targetUrl.split('?')[0]) ||
+                                                  targetUrl.includes(currentUrl.split('?')[0]);
+                                
+                                if (urlMatches && window.__testarchitect_createNavigationEvent) {
+                                  window.__testarchitect_createNavigationEvent(currentUrl, isUserInteraction, 'cdp-lifecycleEvent-commit');
+                                  console.log('[DOM Capture] ✅ Page.lifecycleEvent: 이벤트 생성 완료', {
+                                    url: currentUrl,
+                                    stepType: '${stepType}'
+                                  });
+                                  return { success: true, url: currentUrl };
+                                } else if (!urlMatches) {
+                                  console.warn('[DOM Capture] ⚠️ Page.lifecycleEvent: URL 불일치, targetUrl로 강제 생성', {
+                                    currentUrl: currentUrl,
+                                    targetUrl: targetUrl
+                                  });
+                                  if (window.__testarchitect_createNavigationEvent) {
+                                    window.__testarchitect_createNavigationEvent(targetUrl, isUserInteraction, 'cdp-lifecycleEvent-commit-fallback');
+                                    return { success: true, url: targetUrl, fallback: true };
+                                  }
+                                } else {
+                                  console.error('[DOM Capture] ❌ window.__testarchitect_createNavigationEvent 함수가 없습니다!');
+                                  return { success: false, error: 'function_not_found' };
+                                }
+                              })();
+                            `,
+                            userGesture: false
+                          }
+                        }));
+                      } catch (err) {
+                        console.error('[CDP] lifecycleEvent 이벤트 생성 실패:', err);
+                      }
+                    }
+                  }, 100);
+                  
+                  // redirect 체인에서 loaderId 제거
+                  if (mainNav.loaderId) {
+                    redirectChain.delete(mainNav.loaderId);
+                  }
+                  
+                  // 네비게이션 컨텍스트 정리
+                  navigationContext.delete(mainFrameId);
+                  console.log('[CDP] Page.lifecycleEvent: 네비게이션 컨텍스트 정리 완료', {
+                    frameId: mainFrameId,
+                    loaderId: mainNav.loaderId || 'none'
+                  });
+                  
+                  console.log('[CDP] Page.lifecycleEvent: 네비게이션 컨텍스트 정리 완료');
+                }
+              }
+            }
+            
+            // ============================================================================
+            // Network.requestWillBeSent 이벤트 감지 (Document 요청 확인)
+            // ============================================================================
+            // Recorder 핵심: Document 타입 요청이 있으면 documentRequested = true
+            if (message.method === 'Network.requestWillBeSent') {
+              const request = message.params && message.params.request;
+              const loaderId = message.params && message.params.loaderId;
+              const type = message.params && message.params.type;
+              
+              // Document 타입 요청만 처리
+              if (type === 'Document') {
+                console.log('📄 [CDP] Network.requestWillBeSent: Document 요청 감지', {
+                  url: request && request.url ? request.url.substring(0, 100) : null,
+                  loaderId: loaderId || 'unknown'
+                });
+                
+                // loaderId로 네비게이션 컨텍스트 찾기
+                for (const [frameId, nav] of navigationContext.entries()) {
+                  if (nav.loaderId === loaderId) {
+                    nav.documentRequested = true;
+                    console.log('[CDP] Network.requestWillBeSent: documentRequested = true', {
+                      frameId: frameId,
+                      loaderId: loaderId,
+                      url: request && request.url ? request.url.substring(0, 100) : null
+                    });
+                    break;
+                  }
+                }
+              }
+            }
+            
+            // ============================================================================
+            // Page.loadEventFired 이벤트 감지 (페이지 로드 완료)
+            // ============================================================================
+            // 최신 Chrome: 페이지 로드 완료 시점에서 DOM 스크립트 재주입
+            // (이벤트 생성은 lifecycle.commit에서 수행)
+            if (message.method === 'Page.loadEventFired') {
+              const frameId = message.params && message.params.frameId;
+              
+              // 메인 프레임만 처리
+              const mainFrameId = frameId || 'main';
+              if (frameId && frameId !== 'main') {
+                return;
+              }
+              
+              console.log('✅ [CDP] Page.loadEventFired 감지 (페이지 로드 완료)');
+              
+              // DOM 이벤트 캡처 스크립트 재주입 (새 페이지 로드 완료 후)
+              // (이벤트 생성은 lifecycle.commit에서 수행)
+              if (cdpWs.readyState === WebSocket.OPEN && globalRecordingState) {
+                setTimeout(() => {
+                  try {
+                    cdpWs.send(JSON.stringify({
+                      id: Date.now(),
+                      method: 'Runtime.evaluate',
+                      params: {
+                        expression: domCaptureScript,
+                        userGesture: false
+                      }
+                    }));
+                    console.log('[CDP] 페이지 로드 완료 후 DOM 캡처 스크립트 재주입');
+                  } catch (err) {
+                    console.error('[CDP] 스크립트 재주입 실패:', err);
+                  }
+                }, 200);
+              }
+            }
+            
+            // Page.frameNavigated는 최신 Chrome에서 더 이상 사용되지 않음
+            // 최신 Chrome: frameRequestedNavigation → frameStartedNavigating → loadEventFired 순서 사용
+            // 삭제됨
           } catch (error) {
             // 무시 (일부 메시지는 파싱 불가능할 수 있음)
           }
@@ -2752,13 +3223,18 @@ function convertEventToStep(event, index = 0) {
     console.log(`[Recording] xpath에서 target 추출: ${step.target}`);
   } else if (action === 'navigate') {
     // navigate의 경우 target이 없을 수 있음 (value가 URL)
-    step.target = event.value || event.url || null;
+    // event.value, event.url, event.page?.url 순서로 확인
+    step.target = event.value || event.url || event.page?.url || null;
   }
 
   // navigate 이벤트의 경우 target을 URL로 설정
-  if (event.type === 'navigate' && event.value) {
-    step.target = event.value;
+  if (event.type === 'navigate' || action === 'navigate') {
+    // event.value, event.url, event.page?.url 순서로 확인
+    const navigateUrl = event.value || event.url || event.page?.url || null;
+    if (navigateUrl) {
+      step.target = navigateUrl;
     step.value = null;
+    }
   }
 
   // wait 이벤트의 경우 조건 추가
@@ -2783,11 +3259,13 @@ function convertEventToStep(event, index = 0) {
   }
 
   // URL 정보는 description에 추가 (선택사항)
-  if (event.url && event.url !== step.target) {
+  // event.url 또는 event.page.url에서 URL 추출
+  const eventUrl = event.url || event.page?.url || null;
+  if (eventUrl && eventUrl !== step.target) {
     if (step.description) {
-      step.description += ` | url:${event.url}`;
+      step.description += ` | url:${eventUrl}`;
     } else {
-      step.description = `url:${event.url}`;
+      step.description = `url:${eventUrl}`;
     }
   }
 
@@ -5145,3 +5623,4 @@ ipcMain.handle('api-check-server', async (event) => {
     };
   }
 });
+

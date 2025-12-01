@@ -1,0 +1,59 @@
+// Copyright 2023 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+import * as SDK from '../../../core/sdk/sdk.js';
+
+import type {Screenshot} from './ScreenshotStorage.js';
+
+const SCREENSHOT_WIDTH = 160;       // px
+const SCREENSHOT_MAX_HEIGHT = 240;  // px
+
+async function captureScreenshot(): Promise<Screenshot> {
+  const mainTarget = SDK.TargetManager.TargetManager.instance().primaryPageTarget();
+  if (!mainTarget) {
+    throw new Error('Could not find main target');
+  }
+
+  const {data} = await mainTarget.pageAgent().invoke_captureScreenshot({});
+  if (!data) {
+    // 1x1 px empty image.
+    return 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' as Screenshot;
+  }
+  return ('data:image/png;base64,' + data) as Screenshot;
+}
+
+export async function resizeScreenshot(data: Screenshot): Promise<Screenshot> {
+  const img = new Image();
+  const imageLoaded = new Promise(resolve => {
+    img.onload = resolve;
+  });
+  img.src = data;
+  await imageLoaded;
+
+  const aspectRatio = img.width / img.height;
+  const canvas = new OffscreenCanvas(
+      SCREENSHOT_WIDTH,
+      Math.min(
+          SCREENSHOT_MAX_HEIGHT,
+          SCREENSHOT_WIDTH / aspectRatio,
+          ));
+  const context = canvas.getContext('2d', {willReadFrequently: true});
+  if (!context) {
+    throw new Error('Could not create context.');
+  }
+  const bitmap = await createImageBitmap(img, {
+    resizeWidth: SCREENSHOT_WIDTH,
+    resizeQuality: 'high',
+  });
+  context.drawImage(bitmap, 0, 0);
+
+  const blob = await canvas.convertToBlob({type: 'image/png'});
+  const url = URL.createObjectURL(blob);
+  return url as Screenshot;
+}
+
+export async function takeScreenshot(): Promise<Screenshot> {
+  const data = await captureScreenshot();
+  return await resizeScreenshot(data);
+}

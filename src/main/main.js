@@ -909,9 +909,132 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
   // ============================================================================
   let wsConnection = null;
   let isRecording = false;
-  let lastUrl = window.location.href;
-  let lastTitle = document.title;
   let urlCheckInterval = null;
+  
+  // ============================================================================
+  // URL 정규화 함수: 의미 있는 부분만 비교 (쿼리 파라미터 제외)
+  // G마켓 같은 SPA에서 동적 쿼리 파라미터 변경으로 인한 중복 navigate 이벤트 방지
+  // ============================================================================
+  function normalizeUrl(url) {
+    if (!url) return '';
+    // about:blank 같은 특수 URL은 그대로 반환 (비교 불가)
+    if (url === 'about:blank' || url.startsWith('about:')) {
+      return url;
+    }
+    try {
+      const urlObj = new URL(url);
+      // origin + pathname만 비교 (쿼리 파라미터, hash 제외)
+      // 실제 페이지 이동만 감지하도록 함
+      return urlObj.origin + urlObj.pathname;
+    } catch (e) {
+      // URL 파싱 실패 시 원본 반환
+      console.warn('[DOM Capture] URL 정규화 실패:', url, e);
+      return url;
+    }
+  }
+  
+  // ============================================================================
+  // URL Tracker: 하이브리드 방식 (window 객체 + localStorage)
+  // ============================================================================
+  // window 객체에 URL tracker 객체 생성 (스크립트 재주입 시에도 값 유지)
+  if (!window.__testarchitect_url_tracker__) {
+    window.__testarchitect_url_tracker__ = {
+      lastUrl: null,
+      lastTitle: null,
+      initialized: false
+    };
+  }
+  
+  // URL Tracker 초기화 함수
+  function initializeUrlTracker() {
+    const tracker = window.__testarchitect_url_tracker__;
+    const currentUrl = window.location.href;
+    const currentTitle = document.title;
+    
+    // 이미 초기화되었으면 window 객체에서 복원
+    if (tracker.initialized && tracker.lastUrl) {
+      console.log('[DOM Capture] window 객체에서 lastUrl 복원:', tracker.lastUrl);
+      return;
+    }
+    
+    // 첫 초기화: localStorage에서 복원 시도
+    try {
+      const storedUrl = localStorage.getItem('testarchitect_lastRecordedUrl');
+      const recordingLastUrl = getRecordingLastUrl();
+      
+      // 우선순위: recordingLastUrl > storedUrl
+      const urlToUse = recordingLastUrl || storedUrl;
+      
+      if (urlToUse) {
+        const normalizedCurrentUrl = normalizeUrl(currentUrl);
+        const normalizedUrlToUse = normalizeUrl(urlToUse);
+        
+        if (normalizedUrlToUse !== normalizedCurrentUrl) {
+          // 정규화된 URL이 다르면 실제 페이지 이동
+          tracker.lastUrl = urlToUse;
+          tracker.lastTitle = null;
+          console.log('[DOM Capture] localStorage에서 lastUrl 복원 (이전 페이지):', tracker.lastUrl);
+          console.log('[DOM Capture] 현재 페이지 URL:', currentUrl);
+          console.log('[DOM Capture] 정규화 비교 - 이전:', normalizedUrlToUse, '현재:', normalizedCurrentUrl);
+        } else {
+          // 정규화된 URL이 같지만 원본이 다를 수 있음
+          if (urlToUse !== currentUrl) {
+            // 원본 URL이 다르면 urlToUse 유지
+            tracker.lastUrl = urlToUse;
+            tracker.lastTitle = null;
+            console.log('[DOM Capture] lastUrl 유지 (정규화된 URL 동일, 원본 URL 다름):', tracker.lastUrl);
+          } else {
+            // 원본도 같으면 현재 URL로 초기화
+            tracker.lastUrl = currentUrl;
+            tracker.lastTitle = currentTitle;
+            console.log('[DOM Capture] lastUrl 초기화 (같은 URL):', tracker.lastUrl);
+          }
+        }
+      } else {
+        // 저장된 URL이 없으면 현재 URL로 초기화 (첫 로드)
+        tracker.lastUrl = currentUrl;
+        tracker.lastTitle = currentTitle;
+        console.log('[DOM Capture] lastUrl 초기화 (localStorage 없음, 첫 로드):', tracker.lastUrl);
+      }
+      
+      tracker.initialized = true;
+    } catch (err) {
+      tracker.lastUrl = currentUrl;
+      tracker.lastTitle = currentTitle;
+      tracker.initialized = true;
+      console.log('[DOM Capture] lastUrl 초기화 (에러):', tracker.lastUrl);
+    }
+  }
+  
+  // URL Tracker 업데이트 함수 (window 객체만 업데이트)
+  // localStorage 저장은 별도로 처리 (이전 페이지 URL 저장용)
+  function updateUrlTracker(newUrl, newTitle) {
+    const tracker = window.__testarchitect_url_tracker__;
+    tracker.lastUrl = newUrl;
+    tracker.lastTitle = newTitle || document.title;
+    // localStorage 저장은 checkUrlChange에서 별도로 처리 (이전 페이지 URL 저장)
+  }
+  
+  // URL Tracker 값 가져오기
+  function getUrlTracker() {
+    const tracker = window.__testarchitect_url_tracker__;
+    return {
+      lastUrl: tracker.lastUrl,
+      lastTitle: tracker.lastTitle
+    };
+  }
+  
+  // URL Tracker 초기화 실행
+  initializeUrlTracker();
+  
+  // 편의를 위한 로컬 변수 (window 객체의 참조)
+  let lastUrl = null;
+  let lastTitle = null;
+  
+  // 초기화 후 값 설정
+  const tracker = getUrlTracker();
+  lastUrl = tracker.lastUrl;
+  lastTitle = tracker.lastTitle;
   
   // ============================================================================
   // 요소 하이라이트 기능 (record/content.js 참고)
@@ -1217,6 +1340,37 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
     }
   }
   
+  // localStorage에서 recordingLastUrl 가져오기 (외부에서 관리)
+  function getRecordingLastUrl() {
+    try {
+      const stored = localStorage.getItem('testarchitect_recordingLastUrl');
+      return stored || null;
+    } catch (err) {
+      console.error('[DOM Capture] recordingLastUrl 읽기 실패:', err);
+      return null;
+    }
+  }
+  
+  // localStorage에 recordingLastUrl 저장 (외부에서 관리)
+  function saveRecordingLastUrl(url) {
+    try {
+      localStorage.setItem('testarchitect_recordingLastUrl', url);
+      console.log('[DOM Capture] recordingLastUrl 저장:', url);
+    } catch (err) {
+      console.error('[DOM Capture] recordingLastUrl 저장 실패:', err);
+    }
+  }
+  
+  // recordingLastUrl 초기화 (녹화 종료 시 선택적)
+  function clearRecordingLastUrl() {
+    try {
+      localStorage.removeItem('testarchitect_recordingLastUrl');
+      console.log('[DOM Capture] recordingLastUrl 초기화');
+    } catch (err) {
+      console.error('[DOM Capture] recordingLastUrl 초기화 실패:', err);
+    }
+  }
+  
   // localStorage에서 녹화 상태 복원 (새 페이지 로드 시)
   function restoreRecordingState() {
     try {
@@ -1256,48 +1410,339 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
   
   // ============================================================================
   // 사용자 상호작용으로 인한 URL 변경 추적 (navigate vs verifyUrl 구분)
+  // 개선된 가중치 기반 스코어링 시스템
   // ============================================================================
-  let lastUserInteractionTimestamp = null; // 마지막 사용자 상호작용 시각
-  let lastUserInteractionType = null; // 'click' | 'keydown' | 'submit' | 'history'
   const USER_INTERACTION_TO_NAVIGATION_WINDOW = 2000; // 상호작용 후 2초 이내 URL 변경이면 사용자 상호작용으로 인한 것으로 간주
+  const NAVIGATION_DETECTION_THRESHOLD = 20; // 스코어 임계값 (테스트로 조정 가능)
+  
+  // 상호작용 저장 (sessionStorage 사용: 탭 단위, 페이지 간 공유)
+  function saveLastInteraction(type, detail) {
+    try {
+      const obj = {
+        timestamp: Date.now(),
+        type: type, // 'pointer' | 'keydown' | 'submit' | 'history' | 'click'
+        detail: detail || {}
+      };
+      sessionStorage.setItem('__testarchitect_lastInteraction__', JSON.stringify(obj));
+      // localStorage에도 저장 (페이지 간 공유)
+      localStorage.setItem('testarchitect_lastUserInteractionTimestamp', obj.timestamp.toString());
+      localStorage.setItem('testarchitect_lastUserInteractionType', type);
+      if (detail && typeof detail === 'object') {
+        localStorage.setItem('testarchitect_lastUserInteractionDetail', JSON.stringify(detail));
+      }
+    } catch (err) {
+      console.error('[DOM Capture] 상호작용 저장 실패:', err);
+    }
+  }
+  
+  // 상호작용 로드
+  function getLastInteraction() {
+    try {
+      // sessionStorage 우선, 없으면 localStorage
+      const sessionData = sessionStorage.getItem('__testarchitect_lastInteraction__');
+      if (sessionData) {
+        return JSON.parse(sessionData);
+      }
+      // localStorage에서 복원
+      const timestamp = localStorage.getItem('testarchitect_lastUserInteractionTimestamp');
+      const type = localStorage.getItem('testarchitect_lastUserInteractionType');
+      const detailStr = localStorage.getItem('testarchitect_lastUserInteractionDetail');
+      if (timestamp) {
+        return {
+          timestamp: parseInt(timestamp, 10),
+          type: type || null,
+          detail: detailStr ? JSON.parse(detailStr) : {}
+        };
+      }
+      return null;
+    } catch (err) {
+      console.error('[DOM Capture] 상호작용 로드 실패:', err);
+      return null;
+    }
+  }
+  
+  // 상호작용 초기화
+  function clearLastInteraction() {
+    try {
+      sessionStorage.removeItem('__testarchitect_lastInteraction__');
+      localStorage.removeItem('testarchitect_lastUserInteractionTimestamp');
+      localStorage.removeItem('testarchitect_lastUserInteractionType');
+      localStorage.removeItem('testarchitect_lastUserInteractionDetail');
+    } catch (err) {
+      // 무시
+    }
+  }
+  
+  // ============================================================================
+  // 개선된 Navigation 타입 감지 함수 (가중치 기반 스코어링)
+  // ============================================================================
+  function detectNavigationType(currentUrl, previousUrl) {
+    const now = Date.now();
+    let score = 0;
+    const reasons = [];
+    
+    // 1. Navigation API 확인
+    let navType = null;
+    let navTypeNumber = null;
+    try {
+      const navEntries = performance.getEntriesByType('navigation');
+      if (navEntries && navEntries.length > 0) {
+        navType = navEntries[0].type;
+        if (navType === 'navigate') navTypeNumber = 0;
+        else if (navType === 'reload') navTypeNumber = 1;
+        else if (navType === 'back_forward') navTypeNumber = 2;
+      } else if (performance.navigation) {
+        navTypeNumber = performance.navigation.type;
+        navType = navTypeNumber === 0 ? 'navigate' : (navTypeNumber === 1 ? 'reload' : 'back_forward');
+      }
+    } catch (e) {
+      console.warn('[DOM Capture] Navigation API 접근 실패:', e);
+    }
+    
+    // 2. Referrer 확인
+    const referrer = document.referrer || '';
+    const hasReferrer = referrer.length > 0;
+    let isSameOriginReferrer = false;
+    try {
+      if (hasReferrer) {
+        isSameOriginReferrer = new URL(referrer).origin === window.location.origin;
+      }
+    } catch (e) {
+      isSameOriginReferrer = false;
+    }
+    
+    // 3. User Gesture 확인 (sessionStorage/localStorage)
+    const lastInteraction = getLastInteraction();
+    let validInteraction = null;
+    if (lastInteraction && lastInteraction.timestamp) {
+      const timeSince = now - lastInteraction.timestamp;
+      if (timeSince < USER_INTERACTION_TO_NAVIGATION_WINDOW) {
+        validInteraction = lastInteraction;
+      } else {
+        // 오래된 값은 무시
+        clearLastInteraction();
+      }
+    }
+    
+    const hasRecentGesture = validInteraction !== null;
+    const interactionType = validInteraction ? validInteraction.type : null;
+    const interactionDetail = validInteraction ? validInteraction.detail : null;
+    const timeSinceLastInteraction = validInteraction ? (now - validInteraction.timestamp) : Infinity;
+    
+    // 4. History API 확인
+    const wasHistoryAPI = interactionType === 'history';
+    
+    // 5. 가중치 기반 스코어링
+    // 사용자 상호작용 신호를 먼저 계산 (양수 점수)
+    let interactionScore = 0;
+    if (hasRecentGesture) {
+      const timeMs = Math.round(timeSinceLastInteraction);
+      // 상호작용 타입별 가중치 차등
+      if (interactionType === 'submit') {
+        interactionScore = 50; // form submit은 매우 강력한 신호
+        reasons.push('recent submit gesture (' + timeMs + 'ms ago)');
+      } else if (interactionType === 'history' && interactionDetail && interactionDetail.method === 'pushState') {
+        interactionScore = 40; // pushState는 강력한 신호
+        reasons.push('recent history.pushState (' + timeMs + 'ms ago)');
+      } else if (interactionType === 'pointer' || interactionType === 'click') {
+        // 링크나 버튼 클릭인지 확인
+        if (interactionDetail && (interactionDetail.isLink || interactionDetail.isButton)) {
+          interactionScore = 35;
+          reasons.push('recent pointer/click on link/button (' + timeMs + 'ms ago)');
+        } else {
+          interactionScore = 30;
+          reasons.push('recent pointer/click gesture (' + timeMs + 'ms ago)');
+        }
+      } else if (interactionType === 'keydown') {
+        // 페이지 내부 입력 필드에서 엔터
+        if (interactionDetail && (interactionDetail.tag === 'INPUT' || interactionDetail.tag === 'TEXTAREA')) {
+          interactionScore = 40;
+          reasons.push('recent keydown on input (' + timeMs + 'ms ago)');
+        } else {
+          interactionScore = 20;
+          reasons.push('recent keydown gesture (' + timeMs + 'ms ago)');
+        }
+      } else {
+        interactionScore = 30;
+        reasons.push('recent ' + (interactionType || 'unknown') + ' gesture (' + timeMs + 'ms ago)');
+      }
+      score += interactionScore;
+    }
+    
+    if (wasHistoryAPI) {
+      score += 30;
+      reasons.push('history API used');
+    }
+    if (isSameOriginReferrer && hasRecentGesture) {
+      score += 20;
+      reasons.push('same origin referrer + gesture');
+    }
+    
+    // 직접 입력 신호 (음수 점수) - 상호작용이 있을 때는 보수적으로 적용
+    if (navTypeNumber === 1) {
+      // reload는 직접 입력으로 간주 (상호작용과 무관)
+      score -= 50;
+      reasons.push('reload navigation');
+    } else if (navTypeNumber === 2) {
+      // back/forward는 직접 입력으로 간주 (상호작용과 무관)
+      score -= 15;
+      reasons.push('back/forward navigation');
+    } else if (navTypeNumber === 0) {
+      // navigate 타입인 경우
+      if (hasRecentGesture) {
+        // 상호작용이 있으면 referrer 체크를 보수적으로 적용
+        if (!hasReferrer) {
+          score -= 10; // 상호작용이 있을 때는 약하게 차감
+          reasons.push('navType=0, no referrer (but has gesture)');
+        } else if (!isSameOriginReferrer) {
+          score -= 5; // 상호작용이 있을 때는 약하게 차감
+          reasons.push('navType=0, different origin referrer (but has gesture)');
+        }
+      } else {
+        // 상호작용이 없으면 강하게 차감
+        if (!hasReferrer) {
+          score -= 30;
+          reasons.push('navType=0, no referrer, no gesture');
+        } else if (!isSameOriginReferrer) {
+          score -= 20;
+          reasons.push('navType=0, different origin referrer, no gesture');
+        }
+        if (!wasHistoryAPI) {
+          score -= 25;
+          reasons.push('no recent gesture');
+        }
+      }
+    } else {
+      // navTypeNumber가 null이거나 알 수 없는 경우
+      if (!hasRecentGesture && !wasHistoryAPI) {
+        score -= 25;
+        reasons.push('no recent gesture');
+      }
+    }
+    
+    // 판단
+    const isUserInteractionNavigation = score >= NAVIGATION_DETECTION_THRESHOLD;
+    
+    // 상세 로그
+    console.log('[DOM Capture] Navigation 타입 감지:', JSON.stringify({
+      navType: navType,
+      navTypeNumber: navTypeNumber,
+      hasReferrer: hasReferrer,
+      referrer: referrer.substring(0, 100),
+      isSameOriginReferrer: isSameOriginReferrer,
+      hasRecentGesture: hasRecentGesture,
+      interactionType: interactionType,
+      interactionDetail: interactionDetail,
+      timeSinceLastInteraction: timeSinceLastInteraction,
+      wasHistoryAPI: wasHistoryAPI,
+      score: score,
+      reasons: reasons,
+      isUserInteractionNavigation: isUserInteractionNavigation,
+      threshold: NAVIGATION_DETECTION_THRESHOLD
+    }, null, 2));
+    
+    return {
+      isUserInteractionNavigation: isUserInteractionNavigation,
+      interactionType: interactionType,
+      score: score,
+      reasons: reasons,
+      navType: navType,
+      navTypeNumber: navTypeNumber,
+      hasReferrer: hasReferrer,
+      hasRecentGesture: hasRecentGesture,
+      timeSinceLastInteraction: timeSinceLastInteraction
+    };
+  }
   
   // URL 변경 감지 및 navigate/verifyUrl 이벤트 생성
   async function checkUrlChange() {
-    if (!isRecording) return;
+    if (!isRecording) {
+      console.log('[DOM Capture] checkUrlChange: 녹화 중이 아님, 스킵');
+      return;
+    }
     
     const currentUrl = window.location.href;
     const currentTitle = document.title;
+    
+    // 정규화된 URL로 비교 (쿼리 파라미터 변경 무시)
+    const normalizedCurrentUrl = normalizeUrl(currentUrl);
+    const normalizedLastUrl = normalizeUrl(lastUrl);
+    
+    // window 객체에서 최신 값 가져오기
+    const tracker = getUrlTracker();
+    lastUrl = tracker.lastUrl;
+    lastTitle = tracker.lastTitle;
+    
+    // 디버깅: 초기 상태 확인
+    if (!lastUrl || lastUrl === '') {
+      console.log('[DOM Capture] checkUrlChange: lastUrl이 비어있음, 초기화:', currentUrl);
+      updateUrlTracker(currentUrl, currentTitle);
+      lastUrl = currentUrl;
+      lastTitle = currentTitle;
+      // 초기화 시에는 이벤트 생성하지 않음 (첫 로드)
+      return;
+    }
+    
     let storedLastUrl = lastUrl;
     
     try {
+      // 우선순위: 1) recordingLastUrl (외부에서 관리), 2) lastRecordedUrl (이전 방식), 3) lastUrl
+      const recordingLastUrl = getRecordingLastUrl();
       const storedUrl = getLastRecordedUrl();
-      if (storedUrl && storedUrl !== currentUrl) {
+      
+      if (recordingLastUrl && recordingLastUrl !== currentUrl) {
+        // 외부에서 관리하는 recordingLastUrl 우선 사용
+        storedLastUrl = recordingLastUrl;
+        console.log('[DOM Capture] checkUrlChange: recordingLastUrl 사용 (외부 관리):', recordingLastUrl);
+      } else if (storedUrl && storedUrl !== currentUrl) {
+        // 이전 방식의 lastRecordedUrl 사용
         storedLastUrl = storedUrl;
+        console.log('[DOM Capture] checkUrlChange: localStorage에서 이전 URL 발견:', storedUrl);
       }
     } catch (err) {
       // 무시
     }
     
     const compareUrl = storedLastUrl && storedLastUrl !== currentUrl ? storedLastUrl : lastUrl;
-    const urlChanged = currentUrl !== compareUrl;
+    const normalizedCompareUrl = normalizeUrl(compareUrl);
+    
+    // 정규화된 URL로 비교 (쿼리 파라미터 변경은 무시)
+    const urlChanged = normalizedCurrentUrl !== normalizedCompareUrl;
     const titleChanged = currentTitle !== lastTitle;
     
-    if (urlChanged || titleChanged) {
-      const now = Date.now();
-      const timeSinceLastInteraction = lastUserInteractionTimestamp ? (now - lastUserInteractionTimestamp) : Infinity;
+    // 디버깅: 항상 로그 출력 (URL 변경 여부와 관계없이)
+    console.log('[DOM Capture] checkUrlChange 실행:', {
+      currentUrl: currentUrl,
+      lastUrl: lastUrl,
+      compareUrl: compareUrl,
+      normalizedCurrentUrl: normalizedCurrentUrl,
+      normalizedLastUrl: normalizedLastUrl,
+      normalizedCompareUrl: normalizedCompareUrl,
+      urlChanged: urlChanged,
+      titleChanged: titleChanged,
+      isRecording: isRecording
+    });
+    
+    // 실제 페이지 이동은 URL 변경으로만 판단 (타이틀만 변경된 경우는 무시)
+    // 타이틀은 JavaScript로 동적으로 변경될 수 있으므로 페이지 이동 지표로 사용하지 않음
+    if (urlChanged) {
+      // 개선된 Navigation 타입 감지 (가중치 기반 스코어링)
+      const navDetection = detectNavigationType(currentUrl, compareUrl);
+      const isUserInteractionNavigation = navDetection.isUserInteractionNavigation;
+      const interactionType = navDetection.interactionType;
       
-      // 사용자 상호작용으로 인한 이동인지 확인 (2초 이내 상호작용이 있었으면)
-      const isUserInteractionNavigation = lastUserInteractionTimestamp && 
-                                          timeSinceLastInteraction < USER_INTERACTION_TO_NAVIGATION_WINDOW;
-      
-      console.log('[DOM Capture] URL 변경 감지:', {
+      console.log('[DOM Capture] URL 변경 감지:', JSON.stringify({
         previous: compareUrl,
         current: currentUrl,
+        normalizedPrevious: normalizedCompareUrl,
+        normalizedCurrent: normalizedCurrentUrl,
+        urlChanged: urlChanged,
         titleChanged: titleChanged,
         isUserInteractionNavigation: isUserInteractionNavigation,
-        interactionType: lastUserInteractionType,
-        timeSinceLastInteraction: timeSinceLastInteraction
-      });
+        interactionType: interactionType,
+        detectionScore: navDetection.score,
+        detectionReasons: navDetection.reasons
+      }, null, 2));
       
       if (isUserInteractionNavigation) {
         // 사용자 상호작용으로 인한 이동 → verifyUrl assertion 생성
@@ -1310,7 +1755,9 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
           clientRect: null,
           metadata: { 
             domEvent: 'navigation', 
-            source: lastUserInteractionType || 'user-interaction' 
+            source: interactionType || 'user-interaction',
+            detectionScore: navDetection.score,
+            detectionReasons: navDetection.reasons
           },
           domContext: null,
           page: {
@@ -1321,8 +1768,9 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
           primarySelector: currentUrl
         };
         
+        // 1단계: 이벤트 전송 (먼저 이벤트를 수집)
         sendEvent(verifyUrlEvent);
-        console.log('[DOM Capture] 사용자 상호작용으로 인한 URL 변경 → verifyUrl assertion 생성:', lastUserInteractionType);
+        console.log('[DOM Capture] 사용자 상호작용으로 인한 URL 변경 → verifyUrl assertion 생성:', interactionType);
       } else {
         // 직접 입력으로 인한 이동 → navigate 이벤트 생성
         const navigateEvent = {
@@ -1342,13 +1790,30 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
           primarySelector: currentUrl
         };
         
+        // 1단계: 이벤트 전송 (먼저 이벤트를 수집)
         sendEvent(navigateEvent);
         console.log('[DOM Capture] 직접 입력으로 인한 URL 변경 → navigate 이벤트 생성');
       }
       
-      // localStorage에 저장
+      // 2단계: localStorage 갱신 (이벤트 수집 후에만 저장)
+      // 중요: 저장해야 하는 것은 "현재 페이지 URL"이 아니라 "이전 페이지 URL"임
+      // 다음 페이지 로드 시 이전 페이지를 올바르게 추적하기 위해 compareUrl(이전 페이지)를 localStorage에 저장
+      // window 객체에는 현재 페이지 URL을 저장 (다음 체크를 위해)
+      // 이벤트 수집이 완료된 후에 저장하여, 다음 페이지 로드 시 올바른 이전 페이지 정보를 복원할 수 있음
       try {
-        saveLastRecordedUrl(currentUrl);
+        // localStorage에는 이전 페이지 URL 저장 (다음 페이지 로드 시 복원용)
+        saveLastRecordedUrl(compareUrl);
+        
+        // recordingLastUrl 업데이트 (외부에서 관리하는 값)
+        // 현재 페이지 URL을 저장 (다음 녹화 세션에서 사용)
+        saveRecordingLastUrl(currentUrl);
+        
+        console.log('[DOM Capture] 이벤트 수집 완료 후 localStorage 갱신:');
+        console.log('[DOM Capture] - lastRecordedUrl (이전 페이지):', compareUrl);
+        console.log('[DOM Capture] - recordingLastUrl (현재 페이지, 외부 관리):', currentUrl);
+        
+        // window 객체에는 현재 페이지 URL 저장 (다음 체크를 위해)
+        updateUrlTracker(currentUrl, currentTitle);
       } catch (err) {
         console.error('[DOM Capture] URL 저장 실패:', err);
       }
@@ -1371,11 +1836,17 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
       }
       
       // 상호작용 추적 정보 초기화 (URL 변경 후)
-      lastUserInteractionTimestamp = null;
-      lastUserInteractionType = null;
+      clearLastInteraction();
       
+      // URL Tracker 업데이트: window 객체에 현재 페이지 URL 저장 (다음 체크를 위해)
+      // 중요: localStorage에는 이미 이전 페이지 URL(compareUrl)이 저장되어 있음
+      const tracker = window.__testarchitect_url_tracker__;
+      tracker.lastUrl = currentUrl;
+      tracker.lastTitle = currentTitle;
       lastUrl = currentUrl;
       lastTitle = currentTitle;
+      
+      console.log('[DOM Capture] checkUrlChange 완료 - URL Tracker 업데이트 (window 객체):', currentUrl);
     }
   }
   
@@ -1406,18 +1877,28 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
             // 녹화 시작 시 URL 변경 체크 (record/content.js의 startRecording 로직 참고)
             const currentUrl = window.location.href;
             const currentTitle = document.title;
-            const storedLastUrl = getLastRecordedUrl();
             
-            if (storedLastUrl && storedLastUrl !== currentUrl) {
-              lastUrl = storedLastUrl;
+            // recordingLastUrl 확인 (외부에서 관리되는 값)
+            const recordingLastUrl = getRecordingLastUrl();
+            
+            if (recordingLastUrl && recordingLastUrl !== currentUrl) {
+              // 이전 녹화 세션의 마지막 URL이 있으면 사용
+              updateUrlTracker(recordingLastUrl, '');
+              lastUrl = recordingLastUrl;
               lastTitle = '';
+              console.log('[DOM Capture] recording-start: recordingLastUrl에서 복원:', recordingLastUrl);
+              console.log('[DOM Capture] recording-start: 현재 페이지 URL:', currentUrl);
               setTimeout(() => {
                 checkUrlChange();
               }, 100);
             } else {
+              // 첫 녹화 시작 또는 같은 URL
+              // 현재 URL을 recordingLastUrl로 저장 (외부에서 관리)
+              saveRecordingLastUrl(currentUrl);
+              updateUrlTracker(currentUrl, currentTitle);
               lastUrl = currentUrl;
               lastTitle = currentTitle;
-              saveLastRecordedUrl(currentUrl);
+              console.log('[DOM Capture] recording-start: 첫 녹화 시작, recordingLastUrl 저장:', currentUrl);
             }
             
             // URL 체크 인터벌 시작 (1초마다, record/content.js와 동일)
@@ -1458,6 +1939,9 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
             console.log('[DOM Capture] 녹화 중지');
             isRecording = false;
             saveRecordingState(false); // localStorage에 저장
+            
+            // recordingLastUrl은 유지 (다음 녹화 세션에서 사용)
+            // clearRecordingLastUrl() 호출하지 않음
             
             // URL 체크 인터벌 중지
             if (urlCheckInterval) {
@@ -1532,9 +2016,16 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
       return;
     }
     
-    // 사용자 상호작용 추적 (URL 변경 감지용)
-    lastUserInteractionTimestamp = Date.now();
-    lastUserInteractionType = 'click';
+    // 사용자 상호작용 추적 (URL 변경 감지용) - 개선된 버전
+    const targetInfo = {
+      tag: target.tagName,
+      id: target.id || null,
+      className: target.className || null,
+      href: (target.closest && target.closest('a')) ? target.closest('a').href : null,
+      isLink: target.tagName === 'A' || target.closest('a') !== null,
+      isButton: target.tagName === 'BUTTON' || target.closest('button') !== null
+    };
+    saveLastInteraction('click', targetInfo);
     
     const rect = target.getBoundingClientRect();
     
@@ -1718,6 +2209,29 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
     });
   }
   
+  // ============================================================================
+  // 개선된 상호작용 감지: pointerdown, mousedown 이벤트 추가
+  // ============================================================================
+  // pointerdown/mousedown 이벤트로 더 빠른 상호작용 감지
+  ['pointerdown', 'mousedown'].forEach(eventType => {
+    document.addEventListener(eventType, (e) => {
+      if (!isRecording) return;
+      const target = e.target;
+      if (!target || target === document.body || target === document.documentElement) return;
+      if (target.id === '__testarchitect_selector_overlay__' || target.closest('#__testarchitect_selector_overlay__')) return;
+      
+      const targetInfo = {
+        tag: target.tagName,
+        id: target.id || null,
+        className: target.className || null,
+        href: (target.closest && target.closest('a')) ? target.closest('a').href : null,
+        isLink: target.tagName === 'A' || target.closest('a') !== null,
+        isButton: target.tagName === 'BUTTON' || target.closest('button') !== null
+      };
+      saveLastInteraction('pointer', targetInfo);
+    }, true);
+  });
+  
   // 클릭 이벤트 리스너 등록
   document.addEventListener('click', handleClick, true);
   
@@ -1853,39 +2367,42 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
   const originalPushState = history.pushState;
   const originalReplaceState = history.replaceState;
   
-  history.pushState = function(...args) {
+  history.pushState = function(state, title, url) {
     if (isRecording) {
       // pushState는 사용자 상호작용으로 인한 것으로 간주 (SPA 네비게이션)
-      lastUserInteractionTimestamp = Date.now();
-      lastUserInteractionType = 'history';
-      console.log('[DOM Capture] history.pushState 감지');
+      saveLastInteraction('history', {
+        method: 'pushState',
+        url: url || null,
+        state: state ? (typeof state === 'object' ? 'object' : String(state)) : null
+      });
+      console.log('[DOM Capture] history.pushState 감지:', url);
     }
-    return originalPushState.apply(history, args);
+    return originalPushState.apply(history, arguments);
   };
   
-  history.replaceState = function(...args) {
+  history.replaceState = function(state, title, url) {
     if (isRecording) {
-      // replaceState는 사용자 상호작용으로 인한 것으로 간주 (SPA 네비게이션)
-      lastUserInteractionTimestamp = Date.now();
-      lastUserInteractionType = 'history';
-      console.log('[DOM Capture] history.replaceState 감지');
+      // replaceState는 프로그래밍 방식의 변경이므로 사용자 상호작용으로 간주하지 않음
+      // 하지만 기록은 남김 (디버깅용)
+      console.log('[DOM Capture] history.replaceState 감지 (프로그래밍 방식, 사용자 상호작용 아님):', url);
     }
-    return originalReplaceState.apply(history, args);
+    return originalReplaceState.apply(history, arguments);
   };
   
   // popstate 이벤트 (뒤로가기/앞으로가기)
   window.addEventListener('popstate', () => {
     if (isRecording) {
       // popstate는 직접 입력으로 간주 (브라우저 네비게이션)
-      lastUserInteractionTimestamp = null;
-      lastUserInteractionType = null;
-      console.log('[DOM Capture] popstate 이벤트 감지');
+      clearLastInteraction();
+      console.log('[DOM Capture] popstate 이벤트 감지 (직접 입력으로 간주)');
       // URL 변경 체크 (약간의 지연 후)
       setTimeout(() => {
         checkUrlChange();
       }, 100);
     }
   });
+  
+  // popstate 이벤트는 History API 래핑 부분에서 이미 처리됨
   
   // ============================================================================
   // 키보드 이벤트 감지 (엔터 키로 인한 폼 제출 등)
@@ -1903,8 +2420,13 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
           target !== document.body && 
           target !== document.documentElement &&
           (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
-        lastUserInteractionTimestamp = Date.now();
-        lastUserInteractionType = 'keydown';
+        saveLastInteraction('keydown', {
+          key: event.key,
+          keyCode: event.keyCode,
+          tag: target.tagName,
+          id: target.id || null,
+          type: target.type || null
+        });
         console.log('[DOM Capture] 페이지 내부 엔터 키 입력 감지 (URL 변경 가능):', target.tagName);
       } else {
         // 주소창 입력 등은 사용자 상호작용으로 간주하지 않음
@@ -1921,21 +2443,18 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
     
     const target = event.target;
     if (target && target.tagName === 'FORM') {
-      lastUserInteractionTimestamp = Date.now();
-      lastUserInteractionType = 'submit';
+      saveLastInteraction('submit', {
+        formAction: target.action || null,
+        formMethod: target.method || null
+      });
       console.log('[DOM Capture] 폼 제출 감지 (URL 변경 가능)');
     }
   }, true);
   
-  // beforeunload 이벤트에서 URL 저장 (record/content.js와 동일)
+  // beforeunload 이벤트에서 하이라이트 리스너만 정리
+  // URL 저장은 checkUrlChange에서 URL 변경 감지 시에만 수행
+  // beforeunload에서 저장하면 타이밍 이슈로 잘못된 URL이 저장될 수 있음
   window.addEventListener('beforeunload', () => {
-    if (isRecording) {
-      try {
-        saveLastRecordedUrl(window.location.href);
-      } catch (err) {
-        console.error('[DOM Capture] beforeunload에서 URL 저장 실패:', err);
-      }
-    }
     // 하이라이트 리스너 정리
     removeHoverListeners();
   });
@@ -2079,51 +2598,10 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
                   mainWindow.webContents.send('url-changed', urlChangeData);
                 }
                 
-                // navigate 이벤트 전송 (record/content.js와 동일한 형식)
-                const navigateEvent = {
-                  action: 'navigate',
-                  value: newUrl,
-                  selectors: [],
-                  target: null,
-                  iframeContext: null,
-                  clientRect: null,
-                  metadata: { domEvent: 'navigation' },
-                  domContext: null,
-                  page: {
-                    url: newUrl,
-                    title: '' // 타이틀은 나중에 업데이트될 수 있음
-                  },
-                  url: newUrl,
-                  primarySelector: newUrl,
-                  timestamp: timestamp
-                };
-                
-                // WebSocket 서버를 통해 dom-event로 전송 (Extension 클라이언트들에게 브로드캐스트)
-                extensionClients.forEach((client) => {
-                  if (client.readyState === WebSocket.OPEN) {
-                    try {
-                      client.send(JSON.stringify({
-                        type: 'dom-event',
-                        event: navigateEvent,
-                        timestamp: timestamp
-                      }));
-                      console.log('[CDP] navigate 이벤트를 Extension 클라이언트에 전송:', newUrl);
-                    } catch (error) {
-                      console.error('[CDP] navigate 이벤트 전송 실패:', error);
-                    }
-                  }
-                });
-                
-                // recorderWindow에도 직접 전달 (iframe 환경)
-                if (recorderWindow && !recorderWindow.isDestroyed() && recorderWindow.webContents) {
-                  recorderWindow.webContents.send('dom-event', navigateEvent);
-                  console.log('[CDP] navigate 이벤트를 recorderWindow에 전달:', newUrl);
-                }
-                
-                // mainWindow에도 전달
-                if (mainWindow && mainWindow.webContents) {
-                  mainWindow.webContents.send('dom-event', navigateEvent);
-                }
+                // 주의: navigate/verifyUrl 이벤트는 injected script의 checkUrlChange에서 생성됨
+                // CDP에서는 URL 변경 알림만 전달하고, 실제 이벤트 생성은 injected script에서 처리
+                // 이렇게 하면 스코어 기반 로직이 제대로 동작함
+                console.log('[CDP] URL 변경 감지 (injected script의 checkUrlChange에서 이벤트 생성 예정):', newUrl);
               }
             }
           } catch (error) {

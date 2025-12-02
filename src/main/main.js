@@ -721,8 +721,9 @@ function handleExtensionMessage(ws, data) {
       break;
       
     case 'element-selection':
+    case 'ELEMENT_SELECTION_START':
       // 요소 선택 관련 메시지 (Content Script로 전달)
-      console.log('[Extension] 요소 선택 메시지 수신:', data.type);
+      console.log('[Extension] 요소 선택 메시지 수신:', data.type || messageType);
       
       // Content Script에 전달하기 위해 WebSocket으로 브로드캐스트
       // 실제로는 Content Script가 직접 WebSocket에 연결되어 있으므로
@@ -741,13 +742,14 @@ function handleExtensionMessage(ws, data) {
     case 'ELEMENT_SELECTION_PICKED':
     case 'ELEMENT_SELECTION_ERROR':
     case 'ELEMENT_SELECTION_CANCELLED':
+    case 'ELEMENT_SELECTION_CANCEL':
       // 요소 선택 결과 메시지 (Content Script에서 전송)
-      console.log('[Extension] 요소 선택 결과 수신:', data.type);
+      console.log('[Extension] 요소 선택 결과 수신:', data.type || messageType);
       
       // 메인 윈도우로 전달
       if (mainWindow && mainWindow.webContents) {
         mainWindow.webContents.send('element-selection-result', {
-          type: data.type,
+          type: data.type || messageType,
           ...data
         });
       }
@@ -755,7 +757,7 @@ function handleExtensionMessage(ws, data) {
       // 녹화 윈도우로도 전달
       if (recorderWindow && !recorderWindow.isDestroyed() && recorderWindow.webContents) {
         recorderWindow.webContents.send('element-selection-result', {
-          type: data.type,
+          type: data.type || messageType,
           ...data
         });
       }
@@ -1486,25 +1488,49 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
             saveRecordingState(false); // localStorage에 저장
             
             // recordingLastUrl은 유지 (다음 녹화 세션에서 사용)
-          } else if (message.type === 'element-selection') {
+          } else if (message.type === 'element-selection' || message.type === 'ELEMENT_SELECTION_START' || message.type === 'ELEMENT_SELECTION_PICK_CHILD' || message.type === 'ELEMENT_SELECTION_CANCEL') {
             // 요소 선택 관련 메시지 처리
-            if (message.ELEMENT_SELECTION_START || message.type === 'ELEMENT_SELECTION_START') {
+            // sendSelectionMessage에서 {type: 'element-selection', ...payload} 형식으로 보내는데
+            // payload에 type이 있으면 최종 메시지의 type이 payload.type으로 덮어씌워짐
+            // 따라서 message.type을 직접 확인
+            if (message.type === 'ELEMENT_SELECTION_START') {
               // 요소 선택 모드 시작
               console.log('[DOM Capture] 요소 선택 모드 시작');
               isElementSelectionMode = true;
-            } else if (message.ELEMENT_SELECTION_PICK_CHILD || message.type === 'ELEMENT_SELECTION_PICK_CHILD') {
+              // 요소 하이라이트 리스너 설정 (요소 선택 시 하이라이트 필요)
+              setupHoverListeners();
+            } else if (message.type === 'ELEMENT_SELECTION_PICK_CHILD') {
               // 자식 요소 선택 모드 (이미 활성화된 상태 유지)
               console.log('[DOM Capture] 자식 요소 선택 모드');
               isElementSelectionMode = true;
-            } else if (message.ELEMENT_SELECTION_CANCEL || message.type === 'ELEMENT_SELECTION_CANCEL') {
+              // 요소 하이라이트 리스너 설정
+              setupHoverListeners();
+            } else if (message.type === 'ELEMENT_SELECTION_CANCEL') {
               // 요소 선택 모드 종료
               console.log('[DOM Capture] 요소 선택 모드 종료');
               isElementSelectionMode = false;
+              // 요소 하이라이트 리스너 제거
+              removeHoverListeners();
+            } else if (message.type === 'element-selection') {
+              // element-selection 타입인 경우 내부 속성 확인
+              if (message.ELEMENT_SELECTION_START) {
+                console.log('[DOM Capture] 요소 선택 모드 시작 (element-selection)');
+                isElementSelectionMode = true;
+                // 요소 하이라이트 리스너 설정
+                setupHoverListeners();
+              } else if (message.ELEMENT_SELECTION_PICK_CHILD) {
+                console.log('[DOM Capture] 자식 요소 선택 모드 (element-selection)');
+                isElementSelectionMode = true;
+                // 요소 하이라이트 리스너 설정
+                setupHoverListeners();
+              } else if (message.ELEMENT_SELECTION_CANCEL) {
+                console.log('[DOM Capture] 요소 선택 모드 종료 (element-selection)');
+                isElementSelectionMode = false;
+                // 요소 하이라이트 리스너 제거
+                removeHoverListeners();
+              }
             }
             // clearRecordingLastUrl() 호출하지 않음
-            
-            // 요소 하이라이트 리스너 제거
-            removeHoverListeners();
           }
         } catch (error) {
           console.error('[DOM Capture] 메시지 파싱 오류:', error);
@@ -1591,7 +1617,9 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
     }
     
     // 요소 선택 모드일 때는 클릭 이벤트를 가로채서 요소 정보만 전송
+    console.log('[DOM Capture] 클릭 이벤트 처리 - isElementSelectionMode:', isElementSelectionMode);
     if (isElementSelectionMode) {
+      console.log('[DOM Capture] 요소 선택 모드 활성화 - ELEMENT_SELECTION_PICKED 전송');
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();

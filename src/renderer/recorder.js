@@ -308,12 +308,19 @@ function handleWebSocketMessage(message) {
       handleReplayStepResult(message);
       break;
 
+    case 'ELEMENT_SELECTION_START':
+      // 요소 선택 모드 시작 (확인용 로그만 출력, 실제 처리는 Content Script에서 함)
+      console.log('[Recorder] 요소 선택 모드 시작 메시지 수신');
+      break;
+
     case 'ELEMENT_SELECTION_PICKED':
       // 요소 선택 완료
       // 심플 요소 선택이 활성화되어 있으면 심플 처리, 아니면 기존 처리
+      console.log('[Recorder] ELEMENT_SELECTION_PICKED 수신 (WebSocket), simpleSelectionState.active:', simpleSelectionState.active);
       if (simpleSelectionState.active) {
         handleSimpleElementSelectionPicked(message);
       } else {
+        console.log('[Recorder] simpleSelectionState.active가 false이므로 handleElementSelectionPicked 호출');
         handleElementSelectionPicked(message);
       }
       break;
@@ -333,6 +340,7 @@ function handleWebSocketMessage(message) {
       break;
 
     case 'ELEMENT_SELECTION_CANCELLED':
+    case 'ELEMENT_SELECTION_CANCEL':
       // 요소 선택 취소
       if (simpleSelectionState.active) {
         cancelSimpleElementSelection();
@@ -356,8 +364,10 @@ function handleDomEvent(event) {
   if (!recording) return;
 
   // 요소 선택 모드가 활성화되어 있으면 클릭 이벤트 무시
+  // Content Script에서 이미 ELEMENT_SELECTION_PICKED를 WebSocket으로 보내므로
+  // 여기서는 dom-event를 무시하면 됨 (WebSocket 핸들러에서 처리)
   if ((selectionState.active || simpleSelectionState.active) && (event.action === 'click' || event.type === 'click')) {
-    console.log('[Recorder] 요소 선택 모드 활성화 중 - 클릭 이벤트 무시');
+    console.log('[Recorder] 요소 선택 모드 활성화 중 - dom-event 무시 (Content Script에서 ELEMENT_SELECTION_PICKED 전송)');
     return;
   }
 
@@ -2484,10 +2494,10 @@ function cancelSelectionWorkflow(message = '', tone = 'info') {
 function sendSelectionMessage(payload, callback) {
   // Electron 환경에서는 WebSocket을 통해 Content Script에 메시지 전송
   if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-    wsConnection.send(JSON.stringify({
-      type: 'element-selection',
-      ...payload
-    }));
+    // payload에 type이 있으면 그대로 사용, 없으면 element-selection으로 래핑
+    const message = payload.type ? payload : { type: 'element-selection', ...payload };
+    console.log('[Recorder] sendSelectionMessage 전송:', message);
+    wsConnection.send(JSON.stringify(message));
     if (callback) callback({ok: true});
   } else {
     if (callback) callback({ok: false, reason: 'WebSocket not connected'});
@@ -2516,6 +2526,11 @@ function requestElementPick(mode) {
  * @param {number|null} pendingStepIndex - assertion을 추가할 스텝 인덱스 (있는 경우)
  */
 function startSimpleElementSelection(callback, pendingAction, pendingStepIndex = null) {
+  // 기존 요소 선택 모드가 활성화되어 있으면 먼저 취소
+  if (selectionState.active) {
+    cancelSelectionWorkflow('', 'info');
+  }
+  
   // 상태 초기화
   simpleSelectionState.active = true;
   simpleSelectionState.callback = callback;
@@ -2538,9 +2553,14 @@ function startSimpleElementSelection(callback, pendingAction, pendingStepIndex =
   }
   
   // 요소 선택 시작
-  console.log('[Recorder] 심플 요소 선택 시작:', { pendingAction, pendingStepIndex });
+  console.log('[Recorder] 심플 요소 선택 시작:', { 
+    pendingAction, 
+    pendingStepIndex,
+    active: simpleSelectionState.active,
+    hasCallback: !!simpleSelectionState.callback
+  });
   sendSelectionMessage({type: 'ELEMENT_SELECTION_START'}, (resp) => {
-    console.log('[Recorder] 요소 선택 시작 응답:', resp);
+    console.log('[Recorder] 요소 선택 시작 응답:', resp, '현재 active:', simpleSelectionState.active);
     if (resp && resp.ok === false && resp.reason) {
       simpleSelectionState.active = false;
       simpleSelectionState.callback = null;
@@ -2551,7 +2571,7 @@ function startSimpleElementSelection(callback, pendingAction, pendingStepIndex =
         elementStatusEl.className = 'element-status error';
       }
     } else {
-      console.log('[Recorder] 요소 선택 모드 활성화됨, 브라우저에서 요소를 클릭하세요');
+      console.log('[Recorder] 요소 선택 모드 활성화됨, 브라우저에서 요소를 클릭하세요. active:', simpleSelectionState.active);
     }
   });
 }
@@ -2560,7 +2580,23 @@ function startSimpleElementSelection(callback, pendingAction, pendingStepIndex =
  * 심플 요소 선택 완료 처리
  */
 function handleSimpleElementSelectionPicked(msg) {
-  if (!simpleSelectionState.active || !simpleSelectionState.callback) {
+  console.log('[Recorder] handleSimpleElementSelectionPicked 호출:', {
+    active: simpleSelectionState.active,
+    hasCallback: !!simpleSelectionState.callback,
+    pendingAction: simpleSelectionState.pendingAction,
+    selectorsCount: msg.selectors?.length || 0
+  });
+  
+  // 상태 확인 및 콜백 백업 (상태 초기화 전에)
+  const wasActive = simpleSelectionState.active;
+  const callback = simpleSelectionState.callback;
+  const pendingAction = simpleSelectionState.pendingAction;
+  const pendingStepIndex = simpleSelectionState.pendingStepIndex;
+  
+  if (!wasActive || !callback) {
+    console.warn('[Recorder] handleSimpleElementSelectionPicked: 상태가 활성화되지 않았거나 콜백이 없음');
+    // 상태가 활성화되지 않았어도 ELEMENT_SELECTION_CANCEL 전송하여 Content Script 해제
+    sendSelectionMessage({type: 'ELEMENT_SELECTION_CANCEL'}, () => {});
     return;
   }
   
@@ -2571,6 +2607,7 @@ function handleSimpleElementSelectionPicked(msg) {
   
   if (candidates.length === 0) {
     // 후보가 없으면 오류 처리
+    console.warn('[Recorder] handleSimpleElementSelectionPicked: 셀렉터 후보가 없음');
     simpleSelectionState.active = false;
     simpleSelectionState.callback = null;
     simpleSelectionState.pendingAction = null;
@@ -2598,10 +2635,11 @@ function handleSimpleElementSelectionPicked(msg) {
     iframeContext: msg.element?.iframeContext || null
   };
   
-  // 콜백 호출
-  const callback = simpleSelectionState.callback;
-  const pendingAction = simpleSelectionState.pendingAction;
-  const pendingStepIndex = simpleSelectionState.pendingStepIndex;
+  console.log('[Recorder] handleSimpleElementSelectionPicked: 콜백 호출 준비:', {
+    pendingAction,
+    pendingStepIndex,
+    pathSelector: path[0]?.selector
+  });
   
   // 상태 초기화 (콜백 호출 전에 초기화하여 중복 호출 방지)
   simpleSelectionState.active = false;
@@ -2609,11 +2647,17 @@ function handleSimpleElementSelectionPicked(msg) {
   simpleSelectionState.pendingAction = null;
   simpleSelectionState.pendingStepIndex = null;
   
-  // 요소 선택 종료
+  // 요소 선택 종료를 먼저 전송하여 Content Script의 isElementSelectionMode를 즉시 해제
+  // (콜백 호출 전에 전송하여 이후 클릭 이벤트가 무시되도록 함)
   sendSelectionMessage({type: 'ELEMENT_SELECTION_CANCEL'}, () => {});
   
   // 콜백 호출
-  callback(path, elementInfo, pendingAction, pendingStepIndex);
+  try {
+    callback(path, elementInfo, pendingAction, pendingStepIndex);
+    console.log('[Recorder] handleSimpleElementSelectionPicked: 콜백 호출 완료');
+  } catch (error) {
+    console.error('[Recorder] handleSimpleElementSelectionPicked: 콜백 호출 오류:', error);
+  }
 }
 
 /**
@@ -2998,31 +3042,26 @@ function handleVerifyAction(verifyType) {
     return;
   }
   
-  // 요소 검증은 요소 선택 필요
-  const path = buildSelectionPathArray();
-  if (!path.length) {
-    // 요소 선택 모드로 전환
-    if (!selectionState.active) {
-      startSelectionWorkflow();
+  // 요소 검증은 심플 요소 선택 사용 (waitForElement와 동일한 방식)
+  startSimpleElementSelection((path, elementInfo, pendingAction, pendingStepIndex) => {
+    let value = null;
+    if (pendingAction === 'verifyText') {
+      // 요소의 텍스트를 기본값으로 사용
+      const elementText = elementInfo.text || path[0]?.textValue || '';
+      const textValue = prompt('검증할 텍스트를 입력하세요:', elementText);
+      if (textValue === null) {
+        // 취소 시 요소 선택 모드 해제
+        cancelSimpleElementSelection();
+        return;
+      }
+      value = textValue || elementText;
+    } else if (pendingAction === 'verifyElementPresent' || pendingAction === 'verifyElementNotPresent') {
+      // 요소 존재/부재 검증은 value 불필요
+      value = null;
     }
-    setElementStatus('검증할 요소를 선택하세요.', 'info');
-    selectionState.pendingAction = verifyType;
-    return;
-  }
-  
-  let value = null;
-  if (verifyType === 'verifyText') {
-    const lastPathItem = path[path.length - 1];
-    if (lastPathItem && lastPathItem.textValue) {
-      value = lastPathItem.textValue;
-    } else {
-      const textValue = prompt('검증할 텍스트를 입력하세요:');
-      if (textValue === null) return;
-      value = textValue;
-    }
-  }
-  
-  addVerifyAction(verifyType, path, value);
+    
+    addVerifyAction(pendingAction, path, value);
+  }, verifyType, null);
 }
 
 /**
@@ -3110,6 +3149,13 @@ function handleInteractionAction(interactionType) {
  * 검증 액션을 이벤트로 추가
  */
 function addVerifyAction(verifyType, path, value) {
+  console.log('[Recorder] addVerifyAction 호출:', {
+    verifyType,
+    pathLength: path?.length || 0,
+    value,
+    path: path ? path.map(p => p.selector) : null
+  });
+  
   const timestamp = Date.now();
   const currentUrl = window.location.href || '';
   const currentTitle = document.title || '';
@@ -3209,10 +3255,19 @@ function addVerifyAction(verifyType, path, value) {
   
   // 이벤트 추가
   const normalized = normalizeEventRecord(eventRecord);
+  console.log('[Recorder] addVerifyAction: 정규화된 이벤트:', normalized);
   allEvents.push(normalized);
+  console.log('[Recorder] addVerifyAction: allEvents에 추가됨, 총 이벤트 수:', allEvents.length);
   updateCode({ preloadedEvents: allEvents });
   syncTimelineFromEvents(allEvents, { selectLast: true });
+  console.log('[Recorder] addVerifyAction: 코드 및 타임라인 업데이트 완료');
   
+  // 실시간으로 TC step으로 저장
+  console.log('[Recorder] addVerifyAction: saveEventAsStep 호출 시작');
+  saveEventAsStep(normalized);
+  console.log('[Recorder] addVerifyAction: saveEventAsStep 호출 완료');
+  
+  const verifyActionsContainer = document.getElementById('verify-actions');
   if (verifyActionsContainer) {
     verifyActionsContainer.classList.add('hidden');
   }
@@ -3315,6 +3370,9 @@ function addWaitAction(waitType, timeValue, path) {
   updateCode({ preloadedEvents: allEvents });
   syncTimelineFromEvents(allEvents, { selectLast: true });
   
+  // 실시간으로 TC step으로 저장
+  saveEventAsStep(normalized);
+  
   logMessage(`${waitType} 액션을 추가했습니다.`, 'success');
 }
 
@@ -3384,6 +3442,9 @@ function addInteractionAction(interactionType, path, value) {
   allEvents.push(normalized);
   updateCode({ preloadedEvents: allEvents });
   syncTimelineFromEvents(allEvents, { selectLast: true });
+  
+  // 실시간으로 TC step으로 저장
+  saveEventAsStep(normalized);
   
   logMessage(`${interactionType} 액션을 추가했습니다.`, 'success');
 }
@@ -4914,32 +4975,43 @@ function handleGlobalAssertion(assertionType) {
     return;
   }
   
-  // 요소 검증은 심플 요소 선택 사용
+  // 요소 검증은 심플 요소 선택 사용 (waitForElement와 동일한 방식)
   startSimpleElementSelection((path, elementInfo, pendingAction, pendingStepIndex) => {
+    console.log('[Recorder] handleGlobalAssertion 콜백 실행:', {
+      pendingAction,
+      pendingStepIndex,
+      pathLength: path?.length || 0,
+      elementText: elementInfo?.text
+    });
+    
     let value = null;
     if (pendingAction === 'verifyText') {
       // 요소의 텍스트를 기본값으로 사용
       const elementText = elementInfo.text || path[0]?.textValue || '';
+      console.log('[Recorder] verifyText: prompt 표시 전, elementText:', elementText);
       const textValue = prompt('검증할 텍스트를 입력하세요:', elementText);
+      console.log('[Recorder] verifyText: prompt 결과:', textValue);
       if (textValue === null) {
-        // 취소 시 아무것도 하지 않음
+        // 취소 시 그냥 return (handleSimpleElementSelectionPicked에서 이미 ELEMENT_SELECTION_CANCEL 전송)
+        console.log('[Recorder] verifyText: 사용자가 취소함');
         return;
       }
       value = textValue || elementText;
-    } else if (pendingAction === 'verifyElementPresent' || pendingAction === 'verifyElementNotPresent') {
-      // 요소 존재/부재 검증은 value 불필요
-      value = null;
+      console.log('[Recorder] verifyText: 최종 value:', value);
     }
     
     // pendingStepIndex가 있으면 addAssertionAfterStep 사용, 없으면 addVerifyAction 사용
     if (pendingStepIndex !== null && pendingStepIndex !== undefined) {
+      console.log('[Recorder] addAssertionAfterStep 호출:', { pendingStepIndex, pendingAction });
       addAssertionAfterStep(pendingStepIndex, pendingAction, path, value);
     } else {
+      console.log('[Recorder] addVerifyAction 호출:', { pendingAction, pathLength: path?.length || 0, value });
       addVerifyAction(pendingAction, path, value);
     }
   }, assertionType, null);
   
   // verify actions 컨테이너 숨기기
+  const verifyActionsContainer = document.getElementById('verify-actions');
   if (verifyActionsContainer) {
     verifyActionsContainer.classList.add('hidden');
   }
@@ -4953,22 +5025,16 @@ function handleGlobalWait(waitType) {
   
   // 시간 대기는 입력 패널 표시
   if (waitType === 'wait') {
-    // wait-actions 컨테이너 숨기기
-    const waitActionsContainer = document.getElementById('wait-actions');
-    if (waitActionsContainer) {
-      waitActionsContainer.classList.add('hidden');
+    // global-wait-menu 숨기기
+    const globalWaitMenu = document.getElementById('global-wait-menu');
+    if (globalWaitMenu) {
+      globalWaitMenu.classList.add('hidden');
     }
     
-    // 입력 패널 표시
+    // 입력 패널 표시 (global-wait-menu 다음에 위치)
     const waitInputPanel = document.getElementById('wait-input-panel');
     if (waitInputPanel) {
       waitInputPanel.classList.remove('hidden');
-    }
-    
-    // step-details-panel도 표시
-    const stepDetailsPanel = document.getElementById('step-details-panel');
-    if (stepDetailsPanel) {
-      stepDetailsPanel.classList.remove('hidden');
     }
     
     // 입력 필드에 포커스
@@ -5078,9 +5144,11 @@ function setupIpcListeners() {
     console.log('[Recorder] IPC로 요소 선택 결과 수신:', data.type);
     if (data.type === 'ELEMENT_SELECTION_PICKED') {
       // 심플 요소 선택이 활성화되어 있으면 심플 처리, 아니면 기존 처리
+      console.log('[Recorder] ELEMENT_SELECTION_PICKED 수신 (IPC), simpleSelectionState.active:', simpleSelectionState.active);
       if (simpleSelectionState.active) {
         handleSimpleElementSelectionPicked(data);
       } else {
+        console.log('[Recorder] simpleSelectionState.active가 false이므로 handleElementSelectionPicked 호출');
         handleElementSelectionPicked(data);
       }
     } else if (data.type === 'ELEMENT_SELECTION_ERROR') {
@@ -5094,10 +5162,16 @@ function setupIpcListeners() {
       } else {
         handleElementSelectionError(data);
       }
-    } else if (data.type === 'ELEMENT_SELECTION_CANCELLED') {
+    } else if (data.type === 'ELEMENT_SELECTION_CANCELLED' || data.type === 'ELEMENT_SELECTION_CANCEL') {
+      console.log('[Recorder] ELEMENT_SELECTION_CANCEL 수신, 상태 초기화');
       if (simpleSelectionState.active) {
         cancelSimpleElementSelection();
       } else {
+        // active가 false여도 상태를 확실히 초기화
+        simpleSelectionState.active = false;
+        simpleSelectionState.callback = null;
+        simpleSelectionState.pendingAction = null;
+        simpleSelectionState.pendingStepIndex = null;
         handleElementSelectionCancelled();
       }
     }

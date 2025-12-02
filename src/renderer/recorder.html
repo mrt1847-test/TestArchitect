@@ -1543,6 +1543,13 @@
             <button class="assertion-menu-btn" data-wait="waitForElement">요소 대기</button>
           </div>
         </div>
+        <div id="wait-input-panel" class="global-wait-input-panel hidden" style="margin-top: 8px; padding: 12px; background: var(--vscode-sidebar); border-radius: 5.6px;">
+          <div style="font-weight: 600; margin-bottom: 8px; font-size: 13px;">대기 시간 (밀리초)</div>
+          <div style="display: flex; gap: 8px;">
+            <input id="wait-time-input" type="number" placeholder="2000" min="0" style="flex: 1; padding: 6px; border: 1px solid var(--vscode-input-border); background: var(--vscode-input-background); color: var(--vscode-input-foreground); border-radius: 3px;" />
+            <button id="wait-time-apply" style="padding: 6px 12px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 3px; cursor: pointer;">적용</button>
+          </div>
+        </div>
       </div>
     </div>
     
@@ -1609,13 +1616,6 @@
             <div class="element-action-buttons">
               <button data-wait="waitForElement">요소 대기</button>
               <button data-wait="wait">시간 대기</button>
-            </div>
-            <div id="wait-input-panel" class="element-section hidden">
-              <div class="element-title">대기 시간 (밀리초)</div>
-              <div class="element-attr-row">
-                <input id="wait-time-input" type="number" placeholder="2000" min="0" />
-                <button id="wait-time-apply">적용</button>
-              </div>
             </div>
           </div>
           <div id="element-attribute-panel" class="element-section hidden">

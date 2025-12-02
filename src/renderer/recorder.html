@@ -1516,10 +1516,16 @@
       </div>
       <!-- Global Assertion Section -->
       <div id="global-assertion-section" class="global-assertion-section">
-        <button id="global-add-assertion-btn" class="global-add-assertion-btn">
-          <span>+</span>
-          <span>Add assertion</span>
-        </button>
+        <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+          <button id="global-add-assertion-btn" class="global-add-assertion-btn" style="flex: 1;">
+            <span>+</span>
+            <span>Add assertion</span>
+          </button>
+          <button id="global-add-wait-btn" class="global-add-assertion-btn" style="flex: 1;">
+            <span>+</span>
+            <span>Add wait</span>
+          </button>
+        </div>
         <div id="global-assertion-menu" class="global-assertion-menu hidden">
           <div class="assertion-menu-header">Assertion 타입 선택</div>
           <div class="assertion-menu-buttons">
@@ -1528,6 +1534,13 @@
             <button class="assertion-menu-btn" data-assertion="verifyElementNotPresent">요소 부재 검증</button>
             <button class="assertion-menu-btn" data-assertion="verifyTitle">타이틀 검증</button>
             <button class="assertion-menu-btn" data-assertion="verifyUrl">URL 검증</button>
+          </div>
+        </div>
+        <div id="global-wait-menu" class="global-assertion-menu hidden">
+          <div class="assertion-menu-header">Wait 타입 선택</div>
+          <div class="assertion-menu-buttons">
+            <button class="assertion-menu-btn" data-wait="wait">시간 대기</button>
+            <button class="assertion-menu-btn" data-wait="waitForElement">요소 대기</button>
           </div>
         </div>
       </div>

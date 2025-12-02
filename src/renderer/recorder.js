@@ -62,6 +62,7 @@ let frameworkSelect = null;
 let languageSelect = null;
 let aiReviewBtn = null;
 let aiReviewStatusEl = null;
+let syncToTcBtn = null;
 let aiEndpointInput = null;
 let aiApiKeyInput = null;
 let aiModelInput = null;
@@ -316,6 +317,12 @@ function handleWebSocketMessage(message) {
 // DOM 이벤트 처리
 function handleDomEvent(event) {
   if (!recording) return;
+
+  // 요소 선택 모드가 활성화되어 있으면 클릭 이벤트 무시
+  if (selectionState.active && (event.action === 'click' || event.type === 'click')) {
+    console.log('[Recorder] 요소 선택 모드 활성화 중 - 클릭 이벤트 무시');
+    return;
+  }
 
   const normalizedEvent = normalizeEventRecord(event);
   
@@ -2401,9 +2408,9 @@ function applyCandidateToNode(node, candidate) {
   renderSelectionCandidates(node);
   renderSelectionPath();
   selectionState.stage = 'await-action';
-  setElementStatus('동작을 선택하세요.', 'info');
   updateSelectionActionsVisibility();
   updateSelectionCodePreview();
+  setElementStatus('동작을 선택하세요.', 'info');
 }
 
 /**
@@ -2477,6 +2484,63 @@ function handleElementSelectionPicked(msg) {
     ...cand,
     type: cand.type || inferSelectorType(cand.selector)
   }));
+  
+  // pendingAction이 있고 후보가 있으면 바로 이벤트 추가 (UI 표시 없이)
+  if (selectionState.pendingAction && candidates.length > 0) {
+    const firstCandidate = candidates[0];
+    
+    // path 생성
+    const path = [{
+      selector: firstCandidate.selector,
+      type: firstCandidate.type || inferSelectorType(firstCandidate.selector),
+      textValue: firstCandidate.textValue || null,
+      xpathValue: firstCandidate.xpathValue || null,
+      matchMode: firstCandidate.matchMode || null,
+      iframeContext: msg.element?.iframeContext || null
+    }];
+    
+    const pending = selectionState.pendingAction;
+    const pendingStepIndex = selectionState.pendingStepIndex;
+    
+    // pendingAction에 따라 이벤트 추가
+    if (pending.startsWith('verify')) {
+      let value = null;
+      if (pending === 'verifyText') {
+        // 요소의 텍스트를 기본값으로 사용
+        const elementText = msg.element?.text || firstCandidate.textValue || '';
+        const textValue = prompt('검증할 텍스트를 입력하세요:', elementText);
+        if (textValue === null) {
+          // 취소 시 워크플로우 종료
+          selectionState.pendingAction = null;
+          selectionState.pendingStepIndex = null;
+          cancelSelectionWorkflow('요소 선택이 취소되었습니다.', 'info');
+          return;
+        }
+        value = textValue || elementText;
+      } else if (pending === 'verifyElementPresent' || pending === 'verifyElementNotPresent') {
+        // 요소 존재/부재 검증은 value 불필요
+        value = null;
+      }
+      
+      // pendingStepIndex가 있으면 addAssertionAfterStep 사용, 없으면 addVerifyAction 사용
+      if (pendingStepIndex !== null && pendingStepIndex !== undefined) {
+        addAssertionAfterStep(pendingStepIndex, pending, path, value);
+        selectionState.pendingStepIndex = null;
+      } else {
+        addVerifyAction(pending, path, value);
+      }
+      selectionState.pendingAction = null;
+      cancelSelectionWorkflow('', 'info');
+      return;
+    } else if (pending === 'waitForElement') {
+      addWaitAction('waitForElement', null, path);
+      selectionState.pendingAction = null;
+      cancelSelectionWorkflow('', 'info');
+      return;
+    }
+  }
+  
+  // pendingAction이 없거나 후보가 없는 경우 기존 로직 유지
   const node = {
     element: msg.element || {},
     candidates,
@@ -4242,19 +4306,32 @@ function setupEventListeners() {
   // 대기 시간 적용 버튼
   const waitTimeApplyBtn = document.getElementById('wait-time-apply');
   const waitTimeInput = document.getElementById('wait-time-input');
-  if (waitTimeApplyBtn && waitTimeInput) {
-    waitTimeApplyBtn.addEventListener('click', () => {
-      const timeValue = parseInt(waitTimeInput.value);
-      if (isNaN(timeValue) || timeValue < 0) {
-        alert('올바른 대기 시간을 입력하세요.');
-        return;
+  
+  const applyWaitTime = () => {
+    if (!waitTimeInput) return;
+    const timeValue = parseInt(waitTimeInput.value);
+    if (isNaN(timeValue) || timeValue < 0) {
+      alert('올바른 대기 시간을 입력하세요.');
+      return;
+    }
+    addWaitAction('wait', timeValue, null);
+    const waitInputPanel = document.getElementById('wait-input-panel');
+    if (waitInputPanel) {
+      waitInputPanel.classList.add('hidden');
+    }
+    waitTimeInput.value = '';
+  };
+  
+  if (waitTimeApplyBtn) {
+    waitTimeApplyBtn.addEventListener('click', applyWaitTime);
+  }
+  
+  if (waitTimeInput) {
+    // Enter 키로도 적용
+    waitTimeInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        applyWaitTime();
       }
-      addWaitAction('wait', timeValue, null);
-      const waitInputPanel = document.getElementById('wait-input-panel');
-      if (waitInputPanel) {
-        waitInputPanel.classList.add('hidden');
-      }
-      waitTimeInput.value = '';
     });
   }
 
@@ -4348,10 +4425,19 @@ function setupEventListeners() {
   // Global assertion 버튼 이벤트 핸들러
   const globalAddAssertionBtn = document.getElementById('global-add-assertion-btn');
   const globalAssertionMenu = document.getElementById('global-assertion-menu');
+  console.log('[Recorder] Global assertion 버튼 찾기:', {
+    button: !!globalAddAssertionBtn,
+    menu: !!globalAssertionMenu
+  });
+  
   if (globalAddAssertionBtn && globalAssertionMenu) {
+    console.log('[Recorder] ✅ Global assertion 버튼 이벤트 리스너 등록');
     globalAddAssertionBtn.addEventListener('click', (e) => {
+      console.log('[Recorder] Global assertion 버튼 클릭됨', e.target, e.currentTarget);
+      e.preventDefault();
       e.stopPropagation();
       globalAssertionMenu.classList.toggle('hidden');
+      console.log('[Recorder] Assertion 메뉴 토글:', !globalAssertionMenu.classList.contains('hidden'));
       // 다른 메뉴 닫기
       const actionMenu = document.getElementById('action-menu');
       if (actionMenu) actionMenu.classList.add('hidden');
@@ -4372,11 +4458,61 @@ function setupEventListeners() {
       if (!button) return;
       
       const assertionType = button.getAttribute('data-assertion');
+      console.log('[Recorder] Assertion 타입 선택:', assertionType);
       globalAssertionMenu.classList.add('hidden');
       
       // 독립적인 assertion 추가 (맨 끝에 추가)
       handleGlobalAssertion(assertionType);
     });
+  } else {
+    console.warn('[Recorder] Global assertion 버튼 또는 메뉴를 찾을 수 없습니다.');
+  }
+  
+  // Global wait 버튼 이벤트 핸들러
+  const globalAddWaitBtn = document.getElementById('global-add-wait-btn');
+  const globalWaitMenu = document.getElementById('global-wait-menu');
+  console.log('[Recorder] Global wait 버튼 찾기:', {
+    button: !!globalAddWaitBtn,
+    menu: !!globalWaitMenu
+  });
+  
+  if (globalAddWaitBtn && globalWaitMenu) {
+    console.log('[Recorder] ✅ Global wait 버튼 이벤트 리스너 등록');
+    globalAddWaitBtn.addEventListener('click', (e) => {
+      console.log('[Recorder] Global wait 버튼 클릭됨', e.target, e.currentTarget);
+      e.preventDefault();
+      e.stopPropagation();
+      globalWaitMenu.classList.toggle('hidden');
+      console.log('[Recorder] Wait 메뉴 토글:', !globalWaitMenu.classList.contains('hidden'));
+      // 다른 메뉴 닫기
+      const actionMenu = document.getElementById('action-menu');
+      if (actionMenu) actionMenu.classList.add('hidden');
+      if (globalAssertionMenu) globalAssertionMenu.classList.add('hidden');
+    });
+    
+    // Global wait 메뉴 외부 클릭 시 닫기
+    document.addEventListener('click', (e) => {
+      if (globalAddWaitBtn && globalWaitMenu && 
+          !globalAddWaitBtn.contains(e.target) && 
+          !globalWaitMenu.contains(e.target)) {
+        globalWaitMenu.classList.add('hidden');
+      }
+    });
+    
+    // Global wait 타입 선택 처리
+    globalWaitMenu.addEventListener('click', (e) => {
+      const button = e.target.closest('button[data-wait]');
+      if (!button) return;
+      
+      const waitType = button.getAttribute('data-wait');
+      console.log('[Recorder] Wait 타입 선택:', waitType);
+      globalWaitMenu.classList.add('hidden');
+      
+      // 독립적인 wait 추가 (맨 끝에 추가)
+      handleGlobalWait(waitType);
+    });
+  } else {
+    console.warn('[Recorder] Global wait 버튼 또는 메뉴를 찾을 수 없습니다.');
   }
 }
 
@@ -4642,6 +4778,72 @@ function handleGlobalAssertion(assertionType) {
   ensureElementPanelVisibility();
 }
 
+/**
+ * Global wait 처리 (맨 끝에 추가)
+ */
+function handleGlobalWait(waitType) {
+  if (!waitType) return;
+  
+  // 시간 대기는 입력 패널 표시
+  if (waitType === 'wait') {
+    // wait-actions 컨테이너 숨기기
+    const waitActionsContainer = document.getElementById('wait-actions');
+    if (waitActionsContainer) {
+      waitActionsContainer.classList.add('hidden');
+    }
+    
+    // 입력 패널 표시
+    const waitInputPanel = document.getElementById('wait-input-panel');
+    if (waitInputPanel) {
+      waitInputPanel.classList.remove('hidden');
+    }
+    
+    // step-details-panel도 표시
+    const stepDetailsPanel = document.getElementById('step-details-panel');
+    if (stepDetailsPanel) {
+      stepDetailsPanel.classList.remove('hidden');
+    }
+    
+    // 입력 필드에 포커스
+    const waitTimeInput = document.getElementById('wait-time-input');
+    if (waitTimeInput) {
+      waitTimeInput.value = '1000'; // 기본값 설정
+      waitTimeInput.focus();
+    }
+    
+    return;
+  }
+  
+  // 요소 대기는 요소 선택 필요
+  if (waitType === 'waitForElement') {
+    if (!selectionState.active) {
+      startSelectionWorkflow();
+    }
+    setElementStatus('대기할 요소를 선택하세요.', 'info');
+    // wait를 pending으로 설정 (stepIndex 없음 = 맨 끝에 추가)
+    selectionState.pendingAction = 'waitForElement';
+    selectionState.pendingStepIndex = null;
+    
+    // wait-actions 컨테이너 숨기기
+    const waitActionsContainer = document.getElementById('wait-actions');
+    if (waitActionsContainer) {
+      waitActionsContainer.classList.add('hidden');
+    }
+    if (elementActionsContainer) {
+      elementActionsContainer.classList.remove('hidden');
+    }
+    
+    // step-details-panel도 표시해야 element-panel이 보임
+    const stepDetailsPanel = document.getElementById('step-details-panel');
+    if (stepDetailsPanel) {
+      stepDetailsPanel.classList.remove('hidden');
+    }
+    
+    // 요소 패널이 보이도록 보장
+    ensureElementPanelVisibility();
+  }
+}
+
 // IPC 이벤트 리스너 설정 (Electron 환경)
 function setupIpcListeners() {
   if (!electronAPI || !electronAPI.onIpcMessage) {
@@ -4742,7 +4944,7 @@ function initDOMElements() {
   languageSelect = document.getElementById('language-select');
   aiReviewBtn = document.getElementById('ai-review-btn');
   aiReviewStatusEl = document.getElementById('ai-review-status');
-  const syncToTcBtn = document.getElementById('sync-to-tc-btn');
+  syncToTcBtn = document.getElementById('sync-to-tc-btn');
   aiEndpointInput = document.getElementById('ai-endpoint');
   aiApiKeyInput = document.getElementById('ai-api-key');
   aiModelInput = document.getElementById('ai-model');

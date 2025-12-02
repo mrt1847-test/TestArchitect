@@ -4239,6 +4239,54 @@ async function init() {
         }
       });
     }
+    
+    // iframe에서 오는 TC step/script 업데이트 메시지 리스너
+    window.addEventListener('message', async (event) => {
+      if (!event.data || typeof event.data !== 'object') return;
+      
+      if (event.data.type === 'tc-step-updated') {
+        const tcId = event.data.tcId;
+        console.log('[Renderer] TC step 업데이트 알림 수신:', tcId);
+        
+        // 현재 선택된 TC가 업데이트된 TC이면 새로고침
+        if (currentTC && currentTC.id === tcId) {
+          try {
+            const updatedTC = await window.electronAPI.api.getTestCase(tcId);
+            if (updatedTC.success) {
+              console.log('[Renderer] ✅ TC 새로고침 완료:', updatedTC.data);
+              // steps 파싱
+              if (typeof updatedTC.data.steps === 'string') {
+                try {
+                  updatedTC.data.steps = JSON.parse(updatedTC.data.steps);
+                } catch (e) {
+                  updatedTC.data.steps = null;
+                }
+              }
+              selectTC(updatedTC.data);
+            } else {
+              console.error('[Renderer] ❌ TC 로드 실패:', updatedTC.error);
+            }
+          } catch (error) {
+            console.error('[Renderer] ❌ TC 새로고침 중 오류:', error);
+          }
+        }
+      } else if (event.data.type === 'tc-script-updated') {
+        const tcId = event.data.tcId;
+        console.log('[Renderer] TC script 업데이트 알림 수신:', tcId);
+        
+        // 현재 선택된 TC가 업데이트된 TC이고 스크립트 탭이 활성화되어 있으면 새로고침
+        if (currentTC && currentTC.id === tcId) {
+          if (activeTab === 'script') {
+            try {
+              await loadScripts(tcId);
+              console.log('[Renderer] ✅ 스크립트 새로고침 완료');
+            } catch (error) {
+              console.error('[Renderer] ❌ 스크립트 새로고침 중 오류:', error);
+            }
+          }
+        }
+      }
+    });
 
     addLog('success', '애플리케이션 초기화 완료');
   } catch (error) {

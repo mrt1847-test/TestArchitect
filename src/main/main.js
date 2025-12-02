@@ -927,7 +927,7 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
   // ============================================================================
   let wsConnection = null;
   let isRecording = false;
-  let lastProcessedUrl = null; // 마지막으로 처리된 URL (중복 이벤트 방지)
+  let isElementSelectionMode = false; // 요소 선택 모드 활성화 여부
   
   // ============================================================================
   // URL 정규화 함수: 의미 있는 부분만 비교 (쿼리 파라미터 제외)
@@ -1335,113 +1335,120 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
   // ============================================================================
   // Chrome Recorder 방식: CDP에서 네비게이션 이벤트를 직접 생성하는 함수
   // ============================================================================
-  function createNavigationEventFromCDP(url, isUserInteraction, source) {
-    // Chrome Recorder 방식: CDP에서 호출되면 녹화 중이므로 localStorage에서도 확인
+  // DOM 스크립트 내부에서 직접 이벤트를 전송하는 함수
+  // 네비게이션 이벤트 생성 함수 (클릭 이벤트와 동일한 패턴으로 sendEvent 직접 호출)
+  // CDP에서 호출할 수 있도록 window에 노출
+  window.__testarchitect_createNavigationEvent = function(url, isUserInteraction, source) {
     const recordingState = isRecording || localStorage.getItem('testarchitect_isRecording') === 'true';
     
-    console.log('[DOM Capture] createNavigationEventFromCDP 호출:', {
-      url: url,
-      isUserInteraction: isUserInteraction,
-      source: source,
-      isRecording: isRecording,
-      localStorageRecording: localStorage.getItem('testarchitect_isRecording'),
-      recordingState: recordingState
-    });
-    
     if (!recordingState) {
-      console.warn('[DOM Capture] createNavigationEventFromCDP: 녹화 중이 아님, 스킵');
       return;
     }
     
     const currentUrl = url || window.location.href;
     const currentTitle = document.title;
     
+    // ⭐ 중복 방지: 이미 처리된 URL인지 확인
+    const lastProcessTime = window.__testarchitect_lastProcessTime || 0;
+    const timeSinceLastProcess = Date.now() - lastProcessTime;
     
+    // 같은 URL이고 최근 500ms 이내에 처리했다면 스킵
+    if (timeSinceLastProcess < 500) {
+      const lastProcessedUrl = window.__testarchitect_lastProcessedUrl;
+      if (lastProcessedUrl === currentUrl) {
+        console.log('[DOM Capture] __testarchitect_createNavigationEvent: 최근 처리된 URL이므로 스킵 (중복 방지)', {
+          url: currentUrl,
+          source: source,
+          timeSinceLastProcess: timeSinceLastProcess,
+          isUserInteraction: isUserInteraction
+        });
+        return;
+      }
+    }
+    
+    // 클릭 이벤트와 동일한 패턴으로 sendEvent 직접 호출
     if (isUserInteraction) {
-        // 사용자 상호작용으로 인한 이동 → verifyUrl assertion 생성
-        const verifyUrlEvent = {
-          action: 'verifyUrl',
-          value: currentUrl,
-          selectors: [],
-          target: null,
-          iframeContext: null,
-          clientRect: null,
-          metadata: { 
-            domEvent: 'navigation', 
+      // 사용자 상호작용으로 인한 이동 → verifyUrl assertion 생성
+      sendEvent({
+        action: 'verifyUrl',
+        value: currentUrl,
+        selectors: [],
+        target: null,
+        iframeContext: null,
+        clientRect: null,
+        metadata: { 
+          domEvent: 'navigation', 
           source: source || 'cdp-user-interaction',
           cdpDetected: true
-          },
-          domContext: null,
-          page: {
-            url: currentUrl,
-            title: currentTitle
-          },
+        },
+        domContext: null,
+        page: {
           url: currentUrl,
-          primarySelector: currentUrl
-        };
-        
-      console.log('[DOM Capture] CDP에서 verifyUrl 이벤트 생성 시작:', {
-        source: source,
+          title: currentTitle
+        },
         url: currentUrl,
-        isRecording: isRecording,
-        localStorageRecording: localStorage.getItem('testarchitect_isRecording')
+        primarySelector: currentUrl
       });
-        sendEvent(verifyUrlEvent);
-      console.log('[DOM Capture] CDP에서 verifyUrl 이벤트 전송 완료:', source, currentUrl);
-      } else {
-        // 직접 입력으로 인한 이동 → navigate 이벤트 생성
-      // ⭐ replaceState pending 정리 (주소창 직접 입력인 경우)
-      if (window.__testarchitect_replaceStatePending) {
-        console.log('[DOM Capture] createNavigationEventFromCDP: navigate 이벤트 생성 → replaceState pending 정리');
-        delete window.__testarchitect_replaceStatePending;
-      }
-      
-        const navigateEvent = {
-          action: 'navigate',
-          value: currentUrl,
-          selectors: [],
-          target: null,
-          iframeContext: null,
-          clientRect: null,
+    } else {
+      // 직접 입력으로 인한 이동 → navigate 이벤트 생성
+      sendEvent({
+        action: 'navigate',
+        value: currentUrl,
+        selectors: [],
+        target: null,
+        iframeContext: null,
+        clientRect: null,
         metadata: { 
           domEvent: 'navigation', 
           source: source || 'cdp-direct',
           cdpDetected: true
         },
-          domContext: null,
-          page: {
-            url: currentUrl,
-            title: currentTitle
-          },
+        domContext: null,
+        page: {
           url: currentUrl,
-          primarySelector: currentUrl
-        };
-        
-      console.log('[DOM Capture] CDP에서 navigate 이벤트 생성 시작:', {
-        source: source,
+          title: currentTitle
+        },
         url: currentUrl,
-        isRecording: isRecording,
-        localStorageRecording: localStorage.getItem('testarchitect_isRecording')
+        primarySelector: currentUrl
       });
-        sendEvent(navigateEvent);
-      console.log('[DOM Capture] CDP에서 navigate 이벤트 전송 완료:', source, currentUrl);
     }
     
     // 처리된 URL 저장 (Chrome Recorder 방식: CDP에서 처리한 경우를 표시)
     try {
-      lastProcessedUrl = currentUrl;
-      
-      // CDP에서 처리한 시간 기록
       window.__testarchitect_lastProcessTime = Date.now();
+      window.__testarchitect_lastProcessedUrl = currentUrl; // ⭐ 처리된 URL 저장
       
-      console.log('[DOM Capture] CDP 네비게이션 이벤트 생성 완료 - URL 저장:', currentUrl);
-      } catch (err) {
-        console.error('[DOM Capture] URL 저장 실패:', err);
+      // navigate가 확정되었음을 표시 (recorder-url-changed에서 중복 방지용)
+      if (!isUserInteraction) {
+        window.__testarchitect_navigateDecided = {
+          url: currentUrl,
+          timestamp: Date.now()
+        };
+        // 5초 후 자동 삭제
+        setTimeout(() => {
+          if (window.__testarchitect_navigateDecided && 
+              window.__testarchitect_navigateDecided.url === currentUrl) {
+            delete window.__testarchitect_navigateDecided;
+          }
+        }, 5000);
+      } else {
+        // ⭐ verifyUrl도 처리되었음을 표시 (중복 방지용)
+        window.__testarchitect_verifyUrlDecided = {
+          url: currentUrl,
+          timestamp: Date.now()
+        };
+        // 5초 후 자동 삭제
+        setTimeout(() => {
+          if (window.__testarchitect_verifyUrlDecided && 
+              window.__testarchitect_verifyUrlDecided.url === currentUrl) {
+            delete window.__testarchitect_verifyUrlDecided;
+          }
+        }, 5000);
+      }
+    } catch (err) {
+      console.error('[DOM Capture] URL 저장 실패:', err);
     }
-  }
-  
-  // CDP에서 호출할 수 있도록 window에 노출
-  window.__testarchitect_createNavigationEvent = createNavigationEventFromCDP;
+  };
   
   
   function connectWebSocket() {
@@ -1477,9 +1484,25 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
           } else if (message.type === 'recording-stop') {
             console.log('[DOM Capture] 녹화 중지');
             isRecording = false;
+            isElementSelectionMode = false; // 녹화 중지 시 요소 선택 모드도 종료
             saveRecordingState(false); // localStorage에 저장
             
             // recordingLastUrl은 유지 (다음 녹화 세션에서 사용)
+          } else if (message.type === 'element-selection') {
+            // 요소 선택 관련 메시지 처리
+            if (message.ELEMENT_SELECTION_START || message.type === 'ELEMENT_SELECTION_START') {
+              // 요소 선택 모드 시작
+              console.log('[DOM Capture] 요소 선택 모드 시작');
+              isElementSelectionMode = true;
+            } else if (message.ELEMENT_SELECTION_PICK_CHILD || message.type === 'ELEMENT_SELECTION_PICK_CHILD') {
+              // 자식 요소 선택 모드 (이미 활성화된 상태 유지)
+              console.log('[DOM Capture] 자식 요소 선택 모드');
+              isElementSelectionMode = true;
+            } else if (message.ELEMENT_SELECTION_CANCEL || message.type === 'ELEMENT_SELECTION_CANCEL') {
+              // 요소 선택 모드 종료
+              console.log('[DOM Capture] 요소 선택 모드 종료');
+              isElementSelectionMode = false;
+            }
             // clearRecordingLastUrl() 호출하지 않음
             
             // 요소 하이라이트 리스너 제거
@@ -1567,6 +1590,73 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
     if (event.button === 2) {
       handleRightClick(event);
       return;
+    }
+    
+    // 요소 선택 모드일 때는 클릭 이벤트를 가로채서 요소 정보만 전송
+    if (isElementSelectionMode) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      
+      // 요소 정보 수집
+      const rect = target.getBoundingClientRect();
+      let selectorCandidates = [];
+      try {
+        selectorCandidates = getSelectorCandidatesWithUniqueness(target, {
+          requireUnique: false
+        });
+      } catch (error) {
+        console.error('[DOM Capture] 셀렉터 생성 오류:', error);
+      }
+      
+      // 요소 정보를 WebSocket으로 전송
+      if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+        const elementData = {
+          type: 'element-selection-picked',
+          element: {
+            tag: target.tagName.toLowerCase(),
+            id: target.id || null,
+            className: target.className || null,
+            text: (target.innerText || target.textContent || "").trim().substring(0, 100) || null,
+            value: target.value || null
+          },
+          selectorCandidates: selectorCandidates,
+          selectors: selectorCandidates.map(c => c.selector || c),
+          clientRect: {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height
+          },
+          page: {
+            url: window.location.href,
+            title: document.title
+          },
+          timestamp: Date.now()
+        };
+        
+        // 요소 선택 결과를 WebSocket으로 전송 (ELEMENT_SELECTION_PICKED 형식)
+        wsConnection.send(JSON.stringify({
+          type: 'ELEMENT_SELECTION_PICKED',
+          selectors: selectorCandidates,
+          element: {
+            tag: elementData.element.tag,
+            id: elementData.element.id,
+            className: elementData.element.className,
+            text: elementData.element.text,
+            value: elementData.element.value
+          },
+          stage: 'root', // 기본값, 필요시 수정 가능
+          timestamp: Date.now()
+        }));
+        
+        console.log('[DOM Capture] 요소 선택 완료:', {
+          tag: elementData.element.tag,
+          id: elementData.element.id,
+          selectorsCount: selectorCandidates.length
+        });
+      }
+      return; // 실제 클릭 이벤트는 처리하지 않음
     }
     
     // 사용자 상호작용 추적 (URL 변경 감지용) - 개선된 버전
@@ -2001,36 +2091,10 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
   history.replaceState = function(state, title, url) {
     const result = originalReplaceState.apply(history, arguments);
     if (isRecording) {
-      console.log('[DOM Capture] history.replaceState 감지:', url);
-      
-      // ⭐ 주소창 직접 입력일 수 있으므로 CDP 이벤트를 기다림
-      // CDP에서 typed/addressBar reason이 오면 navigate로 처리해야 함
-      const currentUrl = window.location.href;
-      window.__testarchitect_replaceStatePending = {
-        url: currentUrl,
-        method: 'replaceState',
-        timestamp: Date.now()
-      };
-      
-      console.log('[DOM Capture] history.replaceState: CDP 이벤트 대기 중 (주소창 직접 입력 가능)', {
-        url: currentUrl,
-        pending: true
-      });
-      
-      // CDP 이벤트를 기다리는 시간 (최대 1000ms)
-      // CDP 이벤트가 오지 않으면 SPA로 처리
-      setTimeout(() => {
-        if (window.__testarchitect_replaceStatePending) {
-          const pending = window.__testarchitect_replaceStatePending;
-          delete window.__testarchitect_replaceStatePending;
-          console.log('[DOM Capture] history.replaceState: CDP 이벤트 미도착, SPA로 처리', {
-            url: pending.url,
-            method: pending.method
-          });
-          // SPA로 처리
-          dispatchUrlChangedEvent(pending.method, pending.url);
-        }
-      }, 1000);
+      // CDP의 navigatedWithinDocument가 우선 처리하지만,
+      // CDP 이벤트가 없는 경우를 대비해 recorder-url-changed 이벤트도 발생
+      // (중복 방지 로직이 있으므로 안전)
+      dispatchUrlChangedEvent('replaceState', url);
     }
     return result;
   };
@@ -2065,88 +2129,124 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
     
     const { url, method, timestamp } = event.detail;
     
-    // ⭐ replaceState의 경우 CDP 이벤트를 기다리는 중이면 스킵
-    if (method === 'replaceState' && window.__testarchitect_replaceStatePending) {
-      console.log('[DOM Capture] recorder-url-changed: replaceState pending 중이므로 스킵 (CDP 이벤트 대기)');
-      return;
-    }
-    
-    // CDP의 navigatedWithinDocument와 중복 방지
-    // CDP에서 처리한 경우 window.__testarchitect_lastProcessTime를 확인
-    const lastProcessTime = window.__testarchitect_lastProcessTime || 0;
-    const timeSinceLastProcess = Date.now() - lastProcessTime;
-    
-    // CDP에서 최근 500ms 이내에 처리했다면 스킵 (중복 방지)
-    if (timeSinceLastProcess < 500) {
-      console.log('[DOM Capture] recorder-url-changed: CDP에서 최근 처리했으므로 스킵 (중복 방지)', {
-        url: url,
-        method: method,
-        timeSinceLastProcess: timeSinceLastProcess
+    // ⭐ getNavigationHistory가 진행 중인지 확인하고 완료될 때까지 대기
+    const waitForGetNavigationHistory = () => {
+      return new Promise((resolve) => {
+        // getNavigationHistory가 진행 중인지 확인
+        if (window.__testarchitect_getNavigationHistoryPending) {
+          console.log('[DOM Capture] recorder-url-changed: getNavigationHistory 대기 중...', {
+            url: url,
+            method: method
+          });
+          
+          // getNavigationHistory 완료를 기다리는 리스너
+          const checkInterval = setInterval(() => {
+            if (!window.__testarchitect_getNavigationHistoryPending) {
+              clearInterval(checkInterval);
+              console.log('[DOM Capture] recorder-url-changed: getNavigationHistory 완료, CDP 이벤트 처리 여부 확인', {
+                url: url,
+                method: method
+              });
+              // getNavigationHistory 완료 후 약간의 지연을 주어 CDP 이벤트 처리 시간 확보
+              setTimeout(resolve, 100);
+            }
+          }, 50); // 50ms마다 확인
+          
+          // 최대 5초 대기 (타임아웃)
+          setTimeout(() => {
+            clearInterval(checkInterval);
+            console.warn('[DOM Capture] recorder-url-changed: getNavigationHistory 대기 타임아웃', {
+              url: url,
+              method: method
+            });
+            resolve();
+          }, 5000);
+        } else {
+          // getNavigationHistory가 진행 중이 아니면 바로 처리 (SPA의 경우 일반적)
+          resolve();
+        }
       });
-      return;
-    }
+    };
     
-    console.log('[DOM Capture] recorder-url-changed 이벤트 처리:', {
-      url: url,
-      method: method,
-      timestamp: timestamp
-    });
-    
-    // 연속 pushState 디바운싱 (300ms 내에 같은 URL이면 마지막 것만 처리)
-    if (spaUrlChangeTimeout) {
-      clearTimeout(spaUrlChangeTimeout);
-    }
-    
-    lastSpaUrl = url;
-    lastSpaMethod = method;
-    
-    spaUrlChangeTimeout = setTimeout(() => {
-      if (!lastSpaUrl) return;
+    // getNavigationHistory 완료 대기 후 처리
+    waitForGetNavigationHistory().then(() => {
+      // ⭐ CDP에서 navigate가 확정되었는지 확인 (최우선)
+      // 주소창 직접 입력 등으로 CDP에서 navigate가 확정되면 recorder-url-changed 무시
+      if (window.__testarchitect_navigateDecided) {
+        const navigateDecided = window.__testarchitect_navigateDecided;
+        const timeDiff = Date.now() - navigateDecided.timestamp;
+        // 5초 이내에 navigate가 확정되었고, 같은 URL이면 무시
+        if (timeDiff < 5000 && navigateDecided.url === url) {
+          console.log('[DOM Capture] recorder-url-changed: CDP에서 navigate가 이미 확정되어 무시 (중복 방지)', {
+            url: url,
+            method: method,
+            decidedUrl: navigateDecided.url,
+            timeDiff: timeDiff
+          });
+          return;
+        }
+      }
       
-      // 사용자 상호작용 정보 확인
-      const lastInteraction = getLastInteraction();
-      const isUserInteraction = lastInteraction && 
-                               (lastInteraction.type === 'click' || 
-                                lastInteraction.type === 'submit' || 
-                                lastInteraction.type === 'history') &&
-                               (Date.now() - lastInteraction.timestamp) < USER_INTERACTION_TO_NAVIGATION_WINDOW;
+      // CDP의 navigatedWithinDocument와 중복 방지
+      // CDP에서 처리한 경우 window.__testarchitect_lastProcessTime를 확인
+      const lastProcessTime = window.__testarchitect_lastProcessTime || 0;
+      const timeSinceLastProcess = Date.now() - lastProcessTime;
       
-      // verifyUrl 이벤트 생성 (SPA URL 변경은 항상 verify)
-      const verifyUrlEvent = {
-        action: 'verifyUrl',
-        value: lastSpaUrl,
-        selectors: [],
-        target: null,
-        iframeContext: null,
-        clientRect: null,
-        metadata: {
-          domEvent: 'navigation',
-          source: 'spa-' + lastSpaMethod, // spa-pushState, spa-replaceState, spa-popstate, spa-hashchange
-          cdpDetected: false, // Content Script에서 감지
-          isSPANavigation: true
-        },
-        domContext: null,
-        page: {
+      // CDP에서 최근 500ms 이내에 처리했다면 스킵 (중복 방지)
+      if (timeSinceLastProcess < 500) {
+        console.log('[DOM Capture] recorder-url-changed: CDP에서 최근 처리했으므로 스킵 (중복 방지)', {
+          url: url,
+          method: method,
+          timeSinceLastProcess: timeSinceLastProcess
+        });
+        return;
+      }
+      
+      // 연속 pushState 디바운싱 (300ms 내에 같은 URL이면 마지막 것만 처리)
+      if (spaUrlChangeTimeout) {
+        clearTimeout(spaUrlChangeTimeout);
+      }
+      
+      lastSpaUrl = url;
+      lastSpaMethod = method;
+      
+      spaUrlChangeTimeout = setTimeout(() => {
+        if (!lastSpaUrl) return;
+        
+        // getNavigationHistory 완료 후에도 CDP 이벤트가 처리되지 않았는지 다시 확인
+        const finalLastProcessTime = window.__testarchitect_lastProcessTime || 0;
+        const finalTimeSinceLastProcess = Date.now() - finalLastProcessTime;
+        const finalLastProcessedUrl = window.__testarchitect_lastProcessedUrl;
+        
+        // CDP에서 최근 1000ms 이내에 처리했다면 스킵 (중복 방지)
+        if (finalTimeSinceLastProcess < 1000 && finalLastProcessedUrl && finalLastProcessedUrl === lastSpaUrl) {
+          console.log('[DOM Capture] recorder-url-changed: 디바운싱 후 CDP에서 처리되었으므로 스킵 (중복 방지)', {
+            url: lastSpaUrl,
+            method: lastSpaMethod,
+            timeSinceLastProcess: finalTimeSinceLastProcess,
+            lastProcessedUrl: finalLastProcessedUrl
+          });
+          lastSpaUrl = null;
+          lastSpaMethod = null;
+          spaUrlChangeTimeout = null;
+          return;
+        }
+        
+        // ⭐ 폴백 처리 제거: CDP 이벤트(Page.navigatedWithinDocument)가 항상 발생하므로 폴백 불필요
+        // CDP 이벤트가 처리되지 않은 경우는 매우 드물고, 그 경우에도 로그만 남기고 스킵
+        console.log('[DOM Capture] recorder-url-changed: CDP 이벤트가 처리되지 않았지만, CDP 이벤트를 기다립니다 (폴백 제거)', {
           url: lastSpaUrl,
-          title: document.title
-        },
-        url: lastSpaUrl,
-        primarySelector: lastSpaUrl
-      };
-      
-      console.log('[DOM Capture] SPA URL 변경 → verifyUrl 이벤트 생성:', {
-        url: lastSpaUrl,
-        method: lastSpaMethod,
-        isUserInteraction: isUserInteraction
-      });
-      
-      sendEvent(verifyUrlEvent);
-      
-      // 초기화
-      lastSpaUrl = null;
-      lastSpaMethod = null;
-      spaUrlChangeTimeout = null;
-    }, 300); // 300ms 디바운싱
+          method: lastSpaMethod,
+          timeSinceLastProcess: finalTimeSinceLastProcess,
+          lastProcessedUrl: finalLastProcessedUrl
+        });
+        
+        // 초기화
+        lastSpaUrl = null;
+        lastSpaMethod = null;
+        spaUrlChangeTimeout = null;
+      }, 300); // 300ms 디바운싱
+    });
   });
   
   // ============================================================================
@@ -2384,9 +2484,11 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
         // Electron/CDP에서는 Page.getNavigationHistory()로 동일한 정보를 얻을 수 있음
         let navigationHistory = null; // { currentIndex, entries: [{ id, url, title, transitionType }] }
         let lastNavigationHistoryId = null; // 마지막으로 확인한 navigation entry ID
+        // Chrome Recorder 방식: target별 navigation history entries 저장 (뒤로/앞으로 가기 감지용)
+        const lastNavigationHistoryByTarget = new Map(); // frameId -> entry ID 배열
         
-        // Chrome Recorder 방식 활성화 플래그
-        const useChromeRecorderMethod = true; // Chrome Recorder 방식 사용 여부
+        // Chrome Recorder 방식 활성화 플래그 (항상 true, 폴백 로직은 에러 핸들링용으로만 유지)
+        const useChromeRecorderMethod = true;
         
         console.log('🎯 [Chrome Recorder] 초기화 완료:', {
           useChromeRecorderMethod: useChromeRecorderMethod,
@@ -2411,9 +2513,79 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
         // Chrome Recorder 방식: Page.getNavigationHistory() 응답 대기 변수
         let pendingNavigationHistoryRequest = null; // { requestId, mainFrameId, mainNav, timeout }
         
-        // 이벤트 생성 헬퍼 함수 (공통 사용)
-        const createNavigationEvent = (url, stepType, isUserInteraction, assertedEvents, source) => {
-          if (!url || !globalRecordingState) return;
+        // ⭐ transitionType 기반 navigate 확정 플래그 (최우선)
+        // transitionType이 typed 등으로 navigate가 확정되면 다른 이벤트들 무시
+        const navigationDecidedByTransitionType = new Map(); // frameId -> { stepType, url, timestamp }
+        
+        // CDP 명령 ID 카운터 (안전한 정수 범위 유지)
+        let cdpCommandIdCounter = 1000000; // 큰 숫자부터 시작 (일반 명령 ID와 구분)
+        let pendingNavigationEventCommands = new Map(); // Runtime.evaluate 응답 대기 중인 명령들
+        
+        // 통합된 네비게이션 처리 함수 (reason 기반 폴백 로직)
+        function processNavigationByReason(mainNav, mainFrameId, source = 'fallback') {
+          const shouldNavigate = mainNav.candidateNavigate && mainNav.documentRequested;
+          const reason = mainNav.reason || mainNav.navigationReason;
+          
+          let isUserInteraction = false;
+          let stepType = 'navigate';
+          
+          if (reason === 'scriptInitiated') {
+            console.log('[CDP] scriptInitiated 감지 → 스킵');
+            navigationContext.delete(mainFrameId);
+            return;
+          }
+          
+          if (reason === 'initialFrameNavigation') {
+            stepType = 'verifyUrl';
+            isUserInteraction = true;
+          } else if (reason === 'restore' || reason === 'restoreWithPost' || 
+                     reason === 'historySameDocument' || reason === 'historyDifferentDocument') {
+            stepType = 'navigate';
+            isUserInteraction = false;
+          } else if (reason === 'sameDocument') {
+            stepType = 'verifyUrl';
+            isUserInteraction = true;
+          } else if (reason === 'differentDocument') {
+            stepType = 'navigate';
+            isUserInteraction = false;
+          } else if (reason === 'reload' || reason === 'reloadBypassingCache') {
+            stepType = 'navigate';
+            isUserInteraction = false;
+          } else if (shouldNavigate) {
+            stepType = 'navigate';
+            if (reason === 'linkClicked' || reason === 'formSubmitted') {
+              stepType = 'verifyUrl';
+              isUserInteraction = true;
+            } else if (reason === 'typed' || reason === 'reload' || reason === 'reloadBypassingCache') {
+              stepType = 'navigate';
+              isUserInteraction = false;
+            }
+          } else {
+            stepType = 'verifyUrl';
+            isUserInteraction = true;
+          }
+          
+          const finalUrl = mainNav.loaderId && redirectChain.has(mainNav.loaderId) 
+            ? redirectChain.get(mainNav.loaderId) 
+            : mainNav.url;
+          
+          triggerNavigationEventViaCDP(finalUrl, stepType, isUserInteraction, null, source);
+          
+          if (mainNav.loaderId) {
+            redirectChain.delete(mainNav.loaderId);
+          }
+          navigationContext.delete(mainFrameId);
+        }
+        
+        // CDP WebSocket 핸들러에서 DOM 함수를 호출하는 헬퍼 함수
+        const triggerNavigationEventViaCDP = (url, stepType, isUserInteraction, assertedEvents, source) => {
+          if (!url || !globalRecordingState) {
+            console.warn('[Navigation Event] 이벤트 생성 스킵:', {
+              url: url ? url.substring(0, 100) : null,
+              globalRecordingState: globalRecordingState
+            });
+            return;
+          }
           
           console.log('[Navigation Event] 이벤트 생성 시작:', {
             url: url ? url.substring(0, 100) : null,
@@ -2429,9 +2601,10 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
                 const escapedUrl = JSON.stringify(url);
                 const escapedIsUserInteraction = JSON.stringify(isUserInteraction);
                 const escapedAssertedEvents = assertedEvents ? JSON.stringify(assertedEvents) : 'null';
+                const commandId = cdpCommandIdCounter++;
                 
                 cdpWs.send(JSON.stringify({
-                  id: Math.floor(Date.now()), // 정수형 ID
+                  id: commandId,
                   method: 'Runtime.evaluate',
                   params: {
                     expression: `
@@ -2452,6 +2625,22 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
                         });
                         
                         if (window.__testarchitect_createNavigationEvent) {
+                          // ⭐ 중복 방지: recorder-url-changed에서 이미 처리했는지 확인
+                          const lastProcessTime = window.__testarchitect_lastProcessTime || 0;
+                          const timeSinceLastProcess = Date.now() - lastProcessTime;
+                          const lastProcessedUrl = window.__testarchitect_lastProcessedUrl;
+                          
+                          // 같은 URL이고 최근 500ms 이내에 처리했다면 스킵
+                          if (timeSinceLastProcess < 500 && lastProcessedUrl === currentUrl) {
+                            console.log('[DOM Capture] Navigation Event: 최근 처리된 URL이므로 스킵 (중복 방지)', {
+                              url: currentUrl,
+                              source: '${source}',
+                              timeSinceLastProcess: timeSinceLastProcess,
+                              isUserInteraction: isUserInteraction
+                            });
+                            return { success: true, skipped: true, reason: 'duplicate' };
+                          }
+                          
                           // Chrome Recorder 방식: beforeUnload에서 설정된 pendingAssertedEvents 확인
                           // verifyUrl인 경우에만 assertedEvents 추가
                           let finalAssertedEvents = assertedEvents;
@@ -2476,44 +2665,79 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
                             console.log('[DOM Capture] Chrome Recorder: 전달받은 assertedEvents 사용', finalAssertedEvents);
                           }
                           
-                          window.__testarchitect_createNavigationEvent(currentUrl, isUserInteraction, source || 'cdp-navigation');
-                          console.log('[DOM Capture] ✅ Navigation Event: 이벤트 생성 완료', {
-                            url: currentUrl,
-                            stepType: stepType,
-                            hasAssertedEvents: !!finalAssertedEvents && finalAssertedEvents.length > 0
-                          });
-                          return { success: true, url: currentUrl, stepType: stepType, assertedEvents: finalAssertedEvents };
+                          try {
+                            window.__testarchitect_createNavigationEvent(currentUrl, isUserInteraction, '${source}' || 'cdp-navigation');
+                            console.log('[DOM Capture] ✅ Navigation Event: 이벤트 생성 완료', {
+                              url: currentUrl,
+                              stepType: stepType,
+                              hasAssertedEvents: !!finalAssertedEvents && finalAssertedEvents.length > 0
+                            });
+                            return { success: true, url: currentUrl, stepType: stepType, assertedEvents: finalAssertedEvents };
+                          } catch (err) {
+                            console.error('[DOM Capture] ❌ window.__testarchitect_createNavigationEvent 호출 실패:', err);
+                            return { success: false, error: 'function_call_failed', message: err.message };
+                          }
                         } else {
                           console.error('[DOM Capture] ❌ window.__testarchitect_createNavigationEvent 함수가 없습니다!');
                           return { success: false, error: 'function_not_found' };
                         }
                       })();
                     `,
-                    userGesture: false
+                    userGesture: false,
+                    returnByValue: true
                   }
                 }));
+                
+                // 응답 타임아웃 설정 (5초)
+                const responseTimeout = setTimeout(() => {
+                  console.error('[Navigation Event] Runtime.evaluate 응답 타임아웃:', {
+                    commandId: commandId,
+                    url: url ? url.substring(0, 100) : null,
+                    stepType: stepType
+                  });
+                }, 5000);
+                
+                // 응답 핸들러 등록 (임시로 저장)
+                pendingNavigationEventCommands = pendingNavigationEventCommands || new Map();
+                pendingNavigationEventCommands.set(commandId, {
+                  url: url,
+                  stepType: stepType,
+                  source: source,
+                  timeout: responseTimeout
+                });
               } catch (err) {
                 console.error('[Navigation Event] 이벤트 생성 실패:', err);
               }
+            } else {
+              console.error('[Navigation Event] WebSocket 연결 안됨:', {
+                readyState: cdpWs.readyState,
+                url: url ? url.substring(0, 100) : null
+              });
             }
           }, 100);
         };
         
         // transitionType 기반 navigate/verifyUrl 판단 함수 (Chrome Recorder 방식)
+        // ⭐ 모든 transitionType 값에 대응: unrelatedNavigationTypes에 포함되면 navigate, 아니면 verifyUrl
         const shouldNavigateByTransitionType = (transitionType) => {
           if (!transitionType) {
-            console.log('[Chrome Recorder] transitionType 없음 → verifyUrl (기본값)');
-            return false; // transitionType이 없으면 verifyUrl
+            console.log('[Chrome Recorder] transitionType 없음 → null 반환 (다른 로직 사용)');
+            return null; // transitionType이 없으면 null (다른 로직 사용)
           }
           
           const isUnrelated = unrelatedNavigationTypes.has(transitionType);
+          const result = isUnrelated ? 'navigate' : 'verifyUrl';
+          
           console.log('[Chrome Recorder] transitionType 판단:', {
             transitionType: transitionType,
             isUnrelated: isUnrelated,
-            result: isUnrelated ? 'navigate' : 'verifyUrl (assertedEvents)'
+            result: result,
+            description: isUnrelated ? 
+              'unrelatedNavigationTypes에 포함 → navigate' : 
+              '사용자 상호작용으로 인한 네비게이션 → verifyUrl'
           });
           
-          return isUnrelated; // unrelatedNavigationTypes에 포함되면 navigate
+          return isUnrelated; // unrelatedNavigationTypes에 포함되면 navigate (true), 아니면 verifyUrl (false)
         };
         
         // 메인 프레임 ID 저장 (Page.getFrameTree로 확인)
@@ -2556,6 +2780,18 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
             const message = JSON.parse(data.toString());
             if (message.error) {
               console.error('❌ CDP 명령 오류:', message.error);
+              // Runtime.evaluate 오류 처리
+              if (message.id && pendingNavigationEventCommands && pendingNavigationEventCommands.has(message.id)) {
+                const pending = pendingNavigationEventCommands.get(message.id);
+                clearTimeout(pending.timeout);
+                pendingNavigationEventCommands.delete(message.id);
+                console.error('[Navigation Event] Runtime.evaluate 오류:', {
+                  commandId: message.id,
+                  error: message.error,
+                  url: pending.url ? pending.url.substring(0, 100) : null,
+                  stepType: pending.stepType
+                });
+              }
             } else if (message.id && message.id <= 7) {
               console.log(`✅ CDP 명령 ${message.id} 완료`);
               
@@ -2567,6 +2803,46 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
                 console.log('🎯 [CDP] 메인 프레임 ID 확인:', {
                   mainFrameId: mainFrameIdFromTree,
                   url: frameTree.frame.url ? frameTree.frame.url.substring(0, 100) : null
+                });
+              }
+            } else if (message.id && pendingNavigationEventCommands && pendingNavigationEventCommands.has(message.id)) {
+              // Runtime.evaluate 응답 처리 (Navigation Event)
+              const pending = pendingNavigationEventCommands.get(message.id);
+              clearTimeout(pending.timeout);
+              pendingNavigationEventCommands.delete(message.id);
+              
+              if (message.result && message.result.result) {
+                const evaluateResult = message.result.result;
+                if (evaluateResult.value) {
+                  const result = JSON.parse(evaluateResult.value);
+                  if (result.success) {
+                    console.log('✅ [Navigation Event] Runtime.evaluate 성공:', {
+                      commandId: message.id,
+                      url: result.url ? result.url.substring(0, 100) : null,
+                      stepType: result.stepType,
+                      source: pending.source
+                    });
+                  } else {
+                    console.error('❌ [Navigation Event] Runtime.evaluate 실패:', {
+                      commandId: message.id,
+                      error: result.error,
+                      message: result.message,
+                      url: pending.url ? pending.url.substring(0, 100) : null,
+                      stepType: pending.stepType
+                    });
+                  }
+                } else {
+                  console.error('❌ [Navigation Event] Runtime.evaluate 결과 없음:', {
+                    commandId: message.id,
+                    result: message.result,
+                    url: pending.url ? pending.url.substring(0, 100) : null
+                  });
+                }
+              } else {
+                console.error('❌ [Navigation Event] Runtime.evaluate 응답 형식 오류:', {
+                  commandId: message.id,
+                  message: message,
+                  url: pending.url ? pending.url.substring(0, 100) : null
                 });
               }
             }
@@ -2665,11 +2941,7 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
                 navigationContextSize: navigationContext.size
               });
               
-              // ⭐ 주소창 직접 입력 감지: replaceState pending 취소
-              if (reason === 'typed' && window.__testarchitect_replaceStatePending) {
-                console.log('[CDP] Page.frameRequestedNavigation: typed 감지 → replaceState pending 취소 (navigate로 처리)');
-                delete window.__testarchitect_replaceStatePending;
-              }
+              // Chrome Recorder 방식: reason만 저장하고, 실제 판단은 Page.getNavigationHistory()에서 수행
               
               // ⭐ 메인 프레임 ID 동적 업데이트 (Page.getFrameTree 응답 전에 이벤트가 올 수 있음)
               // parentFrameId가 없고, disposition이 currentTab이면 메인 프레임으로 간주
@@ -2847,11 +3119,7 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
               lastNavigationReason = navigationReason;
               lastNavigationFrameId = frameId;
               
-              // ⭐ 주소창 직접 입력 감지: replaceState pending 취소
-              if (navigationReason === 'addressBar' && window.__testarchitect_replaceStatePending) {
-                console.log('[CDP] Page.navigationInitiatedByUser: addressBar 감지 → replaceState pending 취소 (navigate로 처리)');
-                delete window.__testarchitect_replaceStatePending;
-              }
+              // Chrome Recorder 방식: navigationReason만 저장하고, 실제 판단은 Page.getNavigationHistory()에서 수행
               
               console.log('🎯 [CDP] Page.navigationInitiatedByUser 감지:', {
                 frameId: frameId || 'main',
@@ -2871,24 +3139,101 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
             // ============================================================================
             // 최신 Chrome: SPA 내부 네비게이션은 navigatedWithinDocument로 처리
             // 사용자 상호작용으로 인한 것으로 간주하여 verifyUrl 생성
+            // ⚠️ 단, 일반 네비게이션(typed 등)이 진행 중이면 무시해야 함
             if (message.method === 'Page.navigatedWithinDocument') {
               const url = message.params && message.params.url;
               const frameId = message.params && message.params.frameId;
               
-              // 메인 프레임만 처리
-              if (frameId && frameId !== 'main') {
-                console.log('[CDP] 서브프레임 내부 네비게이션 무시:', url);
+              // 메인 프레임 판단 (mainFrameIdFromTree 또는 frameId 체크)
+              const mainFrameId = frameId || mainFrameIdFromTree || 'main';
+              const isMainFrame = !frameId || 
+                                  frameId === 'main' || 
+                                  (mainFrameIdFromTree && frameId === mainFrameIdFromTree);
+              
+              if (!isMainFrame) {
+                console.log('[CDP] Page.navigatedWithinDocument: 서브프레임 무시:', {
+                  frameId: frameId,
+                  mainFrameIdFromTree: mainFrameIdFromTree || 'null',
+                  url: url ? url.substring(0, 100) : null
+                });
                 return;
               }
               
-              console.log('📄 [CDP] Page.navigatedWithinDocument 감지 (SPA 내부 네비게이션):', url);
+              // Chrome Recorder 방식: navigatedWithinDocument는 SPA 내부 네비게이션만 처리
+              // ⭐ transitionType 기반 네비게이션 확정 여부 확인 (최우선)
+              // Page.getNavigationHistory()에서 transitionType이 확정되었으면 (navigate/verifyUrl 모두) 무시
+              const navigationDecided = navigationDecidedByTransitionType.get(mainFrameId);
+              if (navigationDecided) {
+                const timeDiff = Date.now() - navigationDecided.timestamp;
+                // 5초 이내에 transitionType 기반으로 네비게이션이 확정되었으면 무시
+                if (timeDiff < 5000) {
+                  console.log('⚠️ [CDP] Page.navigatedWithinDocument: transitionType 기반 네비게이션이 이미 확정되어 무시:', {
+                    frameId: mainFrameId,
+                    url: url ? url.substring(0, 100) : null,
+                    decidedUrl: navigationDecided.url ? navigationDecided.url.substring(0, 100) : null,
+                    decidedStepType: navigationDecided.stepType,
+                    transitionType: navigationDecided.transitionType,
+                    shouldNavigate: navigationDecided.shouldNavigate,
+                    timeDiff: timeDiff
+                  });
+                  return;
+                }
+              }
+              
+              // ⭐ 일반 네비게이션(typed 등)이 진행 중인지 확인
+              // navigationContext에 started=true이고 candidateNavigate=true인 경우는 일반 네비게이션
+              const mainNav = navigationContext.get(mainFrameId);
+              
+              // 1. navigationContext에서 일반 네비게이션 확인
+              if (mainNav && mainNav.started && mainNav.candidateNavigate) {
+                console.log('⚠️ [CDP] Page.navigatedWithinDocument: 일반 네비게이션 진행 중이므로 무시 (navigate로 처리됨):', {
+                  frameId: mainFrameId,
+                  url: url ? url.substring(0, 100) : null,
+                  reason: mainNav.reason || 'unknown',
+                  navigationType: mainNav.navigationType || 'unknown',
+                  candidateNavigate: mainNav.candidateNavigate,
+                  documentRequested: mainNav.documentRequested
+                });
+                return;
+              }
+              
+              // 2. typed/reload 등의 reason 확인
+              if (mainNav && mainNav.reason && (mainNav.reason === 'typed' || mainNav.reason === 'reload' || mainNav.reason === 'reloadBypassingCache')) {
+                console.log('⚠️ [CDP] Page.navigatedWithinDocument: typed/reload 네비게이션 진행 중이므로 무시:', {
+                  frameId: mainFrameId,
+                  url: url ? url.substring(0, 100) : null,
+                  reason: mainNav.reason
+                });
+                return;
+              }
+              
+              // 3. lastNavigationReason 확인 (Page.frameRequestedNavigation에서 설정됨)
+              if (lastNavigationReason === 'addressBar' || lastNavigationReason === 'typed') {
+                console.log('⚠️ [CDP] Page.navigatedWithinDocument: typed/addressBar 네비게이션 진행 중이므로 무시:', {
+                  frameId: mainFrameId,
+                  url: url ? url.substring(0, 100) : null,
+                  lastNavigationReason: lastNavigationReason
+                });
+                return;
+              }
+              
+              console.log('📄 [CDP] Page.navigatedWithinDocument 감지 (SPA 내부 네비게이션):', {
+                frameId: frameId || 'null',
+                url: url ? url.substring(0, 100) : null,
+                isMainFrame: true,
+                hasNavContext: !!mainNav,
+                navStarted: mainNav?.started || false,
+                navCandidateNavigate: mainNav?.candidateNavigate || false,
+                navReason: mainNav?.reason || 'none',
+                lastNavigationReason: lastNavigationReason || 'none'
+              });
               
               // SPA 내부 네비게이션은 사용자 상호작용으로 인한 것으로 간주 → verifyUrl 생성
               if (cdpWs.readyState === WebSocket.OPEN && url && globalRecordingState) {
                 try {
                   const escapedUrl = JSON.stringify(url);
                 cdpWs.send(JSON.stringify({
-                  id: Date.now(),
+                  id: cdpCommandIdCounter++,
                   method: 'Runtime.evaluate',
                   params: {
                       expression: `
@@ -3017,7 +3362,8 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
                   
                   // Chrome Recorder 방식: Page.getNavigationHistory() 호출
                   if (useChromeRecorderMethod) {
-                    const requestId = Math.floor(Date.now());
+                    // 정수형 ID 사용 (CDP 요구사항) - 안전한 범위 유지
+                    const requestId = cdpCommandIdCounter++;
                     
                     console.log('📞 [Chrome Recorder] Page.getNavigationHistory() 호출 시작 (lifecycle.load):', {
                       requestId: requestId,
@@ -3034,7 +3380,7 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
                       if (pendingNavigationHistoryRequest && pendingNavigationHistoryRequest.requestId === requestId) {
                         pendingNavigationHistoryRequest = null;
                       }
-                      processNavigationWithExistingLogicFallback();
+                      processNavigationByReason(mainNav, mainFrameId, 'cdp-error-fallback');
                     }, 5000);
                     
                     pendingNavigationHistoryRequest = {
@@ -3044,62 +3390,7 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
                       timeout: responseTimeout
                     };
                   } else {
-                    processNavigationWithExistingLogicFallback();
-                  }
-                  
-                  // 기존 로직 폴백 함수
-                  function processNavigationWithExistingLogicFallback() {
-                    const shouldNavigate = mainNav.candidateNavigate && mainNav.documentRequested;
-                    const reason = mainNav.reason || mainNav.navigationReason;
-                    
-                    let isUserInteraction = false;
-                    let stepType = 'navigate';
-                    
-                    if (reason === 'scriptInitiated') {
-                      navigationContext.delete(mainFrameId);
-                      return;
-                    }
-                    
-                    if (reason === 'initialFrameNavigation') {
-                      stepType = 'verifyUrl';
-                      isUserInteraction = true;
-                    } else if (reason === 'restore' || reason === 'restoreWithPost' || 
-                               reason === 'historySameDocument' || reason === 'historyDifferentDocument') {
-                      stepType = 'navigate';
-                      isUserInteraction = false;
-                    } else if (reason === 'sameDocument') {
-                      stepType = 'verifyUrl';
-                      isUserInteraction = true;
-                    } else if (reason === 'differentDocument') {
-                      stepType = 'navigate';
-                      isUserInteraction = false;
-                    } else if (reason === 'reload' || reason === 'reloadBypassingCache') {
-                      stepType = 'navigate';
-                      isUserInteraction = false;
-                    } else if (shouldNavigate) {
-                      stepType = 'navigate';
-                      if (reason === 'linkClicked' || reason === 'formSubmitted') {
-                        stepType = 'verifyUrl';
-                        isUserInteraction = true;
-                      } else if (reason === 'typed' || reason === 'reload' || reason === 'reloadBypassingCache') {
-                        stepType = 'navigate';
-                        isUserInteraction = false;
-                      }
-                    } else {
-                      stepType = 'verifyUrl';
-                      isUserInteraction = true;
-                    }
-                    
-                    const finalUrl = mainNav.loaderId && redirectChain.has(mainNav.loaderId) 
-                      ? redirectChain.get(mainNav.loaderId) 
-                      : mainNav.url;
-                    
-                    createNavigationEvent(finalUrl, stepType, isUserInteraction, null, 'cdp-lifecycle-load-fallback');
-                    
-                    if (mainNav.loaderId) {
-                      redirectChain.delete(mainNav.loaderId);
-                    }
-                    navigationContext.delete(mainFrameId);
+                    processNavigationByReason(mainNav, mainFrameId, 'cdp-lifecycle-load-fallback');
                   }
                 }
               }
@@ -3145,9 +3436,11 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
               const frameId = message.params && message.params.frameId;
               
               // 메인 프레임 판단
-              const mainFrameId = mainFrameIdFromTree || (frameId || 'main');
-              const isMainFrameResult = mainFrameIdFromTree ? (frameId === mainFrameIdFromTree) :
-                                       !frameId || frameId === 'main' || frameId === null || frameId === undefined;
+              // Page.loadEventFired는 frameId 파라미터가 없으므로 항상 메인 프레임으로 간주
+              const mainFrameId = mainFrameIdFromTree || 'main';
+              // frameId가 없거나 메인 프레임과 일치하면 메인 프레임
+              const isMainFrameResult = !frameId || frameId === mainFrameId || frameId === 'main' || 
+                                       (mainFrameIdFromTree && frameId === mainFrameIdFromTree);
               
               console.log('🔔 [Chrome Recorder] Page.loadEventFired 감지 (모든 프레임):', {
                 frameId: frameId || 'null/undefined',
@@ -3208,8 +3501,8 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
               
               // Chrome Recorder 방식: Page.getNavigationHistory() 호출
               if (useChromeRecorderMethod) {
-                // 정수형 ID 사용 (CDP 요구사항)
-                const requestId = Math.floor(Date.now());
+                // 정수형 ID 사용 (CDP 요구사항) - 안전한 범위 유지
+                const requestId = cdpCommandIdCounter++;
                 
                 console.log('📞 [Chrome Recorder] Page.getNavigationHistory() 호출 시작:', {
                   requestId: requestId,
@@ -3227,8 +3520,8 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
                   if (pendingNavigationHistoryRequest && pendingNavigationHistoryRequest.requestId === requestId) {
                     pendingNavigationHistoryRequest = null;
                   }
-                  // 타임아웃 시 기존 로직으로 폴백
-                  processNavigationWithExistingLogic();
+                  // 타임아웃 시 통합 폴백 함수 사용
+                  processNavigationByReason(mainNav, mainFrameId, 'cdp-timeout-fallback');
                 }, 5000);
                 
                 // 응답을 기존 message 핸들러에서 처리하도록 플래그 설정
@@ -3239,66 +3532,12 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
                   timeout: responseTimeout
                 };
               } else {
-                // Chrome Recorder 방식 비활성화 시 기존 로직 사용
-                processNavigationWithExistingLogic();
+                // Chrome Recorder 방식 비활성화 시 통합 폴백 함수 사용
+                processNavigationByReason(mainNav, mainFrameId, 'cdp-disabled-fallback');
               }
               
-              // 기존 로직을 함수로 분리 (Chrome Recorder 방식 실패 시 폴백)
-              function processNavigationWithExistingLogic() {
-                const shouldNavigate = mainNav.candidateNavigate && mainNav.documentRequested;
-                const reason = mainNav.reason || mainNav.navigationReason;
-                
-                let isUserInteraction = false;
-                let stepType = 'navigate';
-                
-                // reason 기반 추가 판단
-                if (reason === 'scriptInitiated') {
-                  console.log('[CDP] scriptInitiated 감지 → verify로 처리');
-                  navigationContext.delete(mainFrameId);
-                  return;
-                }
-                
-                if (reason === 'initialFrameNavigation') {
-                  stepType = 'verifyUrl';
-                  isUserInteraction = true;
-                } else if (reason === 'restore' || reason === 'restoreWithPost' || 
-                           reason === 'historySameDocument' || reason === 'historyDifferentDocument') {
-                  stepType = 'navigate';
-                  isUserInteraction = false;
-                } else if (reason === 'sameDocument') {
-                  stepType = 'verifyUrl';
-                  isUserInteraction = true;
-                } else if (reason === 'differentDocument') {
-                  stepType = 'navigate';
-                  isUserInteraction = false;
-                } else if (reason === 'reload' || reason === 'reloadBypassingCache') {
-                  stepType = 'navigate';
-                  isUserInteraction = false;
-                } else if (shouldNavigate) {
-                  stepType = 'navigate';
-                  if (reason === 'linkClicked' || reason === 'formSubmitted') {
-                    stepType = 'verifyUrl';
-                    isUserInteraction = true;
-                  } else if (reason === 'typed' || reason === 'reload' || reason === 'reloadBypassingCache') {
-                    stepType = 'navigate';
-                    isUserInteraction = false;
-                  }
-                } else {
-                  stepType = 'verifyUrl';
-                  isUserInteraction = true;
-                }
-                
-                const finalUrl = mainNav.loaderId && redirectChain.has(mainNav.loaderId) 
-                  ? redirectChain.get(mainNav.loaderId) 
-                  : mainNav.url;
-                
-                createNavigationEvent(finalUrl, stepType, isUserInteraction, null, 'cdp-existing-logic-fallback');
-                
-                if (mainNav.loaderId) {
-                  redirectChain.delete(mainNav.loaderId);
-                }
-                navigationContext.delete(mainFrameId);
-              }
+              // 통합된 폴백 함수 사용
+              // processNavigationByReason는 상위 스코프에 정의됨
               
               // DOM 이벤트 캡처 스크립트 재주입 (새 페이지 로드 완료 후)
               if (cdpWs.readyState === WebSocket.OPEN && globalRecordingState) {
@@ -3332,8 +3571,8 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
               if (message.error) {
                 console.error('❌ [Chrome Recorder] Page.getNavigationHistory() 오류:', message.error);
                 pendingNavigationHistoryRequest = null;
-                // 기존 로직으로 폴백
-                processNavigationWithExistingLogicFallback();
+                // 통합된 폴백 함수 사용
+                processNavigationByReason(mainNav, mainFrameId, 'cdp-error-fallback');
                 return;
               }
               
@@ -3345,17 +3584,17 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
                 });
                 
                 if (!history || !history.entries || history.entries.length === 0) {
-                  console.warn('[Chrome Recorder] navigation history가 비어있음, 기존 로직 사용');
+                  console.warn('[Chrome Recorder] navigation history가 비어있음, 통합 폴백 함수 사용');
                   pendingNavigationHistoryRequest = null;
-                  processNavigationWithExistingLogicFallback();
+                  processNavigationByReason(mainNav, mainFrameId, 'cdp-empty-history-fallback');
                   return;
                 }
                 
                 const currentEntry = history.entries[history.currentIndex];
                 if (!currentEntry) {
-                  console.warn('[Chrome Recorder] current entry를 찾을 수 없음, 기존 로직 사용');
+                  console.warn('[Chrome Recorder] current entry를 찾을 수 없음, 통합 폴백 함수 사용');
                   pendingNavigationHistoryRequest = null;
-                  processNavigationWithExistingLogicFallback();
+                  processNavigationByReason(mainNav, mainFrameId, 'cdp-no-entry-fallback');
                   return;
                 }
                 
@@ -3381,14 +3620,68 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
                 
                 lastNavigationHistoryId = entryId;
                 
-                // transitionType 기반 판단
-                const shouldNavigate = shouldNavigateByTransitionType(transitionType);
+                // Chrome Recorder 방식: history entries 업데이트 및 뒤로/앞으로 가기 감지
+                const lastHistory = lastNavigationHistoryByTarget.get(mainFrameId) || [];
+                const isBackForward = lastHistory.includes(entryId);
+                lastNavigationHistoryByTarget.set(mainFrameId, history.entries.map(entry => entry.id));
+                
+                console.log('[Chrome Recorder] Navigation History 체크:', {
+                  entryId: entryId,
+                  lastHistory: lastHistory,
+                  isBackForward: isBackForward,
+                  historyEntries: history.entries.map(e => e.id)
+                });
+                
+                // ⭐ transitionType 기반 판단 (최우선) - 모든 transitionType 값에 대응
+                // Chrome Recorder 방식: transitionType이 있으면 그것을 최우선으로 사용
+                const shouldNavigateByType = shouldNavigateByTransitionType(transitionType);
+                
+                // transitionType이 없으면 null이 반환되므로 다른 로직 사용
+                // transitionType이 있으면 그것을 최우선으로 사용 (뒤로/앞으로 가기도 고려)
+                const shouldNavigate = shouldNavigateByType !== null 
+                  ? (shouldNavigateByType || isBackForward)
+                  : (mainNav.candidateNavigate && mainNav.documentRequested) || isBackForward;
                 const finalUrl = mainNav.loaderId && redirectChain.has(mainNav.loaderId) 
                   ? redirectChain.get(mainNav.loaderId) 
                   : (entryUrl || mainNav.url);
                 
                 let stepType = shouldNavigate ? 'navigate' : 'verifyUrl';
                 let isUserInteraction = !shouldNavigate; // unrelatedNavigationTypes가 아니면 사용자 상호작용
+                
+                // ⭐ transitionType 기반 네비게이션 확정 플래그 설정 (최우선)
+                // transitionType이 있으면 navigate/verifyUrl 모두 확정하여 이후 다른 이벤트들 무시
+                // transitionType이 없으면 플래그 설정하지 않음 (다른 로직 사용)
+                if (transitionType) {
+                  navigationDecidedByTransitionType.set(mainFrameId, {
+                    stepType: stepType,
+                    url: finalUrl,
+                    timestamp: Date.now(),
+                    transitionType: transitionType,
+                    shouldNavigate: shouldNavigate,
+                    isBackForward: isBackForward
+                  });
+                  console.log('✅ [Chrome Recorder] transitionType 기반 네비게이션 확정 (최우선):', {
+                    frameId: mainFrameId,
+                    transitionType: transitionType,
+                    stepType: stepType,
+                    shouldNavigate: shouldNavigate,
+                    isBackForward: isBackForward,
+                    url: finalUrl ? finalUrl.substring(0, 100) : null
+                  });
+                  
+                  // 5초 후 플래그 자동 삭제 (다음 네비게이션을 위해)
+                  setTimeout(() => {
+                    if (navigationDecidedByTransitionType.has(mainFrameId)) {
+                      const decided = navigationDecidedByTransitionType.get(mainFrameId);
+                      // 같은 URL이면 유지, 아니면 삭제
+                      if (decided.url !== finalUrl) {
+                        navigationDecidedByTransitionType.delete(mainFrameId);
+                      }
+                    }
+                  }, 5000);
+                } else {
+                  console.log('⚠️ [Chrome Recorder] transitionType 없음 - 다른 로직 사용 (navigationContext 기반)');
+                }
                 
                 // assertedEvents 처리 (Chrome Recorder 방식)
                 // beforeUnload에서 설정된 pendingAssertedEvents 확인
@@ -3398,7 +3691,7 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
                 if (!shouldNavigate) {
                   // verifyUrl인 경우 사용자 상호작용으로 인한 네비게이션
                   // beforeUnload에서 설정된 pendingAssertedEvents가 있으면 추가
-                  // (실제 확인은 createNavigationEvent 내부에서 Runtime.evaluate로 수행)
+                  // (실제 확인은 triggerNavigationEventViaCDP 내부에서 Runtime.evaluate로 수행)
                   assertedEvents = [{
                     type: 'navigation',
                     url: finalUrl,
@@ -3407,8 +3700,10 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
                   console.log('[Chrome Recorder] assertedEvents 추가 예정 (verifyUrl, beforeUnload 확인 필요):', assertedEvents);
                 }
                 
-                console.log('🎯 [Chrome Recorder] transitionType 기반 최종 판단:', {
+                console.log('🎯 [Chrome Recorder] transitionType + history 기반 최종 판단:', {
                   transitionType: transitionType,
+                  shouldNavigateByType: shouldNavigateByType,
+                  isBackForward: isBackForward,
                   shouldNavigate: shouldNavigate,
                   stepType: stepType,
                   isUserInteraction: isUserInteraction,
@@ -3416,7 +3711,7 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
                 });
                 
                 // 이벤트 생성
-                createNavigationEvent(finalUrl, stepType, isUserInteraction, assertedEvents, 'chrome-recorder-transitionType');
+                triggerNavigationEventViaCDP(finalUrl, stepType, isUserInteraction, assertedEvents, 'chrome-recorder-transitionType');
                 
                 // redirect 체인에서 loaderId 제거
                 if (mainNav.loaderId) {
@@ -3431,63 +3726,11 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
               } else {
                 console.error('❌ [Chrome Recorder] Page.getNavigationHistory() 응답 형식 오류');
                 pendingNavigationHistoryRequest = null;
-                processNavigationWithExistingLogicFallback();
+                processNavigationByReason(mainNav, mainFrameId, 'cdp-invalid-response-fallback');
               }
               
-              // 기존 로직 폴백 함수
-              function processNavigationWithExistingLogicFallback() {
-                const shouldNavigate = mainNav.candidateNavigate && mainNav.documentRequested;
-                const reason = mainNav.reason || mainNav.navigationReason;
-                
-                let isUserInteraction = false;
-                let stepType = 'navigate';
-                
-                if (reason === 'scriptInitiated') {
-                  navigationContext.delete(mainFrameId);
-                  return;
-                }
-                
-                if (reason === 'initialFrameNavigation') {
-                  stepType = 'verifyUrl';
-                  isUserInteraction = true;
-                } else if (reason === 'restore' || reason === 'restoreWithPost' || 
-                           reason === 'historySameDocument' || reason === 'historyDifferentDocument') {
-                  stepType = 'navigate';
-                  isUserInteraction = false;
-                } else if (reason === 'sameDocument') {
-                  stepType = 'verifyUrl';
-                  isUserInteraction = true;
-                } else if (reason === 'differentDocument') {
-                  stepType = 'navigate';
-                  isUserInteraction = false;
-                } else if (reason === 'reload' || reason === 'reloadBypassingCache') {
-                  stepType = 'navigate';
-                  isUserInteraction = false;
-                } else if (shouldNavigate) {
-                  stepType = 'navigate';
-                  if (reason === 'linkClicked' || reason === 'formSubmitted') {
-                    stepType = 'verifyUrl';
-                    isUserInteraction = true;
-                  } else if (reason === 'typed' || reason === 'reload' || reason === 'reloadBypassingCache') {
-                    stepType = 'navigate';
-                    isUserInteraction = false;
-                  }
-                } else {
-                  stepType = 'verifyUrl';
-                  isUserInteraction = true;
-                }
-                
-                const finalUrl = mainNav.loaderId && redirectChain.has(mainNav.loaderId) 
-                  ? redirectChain.get(mainNav.loaderId) 
-                  : mainNav.url;
-                
-                createNavigationEvent(finalUrl, stepType, isUserInteraction, null, 'cdp-existing-logic-fallback');
-                
-                if (mainNav.loaderId) {
-                  redirectChain.delete(mainNav.loaderId);
-                }
-                navigationContext.delete(mainFrameId);
-              }
+              // 통합된 폴백 함수 사용
+              // processNavigationByReason는 상위 스코프에 정의됨
             }
             
             // Page.frameNavigated는 최신 Chrome에서 더 이상 사용되지 않음
@@ -3549,8 +3792,36 @@ function convertEventToStep(event, index = 0) {
     }
   }
   
+  // 이벤트 action을 키워드 action으로 매핑
+  // 키워드 라이브러리와 일치하도록 변환
+  const actionMapping = {
+    'input': 'type',                    // 이벤트의 input → 키워드의 type
+    'navigate': 'open',                 // 이벤트의 navigate → 키워드의 open
+    'goto': 'open',                     // goto도 open으로 통일 (키워드에 goto도 있지만 open을 우선)
+    'assert': 'verifyText',             // 이벤트의 assert → 키워드의 verifyText (기본값)
+    // 나머지는 그대로 사용 (click, type, verifyText, verifyElementPresent, waitForElement, wait 등)
+  };
+  
+  // 매핑이 있으면 변환, 없으면 원본 사용
+  let keywordAction = actionMapping[action] || action;
+  
+  // assert 이벤트의 경우 assertion 타입에 따라 더 구체적으로 매핑
+  if (action === 'assert' && event.assertion) {
+    const assertionMapping = {
+      'text': 'verifyText',
+      'elementPresent': 'verifyElementPresent',
+      'elementNotPresent': 'verifyElementNotPresent',
+      'title': 'verifyTitle',
+      'url': 'verifyUrl'
+    };
+    const mappedAssertion = assertionMapping[event.assertion];
+    if (mappedAssertion) {
+      keywordAction = mappedAssertion;
+    }
+  }
+  
   const step = {
-    action: action, // 'click', 'type', 'navigate', 'wait', 'assert' 등
+    action: keywordAction, // 키워드 라이브러리와 일치하는 action
     target: null,
     value: event.value || null,
     description: null
@@ -3639,24 +3910,18 @@ function convertEventToStep(event, index = 0) {
     // xpath가 직접 있는 경우
     step.target = event.xpath;
     console.log(`[Recording] xpath에서 target 추출: ${step.target}`);
-  } else if (action === 'navigate') {
-    // navigate의 경우 target이 없을 수 있음 (value가 URL)
-    // event.value, event.url, event.page?.url 순서로 확인
-    step.target = event.value || event.url || event.page?.url || null;
-  }
-
-  // navigate 이벤트의 경우 target을 URL로 설정
-  if (event.type === 'navigate' || action === 'navigate') {
+  } else if (keywordAction === 'open' || keywordAction === 'goto' || action === 'navigate') {
+    // navigate/open/goto 이벤트의 경우 target을 URL로 설정 (중복 제거)
     // event.value, event.url, event.page?.url 순서로 확인
     const navigateUrl = event.value || event.url || event.page?.url || null;
     if (navigateUrl) {
       step.target = navigateUrl;
-    step.value = null;
+      step.value = null;
     }
   }
 
   // wait 이벤트의 경우 조건 추가
-  if (event.type === 'wait') {
+  if (keywordAction === 'wait' || keywordAction === 'waitForElement' || event.type === 'wait') {
     step.condition = event.condition || 'visible';
     step.timeout = event.timeout || 5000;
     if (!step.target && event.target) {
@@ -3666,10 +3931,14 @@ function convertEventToStep(event, index = 0) {
     }
   }
 
-  // assert 이벤트의 경우 검증 정보 추가
-  if (event.type === 'assert') {
-    step.assertion = event.assertion || 'text';
-    step.expected = event.expected || null;
+  // assert/verify 이벤트의 경우 검증 정보 추가
+  if (event.type === 'assert' || keywordAction.startsWith('verify')) {
+    if (event.assertion) {
+      step.assertion = event.assertion;
+    }
+    if (event.expected !== undefined) {
+      step.expected = event.expected;
+    }
     if (!step.target && event.target) {
       const selectors = event.target.selectors || {};
       step.target = selectors.css || selectors.xpath || selectors.id || null;
@@ -5626,12 +5895,28 @@ ipcMain.handle('save-event-step', async (event, { tcId, projectId, event: eventD
     
     // 4. 업데이트된 steps 저장
     const stepsJson = JSON.stringify(existingSteps);
-    DbService.run(
+    const updateResult = DbService.run(
       'UPDATE test_cases SET steps = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
       [stepsJson, tcId]
     );
     
-    console.log(`[Recording] ✅ 실시간 step 저장 완료: TC ${tcId}, Step ${existingSteps.length} (action: ${newStep.action}, target: ${newStep.target || '(없음)'})`);
+    // 5. DB 저장 검증 (실제로 저장되었는지 확인)
+    if (updateResult) {
+      const verifyTC = DbService.get('SELECT steps FROM test_cases WHERE id = ?', [tcId]);
+      if (verifyTC && verifyTC.steps) {
+        try {
+          const savedSteps = JSON.parse(verifyTC.steps);
+          console.log(`[Recording] ✅ 실시간 step 저장 완료 및 검증 성공: TC ${tcId}, Step ${savedSteps.length}개 (action: ${newStep.action}, target: ${newStep.target || '(없음)'})`);
+        } catch (e) {
+          console.warn(`[Recording] ⚠️ 저장 검증 중 파싱 오류:`, e);
+          console.log(`[Recording] ✅ 실시간 step 저장 완료: TC ${tcId}, Step ${existingSteps.length} (action: ${newStep.action}, target: ${newStep.target || '(없음)'})`);
+        }
+      } else {
+        console.error(`[Recording] ❌ 저장 검증 실패: TC ${tcId}의 steps가 DB에 없습니다!`);
+      }
+    } else {
+      console.error(`[Recording] ❌ DB 업데이트 실패: TC ${tcId}`);
+    }
     
     return {
       success: true,
@@ -5640,6 +5925,131 @@ ipcMain.handle('save-event-step', async (event, { tcId, projectId, event: eventD
     };
   } catch (error) {
     console.error('[Recording] ❌ 실시간 step 저장 실패:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+/**
+ * TC steps 초기화
+ */
+ipcMain.handle('clear-tc-steps', async (event, tcId) => {
+  try {
+    if (!tcId) {
+      return { success: false, error: 'tcId가 필요합니다' };
+    }
+    
+    const testCase = DbService.get('SELECT id FROM test_cases WHERE id = ?', [tcId]);
+    if (!testCase) {
+      return { success: false, error: `TC ID ${tcId}를 찾을 수 없습니다` };
+    }
+    
+    // steps를 빈 배열로 초기화
+    DbService.run(
+      'UPDATE test_cases SET steps = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [JSON.stringify([]), tcId]
+    );
+    
+    console.log(`[Recording] ✅ TC ${tcId}의 steps 초기화 완료`);
+    
+    return { success: true };
+  } catch (error) {
+    console.error('[Recording] ❌ TC steps 초기화 실패:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+/**
+ * TC에서 특정 step 삭제
+ */
+ipcMain.handle('delete-tc-step', async (event, { tcId, stepIndex }) => {
+  try {
+    if (!tcId || stepIndex === undefined) {
+      return { success: false, error: 'tcId와 stepIndex가 필요합니다' };
+    }
+    
+    const testCase = DbService.get('SELECT steps FROM test_cases WHERE id = ?', [tcId]);
+    if (!testCase) {
+      return { success: false, error: `TC ID ${tcId}를 찾을 수 없습니다` };
+    }
+    
+    let existingSteps = [];
+    if (testCase.steps) {
+      try {
+        existingSteps = JSON.parse(testCase.steps);
+        if (!Array.isArray(existingSteps)) {
+          existingSteps = [];
+        }
+      } catch (e) {
+        console.warn('[Recording] 기존 steps 파싱 실패:', e);
+        existingSteps = [];
+      }
+    }
+    
+    // stepIndex 유효성 검사
+    if (stepIndex < 0 || stepIndex >= existingSteps.length) {
+      return { success: false, error: `유효하지 않은 stepIndex: ${stepIndex}` };
+    }
+    
+    // 해당 step 삭제
+    existingSteps.splice(stepIndex, 1);
+    
+    // 업데이트된 steps 저장
+    const stepsJson = JSON.stringify(existingSteps);
+    DbService.run(
+      'UPDATE test_cases SET steps = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [stepsJson, tcId]
+    );
+    
+    console.log(`[Recording] ✅ TC ${tcId}의 Step ${stepIndex} 삭제 완료 (남은 steps: ${existingSteps.length})`);
+    
+    return {
+      success: true,
+      remainingSteps: existingSteps.length
+    };
+  } catch (error) {
+    console.error('[Recording] ❌ TC step 삭제 실패:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+/**
+ * 이벤트 배열을 TC steps로 전체 동기화
+ */
+ipcMain.handle('sync-events-to-tc', async (event, { tcId, events }) => {
+  try {
+    if (!tcId) {
+      return { success: false, error: 'tcId가 필요합니다' };
+    }
+    
+    if (!Array.isArray(events)) {
+      return { success: false, error: 'events는 배열이어야 합니다' };
+    }
+    
+    const testCase = DbService.get('SELECT id FROM test_cases WHERE id = ?', [tcId]);
+    if (!testCase) {
+      return { success: false, error: `TC ID ${tcId}를 찾을 수 없습니다` };
+    }
+    
+    // 이벤트를 steps로 변환
+    const steps = events.map((event, index) => {
+      return convertEventToStep(event, index);
+    });
+    
+    // steps 저장
+    const stepsJson = JSON.stringify(steps);
+    DbService.run(
+      'UPDATE test_cases SET steps = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [stepsJson, tcId]
+    );
+    
+    console.log(`[Recording] ✅ TC ${tcId}에 ${steps.length}개의 steps 동기화 완료`);
+    
+    return {
+      success: true,
+      stepCount: steps.length
+    };
+  } catch (error) {
+    console.error('[Recording] ❌ TC steps 동기화 실패:', error);
     return { success: false, error: error.message };
   }
 });

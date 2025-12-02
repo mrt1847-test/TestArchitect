@@ -10,12 +10,39 @@ import { getSelectorCandidatesWithUniqueness } from './utils/selectorUtils.js';
 // Electron IPC 통신 (Electron 환경에서만 사용)
 // contextIsolation: true이므로 window.electronAPI를 통해 접근
 let electronAPI = null;
-if (typeof window !== 'undefined' && window.electronAPI) {
-  electronAPI = window.electronAPI;
-  console.log('[Recorder] electronAPI 로드 성공');
-} else {
-  console.warn('[Recorder] electronAPI가 없습니다. Electron 환경이 아닐 수 있습니다.');
+
+/**
+ * electronAPI 초기화 및 재확인
+ * iframe 환경에서는 부모 윈도우의 electronAPI에 접근 시도
+ */
+function initElectronAPI() {
+  // 먼저 현재 윈도우에서 확인
+  if (typeof window !== 'undefined' && window.electronAPI) {
+    electronAPI = window.electronAPI;
+    console.log('[Recorder] electronAPI 로드 성공 (현재 윈도우)');
+    return true;
+  }
+  
+  // iframe 환경에서는 부모 윈도우 확인
+  if (window.parent !== window && window.parent.electronAPI) {
+    electronAPI = window.parent.electronAPI;
+    console.log('[Recorder] electronAPI 로드 성공 (부모 윈도우)');
+    return true;
+  }
+  
+  // top 윈도우 확인
+  if (window.top && window.top !== window && window.top.electronAPI) {
+    electronAPI = window.top.electronAPI;
+    console.log('[Recorder] electronAPI 로드 성공 (top 윈도우)');
+    return true;
+  }
+  
+  console.warn('[Recorder] electronAPI를 찾을 수 없습니다.');
+  return false;
 }
+
+// 초기화 시도
+initElectronAPI();
 
 // DOM 요소 참조 (나중에 초기화됨)
 let startBtn = null;
@@ -185,6 +212,11 @@ function handleWebSocketMessage(message) {
     case 'connected':
       console.log('[Recorder] 서버 연결 확인:', message.message);
       break;
+      
+    case 'registered':
+      // 등록 확인 메시지 (무시하거나 로그만 출력)
+      console.log('[Recorder] 등록 확인:', message.message || '등록 완료');
+      break;
 
     case 'dom-event':
       // Content Script에서 전송된 DOM 이벤트
@@ -341,6 +373,128 @@ function handleDomEvent(event) {
   saveEventAsStep(normalizedEvent);
 }
 
+// 코드 저장 debounce 타이머
+let codeSaveTimer = null;
+const CODE_SAVE_DELAY = 1000; // 1초 지연
+
+/**
+ * 코드를 TC script로 실시간 저장
+ */
+async function saveCodeToTC(code) {
+  // TC ID와 Project ID 확인
+  const tcId = tcIdInput?.value;
+  const projectId = projectIdInput?.value;
+  
+  if (!tcId || !projectId) {
+    // TC ID나 Project ID가 없으면 저장하지 않음 (조용히 무시)
+    return;
+  }
+  
+  if (!code || !code.trim()) {
+    // 코드가 없으면 저장하지 않음
+    return;
+  }
+  
+  // electronAPI 재확인
+  if (!electronAPI) {
+    initElectronAPI();
+  }
+  
+  if (!electronAPI) {
+    console.warn('[Recorder] electronAPI가 없어 코드 저장을 건너뜁니다.');
+    return;
+  }
+  
+  try {
+    // 기존 스크립트 확인
+    const scriptsResponse = await electronAPI.invoke('api-get-scripts', {
+      test_case_id: parseInt(tcId, 10)
+    });
+    
+    if (!scriptsResponse || !scriptsResponse.success) {
+      console.warn('[Recorder] ⚠️ 기존 스크립트 조회 실패:', scriptsResponse?.error);
+      return;
+    }
+    
+    const existingScripts = scriptsResponse.data || [];
+    const existingScript = existingScripts.find(
+      s => s.language === selectedLanguage && s.framework === selectedFramework && s.status === 'active'
+    );
+    
+    if (existingScript) {
+      // 기존 스크립트 업데이트
+      const updateResponse = await electronAPI.invoke('api-update-script', existingScript.id, {
+        code: code
+      });
+      
+      if (updateResponse && updateResponse.success) {
+        console.log(`[Recorder] ✅ 코드가 TC script로 업데이트되었습니다: Script ID ${existingScript.id}`);
+        
+        // 부모 윈도우에 스크립트 업데이트 알림 (iframe 환경)
+        if (window.parent !== window) {
+          try {
+            window.parent.postMessage({
+              type: 'tc-script-updated',
+              tcId: parseInt(tcId, 10)
+            }, '*');
+          } catch (e) {
+            console.warn('[Recorder] 부모 윈도우 메시지 전송 실패:', e);
+          }
+        }
+      } else {
+        console.warn('[Recorder] ⚠️ 코드 업데이트 실패:', updateResponse?.error || '알 수 없는 오류');
+      }
+    } else {
+      // 새 스크립트 생성
+      const scriptName = `Generated ${selectedLanguage} script`;
+      const createResponse = await electronAPI.invoke('api-create-script', {
+        test_case_id: parseInt(tcId, 10),
+        name: scriptName,
+        framework: selectedFramework,
+        language: selectedLanguage,
+        code: code,
+        status: 'active'
+      });
+      
+      if (createResponse && createResponse.success) {
+        console.log(`[Recorder] ✅ 코드가 TC script로 생성되었습니다: Script ID ${createResponse.data?.id}`);
+        
+        // 부모 윈도우에 스크립트 생성 알림 (iframe 환경)
+        if (window.parent !== window) {
+          try {
+            window.parent.postMessage({
+              type: 'tc-script-updated',
+              tcId: parseInt(tcId, 10)
+            }, '*');
+          } catch (e) {
+            console.warn('[Recorder] 부모 윈도우 메시지 전송 실패:', e);
+          }
+        }
+      } else {
+        console.warn('[Recorder] ⚠️ 코드 생성 실패:', createResponse?.error || '알 수 없는 오류');
+      }
+    }
+  } catch (error) {
+    console.error('[Recorder] ❌ 코드 저장 중 오류:', error);
+  }
+}
+
+/**
+ * 코드 저장 (debounce 적용)
+ */
+function saveCodeToTCWithDebounce(code) {
+  // 기존 타이머 취소
+  if (codeSaveTimer) {
+    clearTimeout(codeSaveTimer);
+  }
+  
+  // 새 타이머 설정
+  codeSaveTimer = setTimeout(() => {
+    saveCodeToTC(code);
+    codeSaveTimer = null;
+  }, CODE_SAVE_DELAY);
+}
+
 /**
  * 이벤트를 TC step으로 실시간 저장
  */
@@ -352,6 +506,11 @@ async function saveEventAsStep(event) {
   if (!tcId || !projectId) {
     // TC ID나 Project ID가 없으면 저장하지 않음 (조용히 무시)
     return;
+  }
+  
+  // electronAPI 재확인 (동적으로 다시 확인)
+  if (!electronAPI) {
+    initElectronAPI();
   }
   
   if (!electronAPI) {
@@ -369,12 +528,103 @@ async function saveEventAsStep(event) {
     
     if (result && result.success) {
       console.log('[Recorder] ✅ 이벤트가 TC step으로 저장되었습니다:', result.stepIndex);
+      
+      // 부모 윈도우에 TC 새로고침 요청 (iframe 환경)
+      if (window.parent !== window) {
+        try {
+          window.parent.postMessage({
+            type: 'tc-step-updated',
+            tcId: parseInt(tcId, 10)
+          }, '*');
+          console.log('[Recorder] 부모 윈도우에 TC 새로고침 요청 전송');
+        } catch (e) {
+          console.warn('[Recorder] 부모 윈도우 메시지 전송 실패:', e);
+        }
+      }
     } else {
       console.warn('[Recorder] ⚠️ 이벤트 저장 실패:', result?.error || '알 수 없는 오류');
     }
   } catch (error) {
     console.error('[Recorder] ❌ 이벤트 저장 중 오류:', error);
   }
+}
+
+/**
+ * 전체 이벤트를 TC steps로 동기화
+ */
+async function syncAllEventsToTC() {
+  const tcId = tcIdInput?.value;
+  
+  if (!tcId) {
+    logMessage('TC ID를 입력하세요.', 'error');
+    return { success: false, error: 'TC ID가 필요합니다' };
+  }
+  
+  // electronAPI 재확인
+  if (!electronAPI) {
+    initElectronAPI();
+  }
+  
+  if (!electronAPI) {
+    logMessage('Electron API를 사용할 수 없습니다.', 'error');
+    return { success: false, error: 'Electron API를 사용할 수 없습니다' };
+  }
+  
+  if (allEvents.length === 0) {
+    logMessage('동기화할 이벤트가 없습니다.', 'info');
+    return { success: false, error: '동기화할 이벤트가 없습니다' };
+  }
+  
+  try {
+    logMessage('TC steps 동기화 중...', 'info');
+    
+    const result = await electronAPI.invoke('sync-events-to-tc', {
+      tcId: parseInt(tcId, 10),
+      events: allEvents
+    });
+    
+    if (result && result.success) {
+      console.log(`[Recorder] ✅ ${result.stepCount}개의 steps가 TC에 동기화되었습니다`);
+      logMessage(`${result.stepCount}개의 steps가 TC에 동기화되었습니다`, 'success');
+      return { success: true, stepCount: result.stepCount };
+    } else {
+      const errorMsg = result?.error || '알 수 없는 오류';
+      console.warn('[Recorder] ⚠️ TC steps 동기화 실패:', errorMsg);
+      logMessage('TC steps 동기화 실패: ' + errorMsg, 'error');
+      return { success: false, error: errorMsg };
+    }
+  } catch (error) {
+    console.error('[Recorder] ❌ TC steps 동기화 중 오류:', error);
+    logMessage('TC steps 동기화 중 오류: ' + error.message, 'error');
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * 현재 코드를 TC steps로 동기화
+ * 코드에서 steps를 추출하거나 현재 이벤트를 steps로 변환
+ */
+async function syncCodeToTC() {
+  const tcId = tcIdInput?.value;
+  
+  if (!tcId) {
+    logMessage('TC ID를 입력하세요.', 'error');
+    return { success: false, error: 'TC ID가 필요합니다' };
+  }
+  
+  if (!electronAPI) {
+    logMessage('Electron API를 사용할 수 없습니다.', 'error');
+    return { success: false, error: 'Electron API를 사용할 수 없습니다' };
+  }
+  
+  // 현재 이벤트를 steps로 변환하여 동기화
+  if (allEvents.length === 0) {
+    logMessage('동기화할 이벤트가 없습니다.', 'info');
+    return { success: false, error: '동기화할 이벤트가 없습니다' };
+  }
+  
+  // syncAllEventsToTC를 사용하여 동기화
+  return await syncAllEventsToTC();
 }
 
 // 이벤트 레코드 정규화
@@ -2240,7 +2490,20 @@ function handleElementSelectionPicked(msg) {
   updateSelectionActionsVisibility();
   updateSelectionCodePreview();
   ensureElementPanelVisibility();
-  setElementStatus('후보 중 하나를 선택하세요.', 'info');
+  
+  // pendingAction에 따라 다른 메시지 표시
+  if (selectionState.pendingAction) {
+    if (selectionState.pendingAction === 'verifyText') {
+      setElementStatus('후보를 선택한 후 텍스트를 입력하세요.', 'info');
+    } else if (selectionState.pendingAction === 'verifyElementPresent' || 
+               selectionState.pendingAction === 'verifyElementNotPresent') {
+      setElementStatus('후보를 선택하면 검증이 완료됩니다.', 'info');
+    } else {
+      setElementStatus('후보 중 하나를 선택하세요.', 'info');
+    }
+  } else {
+    setElementStatus('후보 중 하나를 선택하세요.', 'info');
+  }
 }
 
 /**
@@ -2369,18 +2632,21 @@ function applySelectionAction(actionType, options = {}) {
     if (pending.startsWith('verify')) {
       let value = null;
       if (pending === 'verifyText') {
-        const lastPathItem = path[path.length - 1];
-        if (lastPathItem && lastPathItem.textValue) {
-          value = lastPathItem.textValue;
-        } else {
-          const textValue = prompt('검증할 텍스트를 입력하세요:');
-          if (textValue === null) {
-            selectionState.pendingAction = null;
-            selectionState.pendingStepIndex = null;
-            return;
-          }
-          value = textValue;
+        // 요소의 텍스트를 기본값으로 사용
+        const currentNode = getCurrentSelectionNode();
+        const elementText = currentNode?.element?.text || 
+                           path[path.length - 1]?.textValue || 
+                           '';
+        const textValue = prompt('검증할 텍스트를 입력하세요:', elementText);
+        if (textValue === null) {
+          selectionState.pendingAction = null;
+          selectionState.pendingStepIndex = null;
+          return;
         }
+        value = textValue || elementText;
+      } else if (pending === 'verifyElementPresent' || pending === 'verifyElementNotPresent') {
+        // 요소 존재/부재 검증은 value 불필요
+        value = null;
       }
       
       // pendingStepIndex가 있으면 addAssertionAfterStep 사용, 없으면 addVerifyAction 사용
@@ -3368,6 +3634,12 @@ function updateCode(options = {}) {
     loadManualActions(() => {
       const code = generateCode(normalizedEvents, manualActions, selectedFramework, selectedLanguage);
       setCodeText(code);
+      
+      // 코드를 TC에 실시간 저장 (debounce 적용)
+      if (recording) {
+        saveCodeToTCWithDebounce(code);
+      }
+      
       // updateSelectionCodePreview(); // 6단계에서 구현
     });
   };
@@ -3413,8 +3685,49 @@ function initCodeEditor() {
 }
 
 // 녹화 시작
-function startRecording() {
+async function startRecording() {
   if (recording) return;
+
+  // TC ID가 있을 때 steps 초기화/추가 선택
+  const tcId = tcIdInput?.value;
+  if (tcId) {
+    // electronAPI 재확인
+    if (!electronAPI) {
+      initElectronAPI();
+    }
+    
+    if (electronAPI) {
+      try {
+        // 사용자에게 선택 다이얼로그 표시
+        const choice = await new Promise((resolve) => {
+          const shouldClear = confirm(
+            'TC에 기존 steps가 있습니다.\n\n' +
+            '확인: 기존 steps를 초기화하고 새로 시작\n' +
+            '취소: 기존 steps 뒤에 추가하여 이어서 녹화'
+          );
+          resolve(shouldClear);
+        });
+
+        if (choice) {
+          // 기존 steps 초기화
+          const result = await electronAPI.invoke('clear-tc-steps', parseInt(tcId, 10));
+          if (result && result.success) {
+            console.log('[Recorder] ✅ TC steps 초기화 완료');
+            logMessage('TC steps 초기화 완료', 'info');
+          } else {
+            console.warn('[Recorder] ⚠️ TC steps 초기화 실패:', result?.error);
+            logMessage('TC steps 초기화 실패: ' + (result?.error || '알 수 없는 오류'), 'error');
+          }
+        } else {
+          console.log('[Recorder] 기존 steps 유지하고 이어서 녹화');
+          logMessage('기존 steps 뒤에 추가하여 녹화', 'info');
+        }
+      } catch (error) {
+        console.error('[Recorder] ❌ TC steps 초기화 선택 중 오류:', error);
+        // 오류가 발생해도 녹화는 계속 진행
+      }
+    }
+  }
 
   recording = true;
   allEvents = [];
@@ -3432,10 +3745,36 @@ function startRecording() {
   // 빈 상태 메시지 표시
   updateStepsEmptyState();
 
+  // WebSocket 연결 확인 및 재시도
+  if (!wsConnection || wsConnection.readyState !== WebSocket.OPEN) {
+    console.warn('[Recorder] WebSocket이 연결되지 않았습니다. 연결을 시도합니다...');
+    logMessage('WebSocket 연결 시도 중...', 'info');
+    
+    // WebSocket 연결 시도
+    connectWebSocket();
+    
+    // 연결 대기 (최대 2초)
+    let waitCount = 0;
+    const maxWait = 20; // 2초 (100ms * 20)
+    
+    while ((!wsConnection || wsConnection.readyState !== WebSocket.OPEN) && waitCount < maxWait) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      waitCount++;
+    }
+    
+    if (!wsConnection || wsConnection.readyState !== WebSocket.OPEN) {
+      console.warn('[Recorder] WebSocket 연결 실패. 녹화를 시작할 수 없습니다.');
+      logMessage('WebSocket 연결이 필요합니다. 브라우저를 먼저 열어주세요.', 'error');
+      recording = false;
+      if (startBtn) startBtn.disabled = false;
+      if (stopBtn) stopBtn.disabled = true;
+      return;
+    }
+  }
+  
   // WebSocket으로 녹화 시작 신호 전송
-  if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-    const tcId = tcIdInput?.value;
-    const projectId = projectIdInput?.value;
+  const projectId = projectIdInput?.value;
+  try {
     wsConnection.send(JSON.stringify({
       type: 'recording-start',
       tcId: tcId ? parseInt(tcId, 10) : null,
@@ -3443,9 +3782,9 @@ function startRecording() {
       timestamp: Date.now()
     }));
     console.log('[Recorder] WebSocket으로 녹화 시작 신호 전송');
-  } else {
-    console.warn('[Recorder] WebSocket이 연결되지 않았습니다. 녹화를 시작할 수 없습니다.');
-    logMessage('WebSocket 연결이 필요합니다. 브라우저를 먼저 열어주세요.', 'error');
+  } catch (error) {
+    console.error('[Recorder] WebSocket 메시지 전송 실패:', error);
+    logMessage('녹화 시작 신호 전송 실패: ' + error.message, 'error');
     recording = false;
     if (startBtn) startBtn.disabled = false;
     if (stopBtn) stopBtn.disabled = true;
@@ -3501,12 +3840,40 @@ function reset() {
  * 현재 선택된 이벤트 삭제
  * 확장 프로그램 버전 기반
  */
-function deleteCurrentEvent() {
+async function deleteCurrentEvent() {
   if (currentEventIndex < 0 || currentEventIndex >= allEvents.length) return;
   
   const targetIndex = currentEventIndex;
   const updatedEvents = allEvents.slice();
   updatedEvents.splice(targetIndex, 1);
+  
+  // TC에서도 step 삭제
+  const tcId = tcIdInput?.value;
+  if (tcId) {
+    // electronAPI 재확인
+    if (!electronAPI) {
+      initElectronAPI();
+    }
+    
+    if (electronAPI) {
+      try {
+        const result = await electronAPI.invoke('delete-tc-step', {
+          tcId: parseInt(tcId, 10),
+          stepIndex: targetIndex
+        });
+        
+        if (result && result.success) {
+          console.log(`[Recorder] ✅ TC에서 Step ${targetIndex} 삭제 완료`);
+        } else {
+          console.warn('[Recorder] ⚠️ TC step 삭제 실패:', result?.error || '알 수 없는 오류');
+          // TC 삭제 실패해도 UI는 업데이트 (부분 동기화)
+        }
+      } catch (error) {
+        console.error('[Recorder] ❌ TC step 삭제 중 오류:', error);
+        // 오류가 발생해도 UI는 업데이트
+      }
+    }
+  }
   
   const nextIndex = updatedEvents.length > 0 ? Math.min(targetIndex, updatedEvents.length - 1) : -1;
   currentEventIndex = nextIndex;
@@ -3815,6 +4182,13 @@ function setupEventListeners() {
     aiReviewBtn.addEventListener('click', performAiCodeReview);
   }
 
+  // TC 동기화 버튼
+  if (syncToTcBtn) {
+    syncToTcBtn.addEventListener('click', async () => {
+      await syncCodeToTC();
+    });
+  }
+
   // 속성 추출 적용 버튼
   if (elementAttrApplyBtn) {
     elementAttrApplyBtn.addEventListener('click', () => {
@@ -4016,62 +4390,100 @@ function setupEventListeners() {
  * @param {Object} stepEvent - 기반 스텝의 이벤트 데이터
  */
 function handleStepAssertion(stepIndex, assertionType, stepEvent) {
-  // assertion 타입에 따라 처리
-  if (assertionType === 'verifyTitle' || assertionType === 'verifyUrl') {
-    // 타이틀/URL 검증은 요소 선택 불필요 - 바로 추가
-    addAssertionAfterStep(stepIndex, assertionType, null, null);
-    return;
+  switch (assertionType) {
+    case 'verifyTitle':
+    case 'verifyUrl': {
+      // 타이틀/URL 검증: 다이얼로그로 값 입력 받기
+      const currentValue = assertionType === 'verifyTitle' 
+        ? document.title 
+        : window.location.href;
+      const label = assertionType === 'verifyTitle' ? '타이틀' : 'URL';
+      const inputValue = prompt(`검증할 ${label}을 입력하세요:`, currentValue);
+      if (inputValue === null) return; // 취소
+      addAssertionAfterStep(stepIndex, assertionType, null, inputValue || currentValue);
+      break;
+    }
+    
+    case 'verifyText': {
+      // 텍스트 검증: 요소 선택 필요
+      if (stepEvent && stepEvent.selectorCandidates && stepEvent.selectorCandidates.length > 0) {
+        // 기반 스텝의 셀렉터 재사용
+        const selectors = stepEvent.selectorCandidates;
+        const path = selectors.map(sel => ({
+          selector: sel.selector || sel,
+          type: sel.type,
+          textValue: sel.textValue,
+          xpathValue: sel.xpathValue,
+          matchMode: sel.matchMode,
+          iframeContext: stepEvent.iframeContext
+        }));
+        
+        // 텍스트 입력 다이얼로그
+        const elementText = stepEvent.target?.text || stepEvent.value || '';
+        const textValue = prompt('검증할 텍스트를 입력하세요:', elementText);
+        if (textValue === null) return; // 취소
+        addAssertionAfterStep(stepIndex, assertionType, path, textValue || elementText);
+      } else {
+        // 요소 선택 모드로 전환
+        activateElementSelectionForAssertion(stepIndex, assertionType);
+      }
+      break;
+    }
+    
+    case 'verifyElementPresent':
+    case 'verifyElementNotPresent': {
+      // 요소 존재/부재 검증: 요소 선택만 필요
+      if (stepEvent && stepEvent.selectorCandidates && stepEvent.selectorCandidates.length > 0) {
+        // 기반 스텝의 셀렉터 재사용
+        const selectors = stepEvent.selectorCandidates;
+        const path = selectors.map(sel => ({
+          selector: sel.selector || sel,
+          type: sel.type,
+          textValue: sel.textValue,
+          xpathValue: sel.xpathValue,
+          matchMode: sel.matchMode,
+          iframeContext: stepEvent.iframeContext
+        }));
+        addAssertionAfterStep(stepIndex, assertionType, path, null);
+      } else {
+        // 요소 선택 모드로 전환
+        activateElementSelectionForAssertion(stepIndex, assertionType);
+      }
+      break;
+    }
+  }
+}
+
+/**
+ * Assertion을 위한 요소 선택 모드 활성화
+ */
+function activateElementSelectionForAssertion(stepIndex, assertionType) {
+  if (!selectionState.active) {
+    startSelectionWorkflow();
   }
   
-  // 요소 검증은 요소 선택 필요
-  // 셀렉터 선택 우선순위: 기반 스텝의 셀렉터 재사용 > 새 요소 선택
-  if (stepEvent && stepEvent.selectorCandidates && stepEvent.selectorCandidates.length > 0) {
-    // 기반 스텝의 셀렉터를 재사용 (같은 요소에 대한 assertion)
-    const selectors = stepEvent.selectorCandidates;
-    const primarySelector = stepEvent.primarySelector || (selectors[0] && selectors[0].selector);
-    
-    let value = null;
-    if (assertionType === 'verifyText') {
-      // 텍스트 검증은 현재 요소의 텍스트를 가져와야 함
-      const textValue = prompt('검증할 텍스트를 입력하세요 (비워두면 현재 요소의 텍스트 사용):');
-      if (textValue === null) return; // 취소
-      value = textValue || null;
-    }
-    
-    // path 형태로 변환
-    const path = selectors.map(sel => ({
-      selector: sel.selector || sel,
-      type: sel.type,
-      textValue: sel.textValue,
-      xpathValue: sel.xpathValue,
-      matchMode: sel.matchMode,
-      iframeContext: stepEvent.iframeContext
-    }));
-    
-    addAssertionAfterStep(stepIndex, assertionType, path, value);
-  } else {
-    // 요소 선택 모드로 전환
-    if (!selectionState.active) {
-      startSelectionWorkflow();
-    }
-    setElementStatus('검증할 요소를 선택하세요.', 'info');
-    // assertion을 pending으로 설정하고 스텝 인덱스 저장
-    selectionState.pendingAction = assertionType;
-    selectionState.pendingStepIndex = stepIndex;
-    if (verifyActionsContainer) {
-      verifyActionsContainer.classList.add('hidden');
-    }
-    if (elementActionsContainer) {
-      elementActionsContainer.classList.remove('hidden');
-    }
-    
-    // step-details-panel도 표시해야 element-panel이 보임
-    const stepDetailsPanel = document.getElementById('step-details-panel');
-    if (stepDetailsPanel) {
-      stepDetailsPanel.classList.remove('hidden');
-    }
-    ensureElementPanelVisibility();
+  const statusMessage = assertionType === 'verifyText' 
+    ? '텍스트를 검증할 요소를 선택하세요.'
+    : '검증할 요소를 선택하세요.';
+  setElementStatus(statusMessage, 'info');
+  
+  // assertion을 pending으로 설정하고 스텝 인덱스 저장
+  selectionState.pendingAction = assertionType;
+  selectionState.pendingStepIndex = stepIndex;
+  
+  if (verifyActionsContainer) {
+    verifyActionsContainer.classList.add('hidden');
   }
+  if (elementActionsContainer) {
+    elementActionsContainer.classList.remove('hidden');
+  }
+  
+  // step-details-panel도 표시해야 element-panel이 보임
+  const stepDetailsPanel = document.getElementById('step-details-panel');
+  if (stepDetailsPanel) {
+    stepDetailsPanel.classList.remove('hidden');
+  }
+  ensureElementPanelVisibility();
 }
 
 /**
@@ -4330,6 +4742,7 @@ function initDOMElements() {
   languageSelect = document.getElementById('language-select');
   aiReviewBtn = document.getElementById('ai-review-btn');
   aiReviewStatusEl = document.getElementById('ai-review-status');
+  const syncToTcBtn = document.getElementById('sync-to-tc-btn');
   aiEndpointInput = document.getElementById('ai-endpoint');
   aiApiKeyInput = document.getElementById('ai-api-key');
   aiModelInput = document.getElementById('ai-model');
@@ -4361,10 +4774,15 @@ function initDOMElements() {
 // 초기화
 function init() {
   console.log('[Recorder] 초기화 시작');
+  
+  // electronAPI 재초기화 (iframe 환경 대응)
+  initElectronAPI();
+  
   console.log('[Recorder] electronAPI 상태:', {
     exists: !!electronAPI,
     hasOnIpcMessage: !!(electronAPI && electronAPI.onIpcMessage),
-    type: typeof electronAPI
+    type: typeof electronAPI,
+    isIframe: window.parent !== window
   });
   
   // DOM 요소 초기화

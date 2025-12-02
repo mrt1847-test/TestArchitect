@@ -1881,7 +1881,24 @@ function createTreeItem(item, level) {
 // TC 선택 및 상세 정보
 // ============================================================================
 
-function selectTC(tc) {
+async function selectTC(tc) {
+  // TC를 선택할 때 DB에서 최신 데이터를 다시 로드하여 캐시 문제 방지
+  if (tc && tc.id) {
+    try {
+      const latestTC = await window.electronAPI.api.getTestCase(tc.id);
+      if (latestTC && latestTC.success && latestTC.data) {
+        // DB에서 가져온 최신 데이터로 교체
+        tc = latestTC.data;
+        console.log(`[Renderer] selectTC: DB에서 최신 TC 데이터 로드 완료 (TC ${tc.id})`);
+      } else {
+        console.warn(`[Renderer] selectTC: TC ${tc.id}의 최신 데이터 로드 실패, 캐시된 데이터 사용`);
+      }
+    } catch (error) {
+      console.error(`[Renderer] selectTC: TC ${tc.id}의 최신 데이터 로드 중 오류:`, error);
+      // 오류 발생 시 캐시된 데이터 사용
+    }
+  }
+  
   // steps 파싱 (JSON 문자열인 경우)
   if (tc && tc.steps && typeof tc.steps === 'string') {
     try {
@@ -1897,7 +1914,15 @@ function selectTC(tc) {
     tc.steps = null;
   }
   
+  // steps가 null이면 빈 배열로 초기화
+  if (!tc.steps) {
+    tc.steps = [];
+  }
+  
   currentTC = tc;
+  
+  // 디버깅: steps 개수 확인
+  console.log(`[Renderer] selectTC 호출: TC ${tc.id}, Steps ${Array.isArray(tc.steps) ? tc.steps.length : 0}개`);
 
   // 모든 선택 해제
   document.querySelectorAll('.tc-tree-item').forEach(item => {
@@ -1912,6 +1937,7 @@ function selectTC(tc) {
 
   // 탭별 정보 표시
   if (activeTab === 'detail') {
+    console.log(`[Renderer] selectTC: detail 탭 활성화, displayTCDetail 호출 (TC ${tc.id}, Steps ${Array.isArray(tc.steps) ? tc.steps.length : 0}개)`);
     displayTCDetail(tc);
   } else if (activeTab === 'script') {
     loadScripts(tc.id);
@@ -1953,40 +1979,148 @@ function displayTCDetail(tc) {
       try {
         steps = JSON.parse(steps);
       } catch (e) {
+        console.warn('[Renderer] displayTCDetail: Steps 파싱 실패:', e);
         steps = null;
       }
     }
     
+    // steps가 배열이 아닌 경우 빈 배열로 설정
+    if (steps && !Array.isArray(steps)) {
+      console.warn('[Renderer] displayTCDetail: Steps가 배열이 아님:', typeof steps, steps);
+      steps = null;
+    }
+    
+    // steps가 null이면 빈 배열로 초기화
+    if (!steps) {
+      steps = [];
+    }
+    
+    console.log(`[Renderer] displayTCDetail: TC ${tc.id}, Steps ${steps.length}개 표시`, steps);
+    
+    // tags 파싱 (JSON 문자열인 경우)
+    let tags = tc.tags;
+    if (typeof tags === 'string') {
+      try {
+        tags = JSON.parse(tags);
+      } catch (e) {
+        tags = [];
+      }
+    }
+    if (!Array.isArray(tags)) {
+      tags = [];
+    }
+    
     tcDetailContent.innerHTML = `
       <div class="tc-detail-info">
-        <h4>${tc.name}</h4>
-        ${tc.description ? `<p>${tc.description}</p>` : ''}
-        <div>
-          <strong>상태:</strong> ${getStatusLabel(tc.status)} | 
-          <strong>스크립트:</strong> ${tc.hasScript ? '✅ 있음' : '❌ 없음'}
-        </div>
-        ${steps && Array.isArray(steps) && steps.length > 0 ? `
-          <div class="tc-steps">
-            <h5>테스트 단계 (${steps.length}개):</h5>
-            ${steps.map((step, idx) => {
-              const action = step.action || step.type || 'unknown';
-              const target = step.target || '(대상 없음)';
-              const value = step.value || null;
-              const description = step.description || null;
-              
-              return `
-              <div class="step-item">
-                <strong>${idx + 1}. ${action}</strong>
-                <div>대상: ${target}</div>
-                ${value ? `<div>값: ${value}</div>` : ''}
-                ${description ? `<div>설명: ${description}</div>` : ''}
-              </div>
-            `;
-            }).join('')}
+        <!-- 기본 정보 섹션 -->
+        <div class="tc-detail-section">
+          <h4 class="tc-detail-title">${tc.name || '(제목 없음)'}</h4>
+          <div class="tc-detail-meta">
+            ${tc.tc_number ? `<span class="tc-meta-item"><strong>TC 번호:</strong> ${tc.tc_number}</span>` : ''}
+            <span class="tc-meta-item"><strong>상태:</strong> ${getStatusLabel(tc.status)}</span>
+            <span class="tc-meta-item"><strong>버전:</strong> ${tc.version || 1}</span>
+            <span class="tc-meta-item"><strong>스크립트:</strong> ${tc.hasScript ? '✅ 있음' : '❌ 없음'}</span>
           </div>
-        ` : '<p class="placeholder">테스트 단계가 없습니다</p>'}
+        </div>
+        
+        <!-- 설명 섹션 -->
+        ${tc.description ? `
+          <div class="tc-detail-section">
+            <h5 class="tc-detail-section-title">설명</h5>
+            <p class="tc-detail-text">${tc.description}</p>
+          </div>
+        ` : ''}
+        
+        <!-- 사전조건 섹션 -->
+        <div class="tc-detail-section">
+          <h5 class="tc-detail-section-title">사전조건</h5>
+          ${tc.preconditions ? `
+            <p class="tc-detail-text">${tc.preconditions}</p>
+          ` : '<p class="tc-detail-placeholder">사전조건이 없습니다</p>'}
+        </div>
+        
+        <!-- 태그 섹션 -->
+        ${tags.length > 0 ? `
+          <div class="tc-detail-section">
+            <h5 class="tc-detail-section-title">태그</h5>
+            <div class="tc-tags">
+              ${tags.map(tag => `<span class="tc-tag">${tag}</span>`).join('')}
+            </div>
+          </div>
+        ` : ''}
+        
+        <!-- 메타데이터 섹션 -->
+        ${tc.created_by ? `
+          <div class="tc-detail-section">
+            <h5 class="tc-detail-section-title">메타데이터</h5>
+            <div class="tc-detail-meta-list">
+              <div class="tc-meta-row"><strong>생성자:</strong> ${tc.created_by}</div>
+            </div>
+          </div>
+        ` : ''}
+        
+        <!-- 테스트 단계 섹션 -->
+        <div class="tc-detail-section">
+          <h5 class="tc-detail-section-title">테스트 단계 ${steps && Array.isArray(steps) && steps.length > 0 ? `(${steps.length}개)` : ''}</h5>
+          ${steps && Array.isArray(steps) && steps.length > 0 ? `
+            <div class="tc-steps">
+              ${steps.map((step, idx) => {
+                const action = step.action || step.type || 'unknown';
+                const target = step.target || '(대상 없음)';
+                const value = step.value || null;
+                const description = step.description || null;
+                const hasScreenshot = step.screenshot === true;
+                
+                return `
+                <div class="step-item" data-step-index="${idx}">
+                  ${hasScreenshot ? `<img class="step-screenshot" data-tc-id="${tc.id}" data-step-index="${idx}" src="" alt="스크린샷" style="width: 50px; height: 50px; object-fit: cover; border-radius: 4px; margin-right: 8px; cursor: pointer;" />` : ''}
+                  <div class="step-content">
+                    <strong>${idx + 1}. ${action}</strong>
+                    <div>대상: ${target}</div>
+                    ${value ? `<div>값: ${value}</div>` : ''}
+                    ${description ? `<div>설명: ${description}</div>` : ''}
+                  </div>
+                </div>
+              `;
+              }).join('')}
+            </div>
+          ` : '<p class="tc-detail-placeholder">테스트 단계가 없습니다</p>'}
+          
+          <!-- 생성일/수정일 (스텝 아래) -->
+          ${(tc.created_at || tc.updated_at) ? `
+            <div class="tc-detail-meta-list" style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #e0e0e0;">
+              ${tc.created_at ? `<div class="tc-meta-row"><strong>생성일:</strong> ${formatDate(tc.created_at)}</div>` : ''}
+              ${tc.updated_at ? `<div class="tc-meta-row"><strong>수정일:</strong> ${formatDate(tc.updated_at)}</div>` : ''}
+            </div>
+          ` : ''}
+        </div>
       </div>
     `;
+    
+    // innerHTML 삽입 후 스크린샷 로드 및 이벤트 리스너 등록
+    // (script 태그는 innerHTML로 삽입 시 실행되지 않으므로 별도로 처리)
+    setTimeout(() => {
+      const stepItems = document.querySelectorAll('.step-item[data-step-index]');
+      stepItems.forEach(item => {
+        const screenshotImg = item.querySelector('.step-screenshot');
+        if (screenshotImg) {
+          const tcId = screenshotImg.dataset.tcId;
+          const stepIndex = parseInt(screenshotImg.dataset.stepIndex);
+          
+          // 스크린샷 로드
+          if (typeof loadStepScreenshot === 'function') {
+            loadStepScreenshot(tcId, stepIndex, screenshotImg);
+          }
+          
+          // 클릭 시 확대 보기
+          screenshotImg.addEventListener('click', () => {
+            if (screenshotImg.src && screenshotImg.src !== '' && typeof showScreenshotModal === 'function') {
+              showScreenshotModal(screenshotImg.src);
+            }
+          });
+        }
+      });
+    }, 0);
   }
 }
 
@@ -2000,6 +2134,28 @@ function getStatusLabel(status) {
     'deprecated': '사용 안 함'
   };
   return labels[status] || status;
+}
+
+/**
+ * 날짜 포맷팅 (사용자 친화적 형식)
+ */
+function formatDate(dateString) {
+  if (!dateString) return '-';
+  
+  try {
+    const date = new Date(dateString);
+    if (isNaN(date.getTime())) return dateString;
+    
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    
+    return `${year}-${month}-${day} ${hours}:${minutes}`;
+  } catch (e) {
+    return dateString;
+  }
 }
 
 // ============================================================================
@@ -2242,6 +2398,41 @@ async function saveScript() {
   }
 
   try {
+    // 키워드 뷰에서 변경된 steps가 있으면 먼저 TC에 저장
+    if (scriptKeywordView && scriptKeywordView.classList.contains('active')) {
+      // 키워드 테이블에서 최신 steps 가져오기
+      updateKeywordTable();
+      
+      // currentTC.steps가 변경되었으면 TC 업데이트
+      if (currentTC.steps) {
+        const updateData = {
+          steps: JSON.stringify(currentTC.steps)
+        };
+        
+        try {
+          const tcUpdateResponse = await window.electronAPI.api.updateTestCase(currentTC.id, updateData);
+          if (tcUpdateResponse && tcUpdateResponse.success) {
+            addLog('info', '테스트 단계가 TC에 저장되었습니다');
+            // 업데이트된 TC 정보로 currentTC 갱신
+            if (tcUpdateResponse.data) {
+              // steps 파싱
+              if (typeof tcUpdateResponse.data.steps === 'string') {
+                try {
+                  tcUpdateResponse.data.steps = JSON.parse(tcUpdateResponse.data.steps);
+                } catch (e) {
+                  tcUpdateResponse.data.steps = null;
+                }
+              }
+              currentTC = tcUpdateResponse.data;
+            }
+          }
+        } catch (tcError) {
+          console.warn('TC steps 저장 실패:', tcError);
+          // TC 저장 실패해도 스크립트 저장은 계속 진행
+        }
+      }
+    }
+    
     // pytest 형식으로 framework 설정 (python인 경우)
     let framework = scriptFramework.value;
     if (scriptLanguage.value === 'python' && framework !== 'pytest') {
@@ -2348,8 +2539,14 @@ function createKeywordRow(index, step) {
     actionSelect.value = step.action || '';
   }
   
+  const hasScreenshot = step.screenshot === true;
+  const tcId = currentTC ? currentTC.id : null;
+  
   tr.innerHTML = `
     <td>${index}</td>
+    <td class="screenshot-cell">
+      ${hasScreenshot && tcId ? `<img class="step-screenshot" data-tc-id="${tcId}" data-step-index="${index - 1}" src="" alt="스크린샷" style="width: 40px; height: 40px; object-fit: cover; border-radius: 4px; cursor: pointer;" />` : ''}
+    </td>
     <td></td>
     <td><input type="text" value="${step.target || ''}" class="keyword-target" placeholder="선택자 또는 객체 이름"></td>
     <td><input type="text" value="${step.value || ''}" class="keyword-value" placeholder="값"></td>
@@ -2360,8 +2557,23 @@ function createKeywordRow(index, step) {
   `;
   
   // Action 셀에 드롭다운 추가
-  const actionCell = tr.querySelector('td:nth-child(2)');
+  const actionCell = tr.querySelector('td:nth-child(3)');
   actionCell.appendChild(actionSelect);
+  
+  // 스크린샷 로드 (있는 경우)
+  if (hasScreenshot && tcId) {
+    const screenshotImg = tr.querySelector('.step-screenshot');
+    if (screenshotImg) {
+      loadStepScreenshot(tcId, index - 1, screenshotImg);
+      
+      // 클릭 시 확대 보기
+      screenshotImg.addEventListener('click', () => {
+        if (screenshotImg.src && screenshotImg.src !== '') {
+          showScreenshotModal(screenshotImg.src);
+        }
+      });
+    }
+  }
 
   // 삭제 버튼
   tr.querySelector('.delete-keyword').addEventListener('click', () => {
@@ -2383,6 +2595,90 @@ function createKeywordRow(index, step) {
   }
 
   return tr;
+}
+
+/**
+ * 스텝 스크린샷 로드
+ * @param {number} tcId - 테스트케이스 ID
+ * @param {number} stepIndex - 스텝 인덱스
+ * @param {HTMLImageElement} imgElement - 이미지 요소
+ */
+async function loadStepScreenshot(tcId, stepIndex, imgElement) {
+  try {
+    if (!window.electronAPI || !window.electronAPI.getStepScreenshot) {
+      console.warn('[Screenshot] electronAPI.getStepScreenshot이 없습니다');
+      return;
+    }
+    
+    const screenshot = await window.electronAPI.getStepScreenshot(tcId, stepIndex);
+    if (screenshot) {
+      imgElement.src = screenshot;
+      imgElement.style.display = 'block';
+    } else {
+      imgElement.style.display = 'none';
+    }
+  } catch (error) {
+    console.error('[Screenshot] 스크린샷 로드 실패:', error);
+    if (imgElement) {
+      imgElement.style.display = 'none';
+    }
+  }
+}
+
+/**
+ * 스크린샷 확대 보기 모달
+ * @param {string} screenshotSrc - 스크린샷 이미지 src
+ */
+function showScreenshotModal(screenshotSrc) {
+  // 기존 모달이 있으면 제거
+  const existingModal = document.getElementById('screenshot-modal');
+  if (existingModal) {
+    existingModal.remove();
+  }
+  
+  // 모달 생성
+  const modal = document.createElement('div');
+  modal.id = 'screenshot-modal';
+  modal.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.8);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+    cursor: pointer;
+  `;
+  
+  const img = document.createElement('img');
+  img.src = screenshotSrc;
+  img.style.cssText = `
+    max-width: 90%;
+    max-height: 90%;
+    object-fit: contain;
+    border-radius: 8px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  `;
+  
+  modal.appendChild(img);
+  document.body.appendChild(modal);
+  
+  // 클릭 시 모달 닫기
+  modal.addEventListener('click', () => {
+    modal.remove();
+  });
+  
+  // ESC 키로 닫기
+  const escHandler = (e) => {
+    if (e.key === 'Escape') {
+      modal.remove();
+      document.removeEventListener('keydown', escHandler);
+    }
+  };
+  document.addEventListener('keydown', escHandler);
 }
 
 /**
@@ -2451,7 +2747,15 @@ function updateKeywordTable() {
 
   // TC 업데이트 (로컬)
   if (currentTC) {
+    // steps가 변경되었는지 확인
+    const stepsChanged = JSON.stringify(currentTC.steps) !== JSON.stringify(steps);
     currentTC.steps = steps;
+    
+    // 변경사항이 있으면 isDirty 플래그 설정
+    if (stepsChanged) {
+      isDirty = true;
+      updateSaveButton();
+    }
   }
 
   // 코드 뷰로 전환 시 코드 생성 (비동기)
@@ -2969,17 +3273,62 @@ async function runSelectedTCs() {
       // pytest JSON 리포트에서 각 테스트 결과 추출
       for (const test of result.data.tests) {
         const testName = test.nodeid; // 예: "test_tc1_login.py::test_login" 또는 "test_tc1_login::test_login"
-        const fileName = testName.split('::')[0]; // 파일명 추출
+        let fileName = testName.split('::')[0]; // 파일명 추출
         
-        // 파일명 매핑 시도 (확장자 포함/미포함 모두 시도)
+        // 경로 제거 (basename만 추출)
+        // 예: "temp/test_tc12_login.py" → "test_tc12_login.py"
+        // 예: "./test_tc12_login.py" → "test_tc12_login.py"
+        const pathParts = fileName.split(/[/\\]/);
+        fileName = pathParts[pathParts.length - 1];
+        
+        // 파일명 정규화 (확장자 제거)
+        const fileNameWithoutExt = fileName.replace(/\.py$/, '');
+        
+        // 파일명 매핑 시도 (여러 방법 시도)
         let tcInfo = null;
+        
+        // 1. 정확한 파일명 매칭 (확장자 포함)
         if (tcFileMap.has(fileName)) {
           tcInfo = tcFileMap.get(fileName);
-        } else {
-          // 확장자 없이도 매핑 시도
-          const fileNameWithoutExt = fileName.replace(/\.py$/, '');
+        }
+        
+        // 2. 확장자 없이 매칭
+        if (!tcInfo) {
           for (const [key, value] of tcFileMap.entries()) {
-            if (key.replace(/\.py$/, '') === fileNameWithoutExt) {
+            const keyWithoutExt = key.replace(/\.py$/, '');
+            if (keyWithoutExt === fileNameWithoutExt) {
+              tcInfo = value;
+              break;
+            }
+          }
+        }
+        
+        // 3. TC ID로 매핑 시도 (파일명에서 TC ID 추출)
+        // 파일명 형식: test_tc{id}_{name}.py
+        if (!tcInfo) {
+          const tcIdMatch = fileNameWithoutExt.match(/^test_tc(\d+)_/);
+          if (tcIdMatch) {
+            const extractedTcId = parseInt(tcIdMatch[1]);
+            // tcFileMap에서 해당 TC ID를 가진 항목 찾기
+            for (const [key, value] of tcFileMap.entries()) {
+              if (value.tcId === extractedTcId) {
+                tcInfo = value;
+                break;
+              }
+            }
+          }
+        }
+        
+        // 4. 부분 매칭 시도 (파일명의 일부만 일치해도 매핑)
+        if (!tcInfo) {
+          for (const [key, value] of tcFileMap.entries()) {
+            const keyWithoutExt = key.replace(/\.py$/, '');
+            // 양쪽 모두에서 TC ID 추출하여 비교
+            const keyTcIdMatch = keyWithoutExt.match(/^test_tc(\d+)_/);
+            const fileTcIdMatch = fileNameWithoutExt.match(/^test_tc(\d+)_/);
+            
+            if (keyTcIdMatch && fileTcIdMatch && 
+                keyTcIdMatch[1] === fileTcIdMatch[1]) {
               tcInfo = value;
               break;
             }
@@ -3002,7 +3351,26 @@ async function runSelectedTCs() {
           });
         } else {
           console.warn(`파일명 매핑 실패: ${fileName} (test.nodeid: ${testName})`);
+          console.warn(`정규화된 파일명: ${fileNameWithoutExt}`);
           console.warn(`사용 가능한 파일명:`, Array.from(tcFileMap.keys()));
+          
+          // TC ID 추출 시도하여 최소한의 정보라도 표시
+          const tcIdMatch = fileNameWithoutExt.match(/^test_tc(\d+)_/);
+          if (tcIdMatch) {
+            const extractedTcId = parseInt(tcIdMatch[1]);
+            executedTcIds.add(extractedTcId);
+            results.push({
+              tcId: extractedTcId,
+              name: `TC #${extractedTcId}`,
+              result: {
+                success: test.outcome === 'passed',
+                outcome: test.outcome,
+                duration: test.duration,
+                error: test.call?.longrepr || null
+              },
+              status: test.outcome === 'passed' ? 'passed' : test.outcome === 'failed' ? 'failed' : 'error'
+            });
+          }
         }
       }
       
@@ -3279,6 +3647,20 @@ function editTestCase(tc) {
   descTextarea.style.marginBottom = '15px';
   descTextarea.style.resize = 'vertical';
   
+  // 사전조건 입력
+  const preconditionsLabel = document.createElement('label');
+  preconditionsLabel.textContent = '사전조건';
+  preconditionsLabel.style.display = 'block';
+  preconditionsLabel.style.marginBottom = '5px';
+  preconditionsLabel.style.fontWeight = 'bold';
+  const preconditionsTextarea = document.createElement('textarea');
+  preconditionsTextarea.className = 'modal-input';
+  preconditionsTextarea.value = tc.preconditions || '';
+  preconditionsTextarea.placeholder = '테스트 실행 전 필요한 사전조건을 입력하세요';
+  preconditionsTextarea.rows = 3;
+  preconditionsTextarea.style.marginBottom = '15px';
+  preconditionsTextarea.style.resize = 'vertical';
+  
   // 상태 선택
   const statusLabel = document.createElement('label');
   statusLabel.textContent = '상태';
@@ -3359,6 +3741,8 @@ function editTestCase(tc) {
   body.appendChild(nameInput);
   body.appendChild(descLabel);
   body.appendChild(descTextarea);
+  body.appendChild(preconditionsLabel);
+  body.appendChild(preconditionsTextarea);
   body.appendChild(statusLabel);
   body.appendChild(statusSelect);
   body.appendChild(stepsLabel);
@@ -3383,6 +3767,7 @@ function editTestCase(tc) {
     await saveEditedTestCase(tc.id, {
       name: nameInput.value.trim(),
       description: descTextarea.value.trim(),
+      preconditions: preconditionsTextarea.value.trim(),
       status: statusSelect.value,
       steps: getStepsFromTable(stepsBody)
     }, dialog);
@@ -3511,6 +3896,7 @@ async function saveEditedTestCase(tcId, data, dialog) {
     const updateData = {
       name: data.name.trim(),
       description: data.description || null,
+      preconditions: data.preconditions || null,
       status: data.status || 'draft',
       steps: data.steps && data.steps.length > 0 ? JSON.stringify(data.steps) : null
     };
@@ -4262,7 +4648,27 @@ async function init() {
                   updatedTC.data.steps = null;
                 }
               }
+              
+              // steps가 배열이 아닌 경우 처리
+              if (updatedTC.data.steps && !Array.isArray(updatedTC.data.steps)) {
+                console.warn('[Renderer] Steps가 배열이 아님:', typeof updatedTC.data.steps, updatedTC.data.steps);
+                updatedTC.data.steps = null;
+              }
+              
+              // steps가 배열이 아닌 경우 빈 배열로 초기화
+              if (!Array.isArray(updatedTC.data.steps)) {
+                updatedTC.data.steps = updatedTC.data.steps || [];
+              }
+              
+              console.log(`[Renderer] TC steps 업데이트: ${updatedTC.data.steps.length}개, activeTab: ${activeTab}`);
+              
+              // selectTC 호출하여 TC 정보 업데이트 (displayTCDetail도 내부에서 호출됨)
               selectTC(updatedTC.data);
+              
+              // detail 탭이 활성화되어 있으면 TC 상세 보기 강제 업데이트 (중복 호출 방지)
+              if (activeTab === 'detail') {
+                console.log('[Renderer] detail 탭 활성화됨, displayTCDetail 재호출 확인');
+              }
             } else {
               console.error('[Renderer] ❌ TC 로드 실패:', updatedTC.error);
             }

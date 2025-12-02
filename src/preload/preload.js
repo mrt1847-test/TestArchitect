@@ -238,6 +238,64 @@ contextBridge.exposeInMainWorld('electronAPI', {
    */
   invoke: (channel, ...args) => {
     return ipcRenderer.invoke(channel, ...args);
+  },
+
+  /**
+   * DOM 스냅샷 저장
+   * @param {string} pageUrl - 정규화된 페이지 URL
+   * @param {string} domStructure - DOM 구조 문자열
+   * @param {Date|string} snapshotDate - 스냅샷 날짜
+   * @returns {Promise<Object>} 저장 결과
+   */
+  saveDomSnapshot: (pageUrl, domStructure, snapshotDate) => {
+    const dateStr = snapshotDate instanceof Date 
+      ? snapshotDate.toISOString() 
+      : snapshotDate;
+    return ipcRenderer.invoke('save-dom-snapshot', pageUrl, domStructure, dateStr);
+  },
+
+  /**
+   * DOM 스냅샷 존재 여부 확인
+   * @param {string} pageUrl - 정규화된 페이지 URL
+   * @param {Date|string} startDate - 시작 날짜
+   * @param {Date|string} endDate - 종료 날짜
+   * @returns {Promise<boolean>} 존재 여부
+   */
+  checkDomSnapshot: (pageUrl, startDate, endDate) => {
+    const startStr = startDate instanceof Date 
+      ? startDate.toISOString() 
+      : startDate;
+    const endStr = endDate instanceof Date 
+      ? endDate.toISOString() 
+      : endDate;
+    return ipcRenderer.invoke('check-dom-snapshot', pageUrl, startStr, endStr);
+  },
+
+  /**
+   * 오래된 DOM 스냅샷 정리
+   * @returns {Promise<Object>} 정리 결과
+   */
+  cleanupOldSnapshots: () => {
+    return ipcRenderer.invoke('cleanup-old-snapshots');
+  },
+
+  /**
+   * 스텝 스크린샷 조회
+   * @param {number} tcId - 테스트케이스 ID
+   * @param {number} stepIndex - 스텝 인덱스
+   * @returns {Promise<string|null>} base64 인코딩된 스크린샷 또는 null
+   */
+  getStepScreenshot: (tcId, stepIndex) => {
+    return ipcRenderer.invoke('get-step-screenshot', tcId, stepIndex);
+  },
+
+  /**
+   * 테스트케이스의 모든 스텝 스크린샷 삭제
+   * @param {number} tcId - 테스트케이스 ID
+   * @returns {Promise<number>} 삭제된 레코드 수
+   */
+  deleteStepScreenshots: (tcId) => {
+    return ipcRenderer.invoke('delete-step-screenshots', tcId);
   }
 
   // ============================================================================

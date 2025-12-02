@@ -196,7 +196,7 @@ router.get('/:id', async (req, res) => {
  */
 router.post('/', async (req, res) => {
   try {
-    const { project_id, parent_id, name, description, type, steps, tags, status, order_index, created_by } = req.body;
+    const { project_id, parent_id, name, description, preconditions, type, steps, tags, status, order_index, created_by } = req.body;
 
     if (!project_id || !name) {
       return res.status(400).json({ 
@@ -214,8 +214,8 @@ router.post('/', async (req, res) => {
     }
 
     const query = `
-      INSERT INTO test_cases (project_id, parent_id, name, description, type, steps, tags, status, order_index, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO test_cases (project_id, parent_id, name, description, preconditions, type, steps, tags, status, order_index, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     const params = [
@@ -223,6 +223,7 @@ router.post('/', async (req, res) => {
       parent_id || null,
       name,
       description || null,
+      preconditions || null,
       type || 'test_case',
       type === 'test_case' ? JSON.stringify(steps) : null,
       JSON.stringify(tags || []),
@@ -262,7 +263,7 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, description, steps, tags, status } = req.body;
+    const { name, description, preconditions, steps, tags, status } = req.body;
 
     // 기존 테스트케이스 확인
     const existing = await db.get('SELECT * FROM test_cases WHERE id = ?', [id]);
@@ -275,6 +276,7 @@ router.put('/:id', async (req, res) => {
       UPDATE test_cases 
       SET name = IFNULL(?, name),
           description = IFNULL(?, description),
+          preconditions = IFNULL(?, preconditions),
           steps = IFNULL(?, steps),
           tags = IFNULL(?, tags),
           status = IFNULL(?, status),
@@ -286,6 +288,7 @@ router.put('/:id', async (req, res) => {
     const params = [
       name || null,
       description !== undefined ? description : null,
+      preconditions !== undefined ? preconditions : null,
       steps ? JSON.stringify(steps) : null,
       tags ? JSON.stringify(tags) : null,
       status || null,

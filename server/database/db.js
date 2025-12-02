@@ -34,10 +34,41 @@ async function init() {
     // 테이블 생성
     await createTables();
     
+    // 스키마 마이그레이션 (필드 추가 등)
+    await migrateSchema();
+    
     return true;
   } catch (error) {
     console.error('데이터베이스 연결 실패:', error);
     throw error;
+  }
+}
+
+/**
+ * 스키마 마이그레이션 (필드 추가 등)
+ */
+async function migrateSchema() {
+  try {
+    // test_cases 테이블에 preconditions 필드 추가 (없는 경우만)
+    const [columns] = await pool.execute(`
+      SELECT COLUMN_NAME 
+      FROM INFORMATION_SCHEMA.COLUMNS 
+      WHERE TABLE_SCHEMA = DATABASE() 
+      AND TABLE_NAME = 'test_cases' 
+      AND COLUMN_NAME = 'preconditions'
+    `);
+    
+    if (columns.length === 0) {
+      await pool.execute(`
+        ALTER TABLE test_cases 
+        ADD COLUMN preconditions TEXT NULL 
+        AFTER description
+      `);
+      console.log('✅ test_cases 테이블에 preconditions 필드 추가 완료');
+    }
+  } catch (error) {
+    console.error('스키마 마이그레이션 실패:', error);
+    // 마이그레이션 실패해도 계속 진행 (테이블이 없을 수 있음)
   }
 }
 
@@ -65,6 +96,7 @@ async function createTables() {
       parent_id INT NULL,
       name VARCHAR(255) NOT NULL,
       description TEXT,
+      preconditions TEXT,
       type ENUM('folder', 'test_case') DEFAULT 'test_case',
       steps TEXT,
       tags TEXT,

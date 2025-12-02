@@ -13,17 +13,28 @@ TestArchitect/
 │   │   │   └── config.js        # 애플리케이션 설정
 │   │   └── services/            # 비즈니스 로직 서비스
 │   │       ├── pythonService.js # Python 스크립트 실행 서비스
-│   │       └── scriptManager.js # 스크립트 관리 서비스
+│   │       ├── scriptManager.js # 스크립트 관리 서비스
+│   │       ├── dbService.js     # 로컬 SQLite 데이터베이스 서비스
+│   │       ├── apiService.js    # 서버 API 통신 서비스
+│   │       └── domSnapshotService.js # DOM 스냅샷 저장 서비스
 │   ├── preload/                 # Preload 스크립트
 │   │   └── preload.js           # IPC 브릿지 (보안)
 │   └── renderer/                # UI 렌더러 프로세스
 │       ├── index.html           # 메인 UI
 │       ├── styles.css           # 스타일시트
 │       ├── renderer.js          # 렌더러 메인 로직
+│       ├── recorder.js          # 테스트 녹화 모듈
 │       └── utils/               # 렌더러 유틸리티
 │           ├── scriptLoader.js  # 스크립트 로더
 │           ├── testRunner.js    # 테스트 실행 유틸
-│           └── uiHelper.js      # UI 헬퍼 함수
+│           ├── uiHelper.js      # UI 헬퍼 함수
+│           ├── codeGenerator.js # 코드 생성 유틸
+│           ├── domSnapshot.js   # DOM 스냅샷 유틸리티
+│           └── ...              # 기타 유틸리티
+├── server/                      # 백엔드 서버 (선택사항)
+│   ├── index.js                 # 서버 진입점
+│   ├── database/                # 데이터베이스 모듈
+│   └── routes/                  # API 라우트
 ├── scripts/                     # Python 테스트 스크립트
 │   └── example_test.py          # 예제 테스트 스크립트
 ├── package.json
@@ -40,17 +51,50 @@ TestArchitect/
 ## 주요 기능
 
 ### 현재 구현된 기능
-- ✅ Electron 기반 UI
-- ✅ Node.js에서 Python 스크립트 실행
-- ✅ 테스트 결과 JSON 반환 및 파싱
-- ✅ UI에 결과 표시
+
+#### 핵심 기능
+- ✅ **Electron 기반 UI** - 크로스 플랫폼 데스크톱 애플리케이션
+- ✅ **테스트 녹화 (Recorder)** - 브라우저 상호작용 자동 기록
+  - 클릭, 입력, 네비게이션 등 이벤트 캡처
+  - 셀렉터 자동 생성 및 최적화
+  - 실시간 코드 생성 및 미리보기
+  - AI 기반 셀렉터 제안 (선택사항)
+- ✅ **코드 생성 (Code Generator)** - 다양한 프레임워크 지원
+  - Playwright, Selenium, Appium 지원
+  - Python, JavaScript, TypeScript 언어 지원
+  - 키워드 기반 코드 생성
+- ✅ **테스트케이스 관리** - TestRail 스타일 TC 관리
+  - 프로젝트/폴더 구조 지원
+  - Steps 기반 테스트케이스 작성
+  - 로컬 SQLite 또는 서버 MySQL 저장
+  - 실시간 동기화 (서버 모드)
+- ✅ **테스트 실행 (Runner)** - pytest 기반 실행
+  - Python 스크립트 실행
+  - JSON 리포트 생성 및 파싱
+  - 결과 시각화
+  - 스크린샷 자동 캡처
+- ✅ **DOM 스냅샷 저장** - 페이지별 DOM 구조 저장
+  - 페이지 진입 시 자동 DOM 캡처
+  - 매월 상반기(1-15일)와 하반기(16-말일) 각각 한 번만 저장
+  - 정규화된 URL 기준 저장 (도메인+경로, 쿼리 제외)
+  - 60일 이상 된 스냅샷 자동 정리
+  - gzip 압축으로 저장 공간 최적화
+- ✅ **로컬/서버 모드** - 유연한 저장 방식
+  - 로컬 SQLite 모드 (서버 불필요)
+  - 서버 MySQL 모드 (팀 협업)
+  - 자동 모드 전환 지원
+
+#### 데이터 관리
+- ✅ **로컬 데이터베이스** - SQLite 기반 로컬 저장
+- ✅ **서버 데이터베이스** - MySQL 기반 서버 저장 (선택사항)
+- ✅ **실시간 동기화** - WebSocket 기반 실시간 업데이트
+- ✅ **버전 관리** - 테스트케이스 및 스크립트 버전 관리
 
 ### 향후 확장 예정
-- 🔄 Recorder (테스트 기록)
-- 🔄 코드변환 (다양한 테스트 프레임워크 지원)
-- 🔄 테스트케이스 관리 (CRUD 기능)
-- 🔄 Runner (고급 테스트 실행 옵션)
-- 🔄 Result Viewer (상세 리포트 및 시각화)
+- 🔄 **고급 Runner 기능** - 병렬 실행, 재시도, 타임아웃 설정
+- 🔄 **상세 리포트 및 시각화** - 차트, 그래프, 트렌드 분석
+- 🔄 **Page Object Model (POM)** - 고급 POM 지원 확장
+- 🔄 **CI/CD 통합** - Jenkins, GitHub Actions 연동
 
 ## 설치 및 실행
 
@@ -136,16 +180,49 @@ npm run build
 
 ## 사용 방법
 
-1. 앱을 실행하면 메인 화면이 표시됩니다.
-2. "테스트 스크립트 선택" 드롭다운에서 실행할 pytest 테스트 파일을 선택합니다.
-3. "실행" 버튼을 클릭하여 테스트를 실행합니다.
-4. pytest가 테스트를 실행하고 JSON 리포트를 생성합니다.
-5. 실행 결과가 "실행 결과" 패널에 표시됩니다.
+### 1. 테스트 녹화 (Recorder)
+
+1. 앱 실행 후 "Recorder" 탭 선택
+2. "녹화 시작" 버튼 클릭
+3. 브라우저에서 테스트할 웹사이트로 이동
+4. 클릭, 입력 등 상호작용 수행
+5. "녹화 중지" 버튼으로 녹화 종료
+6. 생성된 코드 확인 및 수정
+7. 테스트케이스로 저장
+
+**특징:**
+- 페이지 진입 시 자동으로 DOM 스냅샷 저장
+- 각 페이지별로 매월 상반기/하반기 각각 한 번씩만 저장
+- 저장된 DOM 구조는 60일간 보관 후 자동 삭제
+
+### 2. 테스트케이스 관리
+
+1. "Test Cases" 탭에서 프로젝트 선택
+2. 폴더/테스트케이스 생성
+3. Steps 기반으로 테스트 단계 작성
+4. 키워드 라이브러리 활용
+5. 저장 및 버전 관리
+
+### 3. 코드 생성
+
+1. 녹화된 이벤트 또는 Steps에서 코드 생성
+2. 프레임워크 선택 (Playwright, Selenium, Appium)
+3. 언어 선택 (Python, JavaScript, TypeScript)
+4. 생성된 코드 확인 및 수정
+5. 스크립트로 저장
+
+### 4. 테스트 실행
+
+1. "Runner" 탭에서 테스트 스크립트 선택
+2. 실행 옵션 설정 (병렬 실행, 재시도 등)
+3. "실행" 버튼 클릭
+4. 실행 결과 확인
+5. 리포트 및 스크린샷 확인
 
 ### 테스트 실행 예시
 
 - `test_example.py` 선택 → 모든 테스트 실행
-- 특정 테스트만 실행하려면 pytest 옵션을 추가할 수 있습니다 (향후 기능)
+- 특정 테스트만 실행하려면 pytest 옵션을 추가할 수 있습니다
 
 ## Python 테스트 작성 가이드
 
@@ -226,24 +303,55 @@ def test_parametrized(input_value, expected):
 
 ## 기술 스택
 
+### 프론트엔드
 - **Electron**: 크로스 플랫폼 데스크톱 앱 프레임워크
+- **HTML/CSS/JavaScript**: UI 구현
+- **CodeMirror**: 코드 에디터
+
+### 백엔드
 - **Node.js**: 백엔드 로직 및 pytest 실행
+- **Express**: 서버 프레임워크 (선택사항)
+- **WebSocket**: 실시간 동기화
+
+### 데이터베이스
+- **SQLite**: 로컬 데이터베이스 (sql.js)
+- **MySQL**: 서버 데이터베이스 (선택사항)
+
+### 테스트 프레임워크
 - **Python**: 테스트 스크립트 실행
 - **pytest**: Python 테스트 프레임워크
 - **pytest-json-report**: JSON 리포트 생성 플러그인
+- **Playwright**: 브라우저 자동화
+- **Selenium**: 웹 자동화
+- **Appium**: 모바일 자동화
+
+### 기타
+- **zlib**: DOM 스냅샷 압축
+- **Chrome DevTools Protocol (CDP)**: 브라우저 제어
 
 ## 개발 로드맵
 
+### 완료된 기능 ✅
 1. ✅ 기본 Electron 앱 구조
 2. ✅ Python 스크립트 실행 기능
 3. ✅ 결과 표시 기능
 4. ✅ 모듈화 및 코드 구조 개선
 5. ✅ JSDoc 주석 및 문서화
-6. 🔄 Recorder 기능 추가
-7. 🔄 코드변환 엔진 구현
-8. 🔄 테스트케이스 관리 시스템
-9. 🔄 고급 Runner 기능
-10. 🔄 상세 리포트 및 시각화
+6. ✅ Recorder 기능 (테스트 녹화)
+7. ✅ 코드변환 엔진 (다양한 프레임워크 지원)
+8. ✅ 테스트케이스 관리 시스템
+9. ✅ 로컬/서버 데이터베이스 지원
+10. ✅ DOM 스냅샷 저장 기능
+11. ✅ 실시간 동기화 (서버 모드)
+12. ✅ AI 기반 셀렉터 제안
+
+### 진행 중 / 향후 계획 🔄
+1. 🔄 고급 Runner 기능 (병렬 실행, 재시도, 타임아웃)
+2. 🔄 상세 리포트 및 시각화 (차트, 그래프)
+3. 🔄 Page Object Model (POM) 고급 기능
+4. 🔄 CI/CD 통합 (Jenkins, GitHub Actions)
+5. 🔄 테스트 데이터 관리
+6. 🔄 키워드 라이브러리 확장
 
 ## 코드 구조 개선 사항
 
@@ -252,7 +360,35 @@ def test_parametrized(input_value, expected):
 - **서비스 레이어**: 비즈니스 로직을 서비스 모듈로 분리
   - `pythonService.js`: Python 실행 로직
   - `scriptManager.js`: 스크립트 관리 로직
+  - `dbService.js`: 로컬 SQLite 데이터베이스 관리
+  - `apiService.js`: 서버 API 통신
+  - `domSnapshotService.js`: DOM 스냅샷 저장 (로컬/서버 모드 지원)
 - **유틸리티 모듈**: 렌더러 프로세스의 재사용 가능한 함수들 분리
+  - `codeGenerator.js`: 코드 생성 엔진
+  - `domSnapshot.js`: DOM 캡처 및 URL 정규화
+  - `selectorUtils.js`: 셀렉터 최적화
+  - `aiService.js`: AI 기반 셀렉터 제안
+
+### DOM 스냅샷 저장 기능
+
+페이지 진입 시 자동으로 DOM 구조를 캡처하여 저장하는 기능입니다.
+
+**주요 특징:**
+- **자동 저장**: 페이지 진입 시 자동으로 DOM 구조 캡처
+- **주기적 저장**: 매월 상반기(1-15일)와 하반기(16-말일) 각각 한 번만 저장
+- **중복 방지**: 같은 기간 내 저장 이력이 있으면 저장하지 않음
+- **URL 정규화**: 도메인+경로 기준 저장 (쿼리 파라미터 제외)
+- **자동 정리**: 60일 이상 된 스냅샷 자동 삭제
+- **압축 저장**: gzip 압축으로 저장 공간 최적화
+- **로컬/서버 지원**: 로컬 SQLite 또는 서버 MySQL 저장
+
+**사용 예시:**
+```
+페이지 진입: https://example.com/page?id=123
+→ 정규화: https://example.com/page
+→ DOM 구조 캡처 및 압축 저장
+→ 같은 기간 내 재방문 시 저장 건너뜀
+```
 
 ### 주석 및 문서화
 - 모든 주요 함수에 JSDoc 주석 추가

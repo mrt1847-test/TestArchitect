@@ -6,6 +6,7 @@
 import { generateCode } from './utils/codeGenerator.js';
 import { getAiSelectorSuggestions, getAiCodeReview } from './utils/aiService.js';
 import { getSelectorCandidatesWithUniqueness } from './utils/selectorUtils.js';
+import { normalizeURL, captureDOM, getCurrentPeriod } from './utils/domSnapshot.js';
 
 // Electron IPC 통신 (Electron 환경에서만 사용)
 // contextIsolation: true이므로 window.electronAPI를 통해 접근
@@ -92,6 +93,9 @@ let codeEditor = null;
 let wsConnection = null;
 let manualActions = [];
 let manualActionSerial = 1;
+
+// DOM 스냅샷 저장 상태 관리 (같은 세션 내 중복 저장 방지)
+const snapshotSavedUrls = new Set();
 
 // 리플레이 상태 관리 (popup.js 이식)
 let replayState = {
@@ -287,6 +291,9 @@ function handleWebSocketMessage(message) {
       if (recording) {
         logMessage(`페이지 전환: ${message.url}`, 'info');
         
+        // DOM 스냅샷 저장 시도
+        trySaveDomSnapshot(message.url);
+        
         // URL 변경 이벤트를 스텝으로 추가 (선택적)
         // 필요시 navigate 이벤트를 추가할 수 있음
         // const navigateEvent = {
@@ -356,6 +363,78 @@ function handleWebSocketMessage(message) {
       
     default:
       console.log('[Recorder] 알 수 없는 메시지 타입:', message.type);
+  }
+}
+
+/**
+ * DOM 스냅샷 저장 시도
+ * @param {string} url - 페이지 URL
+ */
+async function trySaveDomSnapshot(url) {
+  try {
+    // electronAPI 확인
+    if (!electronAPI) {
+      initElectronAPI();
+    }
+    
+    if (!electronAPI || !electronAPI.saveDomSnapshot || !electronAPI.checkDomSnapshot) {
+      console.warn('[Recorder] electronAPI가 없어 DOM 스냅샷 저장을 건너뜁니다.');
+      return;
+    }
+    
+    // URL 정규화
+    const normalizedUrl = normalizeURL(url);
+    if (!normalizedUrl) {
+      console.warn('[Recorder] URL 정규화 실패:', url);
+      return;
+    }
+    
+    // 같은 세션 내 중복 저장 방지
+    if (snapshotSavedUrls.has(normalizedUrl)) {
+      console.log(`[Recorder] 이미 저장된 URL이므로 스냅샷 저장 건너뜀: ${normalizedUrl}`);
+      return;
+    }
+    
+    // 현재 기간 확인
+    const period = getCurrentPeriod();
+    
+    // 해당 기간 내 저장 이력 확인
+    const exists = await electronAPI.checkDomSnapshot(
+      normalizedUrl,
+      period.periodStartDate,
+      period.periodEndDate
+    );
+    
+    if (exists) {
+      console.log(`[Recorder] 해당 기간 내 이미 저장된 스냅샷이 있음: ${normalizedUrl}`);
+      snapshotSavedUrls.add(normalizedUrl); // 중복 체크를 위해 추가
+      return;
+    }
+    
+    // DOM 구조 캡처
+    const domStructure = captureDOM();
+    if (!domStructure) {
+      console.warn('[Recorder] DOM 구조 캡처 실패');
+      return;
+    }
+    
+    // 스냅샷 저장
+    const today = new Date();
+    const result = await electronAPI.saveDomSnapshot(
+      normalizedUrl,
+      domStructure,
+      today
+    );
+    
+    if (result && result.success) {
+      console.log(`[Recorder] ✅ DOM 스냅샷 저장 완료: ${normalizedUrl}`);
+      snapshotSavedUrls.add(normalizedUrl); // 중복 저장 방지
+      logMessage(`DOM 스냅샷 저장: ${normalizedUrl}`, 'success');
+    } else {
+      console.error('[Recorder] DOM 스냅샷 저장 실패:', result?.error || '알 수 없는 오류');
+    }
+  } catch (error) {
+    console.error('[Recorder] DOM 스냅샷 저장 중 오류:', error);
   }
 }
 
@@ -2496,7 +2575,7 @@ function sendSelectionMessage(payload, callback) {
   if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
     // payload에 type이 있으면 그대로 사용, 없으면 element-selection으로 래핑
     const message = payload.type ? payload : { type: 'element-selection', ...payload };
-    console.log('[Recorder] sendSelectionMessage 전송:', message);
+    console.log('[Recorder] sendSelectionMessage 전송:', JSON.stringify(message, null, 2));
     wsConnection.send(JSON.stringify(message));
     if (callback) callback({ok: true});
   } else {
@@ -2632,7 +2711,14 @@ function handleSimpleElementSelectionPicked(msg) {
   
   const elementInfo = {
     text: msg.element?.text || firstCandidate.textValue || '',
-    iframeContext: msg.element?.iframeContext || null
+    iframeContext: msg.element?.iframeContext || null,
+    tag: msg.element?.tag || null,
+    id: msg.element?.id || null,
+    className: msg.element?.className || null,
+    value: msg.element?.value || null,
+    clientRect: msg.clientRect || null,
+    page: msg.page || null,
+    selectorCandidates: msg.selectors || candidates || []
   };
   
   console.log('[Recorder] handleSimpleElementSelectionPicked: 콜백 호출 준비:', {
@@ -3046,21 +3132,15 @@ function handleVerifyAction(verifyType) {
   startSimpleElementSelection((path, elementInfo, pendingAction, pendingStepIndex) => {
     let value = null;
     if (pendingAction === 'verifyText') {
-      // 요소의 텍스트를 기본값으로 사용
-      const elementText = elementInfo.text || path[0]?.textValue || '';
-      const textValue = prompt('검증할 텍스트를 입력하세요:', elementText);
-      if (textValue === null) {
-        // 취소 시 요소 선택 모드 해제
-        cancelSimpleElementSelection();
-        return;
-      }
-      value = textValue || elementText;
+      // 요소의 텍스트를 자동으로 사용 (prompt 없이)
+      value = elementInfo.text || path[0]?.textValue || '';
+      console.log('[Recorder] verifyText: 요소 텍스트 자동 사용:', value);
     } else if (pendingAction === 'verifyElementPresent' || pendingAction === 'verifyElementNotPresent') {
       // 요소 존재/부재 검증은 value 불필요
       value = null;
     }
     
-    addVerifyAction(pendingAction, path, value);
+    addVerifyAction(pendingAction, path, value, elementInfo);
   }, verifyType, null);
 }
 
@@ -3148,12 +3228,13 @@ function handleInteractionAction(interactionType) {
 /**
  * 검증 액션을 이벤트로 추가
  */
-function addVerifyAction(verifyType, path, value) {
+function addVerifyAction(verifyType, path, value, elementInfo = null) {
   console.log('[Recorder] addVerifyAction 호출:', {
     verifyType,
     pathLength: path?.length || 0,
     value,
-    path: path ? path.map(p => p.selector) : null
+    path: path ? path.map(p => p.selector) : null,
+    hasElementInfo: !!elementInfo
   });
   
   const timestamp = Date.now();
@@ -3182,23 +3263,25 @@ function addVerifyAction(verifyType, path, value) {
     }
     
     const targetEntry = selectors[selectors.length - 1];
-    const iframeContext = path[path.length - 1]?.iframeContext || null;
+    const iframeContext = path[path.length - 1]?.iframeContext || elementInfo?.iframeContext || null;
+    
+    // elementInfo에서 추가 정보 가져오기
+    const targetTag = elementInfo?.tag || null;
+    const clientRect = elementInfo?.clientRect || null;
+    const pageInfo = elementInfo?.page || { url: currentUrl, title: currentTitle };
     
     eventRecord = {
       version: 2,
       timestamp,
       action: verifyType,
       value: value || null,
-      tag: null,
-      selectorCandidates: selectors,
+      tag: targetTag,
+      selectorCandidates: elementInfo?.selectorCandidates || selectors,
       iframeContext,
-      page: {
-        url: currentUrl,
-        title: currentTitle
-      },
+      page: pageInfo,
       frame: { iframeContext },
-      target: null,
-      clientRect: null,
+      target: targetTag ? { tag: targetTag, id: elementInfo?.id || null, className: elementInfo?.className || null } : null,
+      clientRect: clientRect,
       metadata: {
         schemaVersion: 2,
         userAgent: navigator.userAgent
@@ -3277,7 +3360,7 @@ function addVerifyAction(verifyType, path, value) {
 /**
  * 대기 액션을 이벤트로 추가
  */
-function addWaitAction(waitType, timeValue, path) {
+function addWaitAction(waitType, timeValue, path, elementInfo = null) {
   const timestamp = Date.now();
   let eventRecord = null;
   
@@ -3329,20 +3412,27 @@ function addWaitAction(waitType, timeValue, path) {
     }
     
     const targetEntry = selectors[selectors.length - 1];
-    const iframeContext = path[path.length - 1]?.iframeContext || null;
+    const iframeContext = path[path.length - 1]?.iframeContext || elementInfo?.iframeContext || null;
+    
+    // elementInfo에서 추가 정보 가져오기
+    const targetTag = elementInfo?.tag || null;
+    const clientRect = elementInfo?.clientRect || null;
+    const currentUrl = window.location.href || '';
+    const currentTitle = document.title || '';
+    const pageInfo = elementInfo?.page || { url: currentUrl, title: currentTitle };
     
     eventRecord = {
       version: 2,
       timestamp,
       action: 'waitForElement',
-      value: timeValue ? String(timeValue) : null,
-      tag: null,
-      selectorCandidates: selectors,
+      value: null, // waitForElement는 요소 대기이므로 value는 null
+      tag: targetTag,
+      selectorCandidates: elementInfo?.selectorCandidates || selectors,
       iframeContext,
-      page: { url: '', title: '' },
+      page: pageInfo,
       frame: { iframeContext },
-      target: null,
-      clientRect: null,
+      target: targetTag ? { tag: targetTag, id: elementInfo?.id || null, className: elementInfo?.className || null } : null,
+      clientRect: clientRect,
       metadata: {
         schemaVersion: 2,
         userAgent: navigator.userAgent
@@ -3921,7 +4011,8 @@ function updateCode(options = {}) {
       setCodeText(code);
       
       // 코드를 TC에 실시간 저장 (debounce 적용)
-      if (recording) {
+      // 녹화 중이거나 녹화가 방금 중지된 경우 저장
+      if (recording || normalizedEvents.length > 0) {
         saveCodeToTCWithDebounce(code);
       }
       
@@ -3983,32 +4074,55 @@ async function startRecording() {
     
     if (electronAPI) {
       try {
-        // 사용자에게 선택 다이얼로그 표시
-        const choice = await new Promise((resolve) => {
-          const shouldClear = confirm(
-            'TC에 기존 steps가 있습니다.\n\n' +
-            '확인: 기존 steps를 초기화하고 새로 시작\n' +
-            '취소: 기존 steps 뒤에 추가하여 이어서 녹화'
-          );
-          resolve(shouldClear);
-        });
+        // TC 정보 조회하여 실제로 steps가 있는지 확인
+        const tcResponse = await electronAPI.invoke('api-get-test-case', parseInt(tcId, 10));
+        
+        if (tcResponse && tcResponse.success && tcResponse.data) {
+          const tc = tcResponse.data;
+          let steps = [];
+          
+          // steps 파싱
+          if (tc.steps) {
+            try {
+              steps = typeof tc.steps === 'string' ? JSON.parse(tc.steps) : tc.steps;
+            } catch (e) {
+              steps = [];
+            }
+          }
+          
+          // steps가 실제로 있는 경우에만 확인 팝업 표시
+          if (Array.isArray(steps) && steps.length > 0) {
+            const choice = await new Promise((resolve) => {
+              const shouldClear = confirm(
+                'TC에 기존 steps가 있습니다.\n\n' +
+                '확인: 기존 steps를 초기화하고 새로 시작\n' +
+                '취소: 기존 steps 뒤에 추가하여 이어서 녹화'
+              );
+              resolve(shouldClear);
+            });
 
-        if (choice) {
-          // 기존 steps 초기화
-          const result = await electronAPI.invoke('clear-tc-steps', parseInt(tcId, 10));
-          if (result && result.success) {
-            console.log('[Recorder] ✅ TC steps 초기화 완료');
-            logMessage('TC steps 초기화 완료', 'info');
+            if (choice) {
+              // 기존 steps 초기화
+              const result = await electronAPI.invoke('clear-tc-steps', parseInt(tcId, 10));
+              if (result && result.success) {
+                console.log('[Recorder] ✅ TC steps 초기화 완료');
+                logMessage('TC steps 초기화 완료', 'info');
+              } else {
+                console.warn('[Recorder] ⚠️ TC steps 초기화 실패:', result?.error);
+                logMessage('TC steps 초기화 실패: ' + (result?.error || '알 수 없는 오류'), 'error');
+              }
+            } else {
+              console.log('[Recorder] 기존 steps 유지하고 이어서 녹화');
+              logMessage('기존 steps 뒤에 추가하여 녹화', 'info');
+            }
           } else {
-            console.warn('[Recorder] ⚠️ TC steps 초기화 실패:', result?.error);
-            logMessage('TC steps 초기화 실패: ' + (result?.error || '알 수 없는 오류'), 'error');
+            console.log('[Recorder] TC에 기존 steps가 없음 - 바로 녹화 시작');
           }
         } else {
-          console.log('[Recorder] 기존 steps 유지하고 이어서 녹화');
-          logMessage('기존 steps 뒤에 추가하여 녹화', 'info');
+          console.warn('[Recorder] ⚠️ TC 정보 조회 실패:', tcResponse?.error);
         }
       } catch (error) {
-        console.error('[Recorder] ❌ TC steps 초기화 선택 중 오류:', error);
+        console.error('[Recorder] ❌ TC steps 확인 중 오류:', error);
         // 오류가 발생해도 녹화는 계속 진행
       }
     }
@@ -4080,11 +4194,13 @@ async function startRecording() {
 }
 
 // 녹화 중지
-function stopRecording() {
+async function stopRecording() {
   if (!recording) return;
 
-  recording = false;
-
+  // 녹화 중지 전에 코드 저장을 위해 recording 상태를 유지한 채로 updateCode 호출
+  // updateCode 내부에서 코드 저장 후 recording을 false로 설정
+  const wasRecording = recording;
+  
   if (startBtn) startBtn.disabled = false;
   if (stopBtn) stopBtn.disabled = true;
 
@@ -4097,8 +4213,41 @@ function stopRecording() {
     console.log('[Recorder] WebSocket으로 녹화 중지 신호 전송');
   }
 
+  // 코드 업데이트 및 저장 (recording이 true인 상태에서 호출하여 저장되도록 함)
   updateCode();
+  
+  // 실시간 저장이 이미 활성화되어 있으므로, Stop 시에는 동기화를 건너뜀
+  // (실시간으로 이미 저장된 steps가 있으면 중복 저장을 방지)
+  // 실시간 저장이 실패한 경우를 대비하여 동기화는 유지하되, 서버 측에서 중복 체크 수행
+  if (allEvents.length > 0) {
+    try {
+      // 실시간 저장이 이미 완료되었는지 확인하기 위해 동기화 시도
+      // 서버 측에서 이미 저장된 steps가 있으면 건너뛰도록 처리됨
+      logMessage('녹화된 이벤트를 TC에 저장 중...', 'info');
+      const syncResult = await syncAllEventsToTC();
+      if (syncResult && syncResult.success) {
+        console.log(`[Recorder] ✅ 녹화 중지: ${syncResult.stepCount}개의 steps가 TC에 저장되었습니다`);
+        logMessage(`녹화 완료: ${syncResult.stepCount}개의 steps 저장됨`, 'success');
+      } else {
+        // 실시간 저장이 이미 완료되어 sync가 건너뛴 경우
+        console.log('[Recorder] 실시간 저장이 이미 완료되었습니다.');
+        logMessage('녹화 완료 (이미 저장됨)', 'success');
+      }
+    } catch (error) {
+      console.error('[Recorder] ❌ 녹화 중지 시 TC 동기화 중 오류:', error);
+      logMessage('TC 저장 중 오류: ' + error.message, 'error');
+    }
+  } else {
+    console.log('[Recorder] 저장할 이벤트가 없습니다.');
+    logMessage('녹화된 이벤트가 없습니다', 'info');
+  }
+  
+  // 코드 저장 후 recording 상태 변경
+  recording = false;
+  
   logMessage('녹화 중지', 'info');
+  
+  // allEvents는 초기화하지 않음 (사용자가 다시 확인할 수 있도록 유지)
 }
 
 // 초기화
@@ -4107,6 +4256,7 @@ function reset() {
   allEvents = [];
   manualActions = [];
   currentEventIndex = -1;
+  snapshotSavedUrls.clear(); // 스냅샷 저장 상태 초기화
 
   if (startBtn) startBtn.disabled = false;
   if (stopBtn) stopBtn.disabled = true;
@@ -4818,14 +4968,9 @@ function activateElementSelectionForAssertion(stepIndex, assertionType) {
   startSimpleElementSelection((path, elementInfo, pendingAction, pendingStepIndex) => {
     let value = null;
     if (pendingAction === 'verifyText') {
-      // 요소의 텍스트를 기본값으로 사용
-      const elementText = elementInfo.text || path[0]?.textValue || '';
-      const textValue = prompt('검증할 텍스트를 입력하세요:', elementText);
-      if (textValue === null) {
-        // 취소 시 아무것도 하지 않음
-        return;
-      }
-      value = textValue || elementText;
+      // 요소의 텍스트를 자동으로 사용 (prompt 없이)
+      value = elementInfo.text || path[0]?.textValue || '';
+      console.log('[Recorder] verifyText: 요소 텍스트 자동 사용:', value);
     } else if (pendingAction === 'verifyElementPresent' || pendingAction === 'verifyElementNotPresent') {
       // 요소 존재/부재 검증은 value 불필요
       value = null;
@@ -4986,18 +5131,9 @@ function handleGlobalAssertion(assertionType) {
     
     let value = null;
     if (pendingAction === 'verifyText') {
-      // 요소의 텍스트를 기본값으로 사용
-      const elementText = elementInfo.text || path[0]?.textValue || '';
-      console.log('[Recorder] verifyText: prompt 표시 전, elementText:', elementText);
-      const textValue = prompt('검증할 텍스트를 입력하세요:', elementText);
-      console.log('[Recorder] verifyText: prompt 결과:', textValue);
-      if (textValue === null) {
-        // 취소 시 그냥 return (handleSimpleElementSelectionPicked에서 이미 ELEMENT_SELECTION_CANCEL 전송)
-        console.log('[Recorder] verifyText: 사용자가 취소함');
-        return;
-      }
-      value = textValue || elementText;
-      console.log('[Recorder] verifyText: 최종 value:', value);
+      // 요소의 텍스트를 자동으로 사용 (prompt 없이)
+      value = elementInfo.text || path[0]?.textValue || '';
+      console.log('[Recorder] verifyText: 요소 텍스트 자동 사용:', value);
     }
     
     // pendingStepIndex가 있으면 addAssertionAfterStep 사용, 없으면 addVerifyAction 사용
@@ -5006,7 +5142,7 @@ function handleGlobalAssertion(assertionType) {
       addAssertionAfterStep(pendingStepIndex, pendingAction, path, value);
     } else {
       console.log('[Recorder] addVerifyAction 호출:', { pendingAction, pathLength: path?.length || 0, value });
-      addVerifyAction(pendingAction, path, value);
+      addVerifyAction(pendingAction, path, value, elementInfo);
     }
   }, assertionType, null);
   
@@ -5050,7 +5186,7 @@ function handleGlobalWait(waitType) {
   // 요소 대기는 심플 요소 선택 사용
   if (waitType === 'waitForElement') {
     startSimpleElementSelection((path, elementInfo, pendingAction, pendingStepIndex) => {
-      addWaitAction('waitForElement', null, path);
+      addWaitAction('waitForElement', null, path, elementInfo);
     }, 'waitForElement', null);
     
     // wait-actions 컨테이너 숨기기
@@ -5377,6 +5513,10 @@ window.addEventListener('message', (event) => {
       // 녹화 중인 경우에만 처리
       if (recording) {
         logMessage(`페이지 전환: ${event.data.url}`, 'info');
+        
+        // DOM 스냅샷 저장 시도
+        trySaveDomSnapshot(event.data.url);
+        
         console.log('[Recorder] ✅ URL 변경 처리 완료 (녹화 상태 유지)');
         console.log('[Recorder] ⚠️ 주의: Content Script가 새 페이지에서 이벤트 리스너를 재등록해야 합니다');
         console.log('[Recorder] ⚠️ Background Script가 Content Script에 RECORDING_START 메시지를 다시 보내야 합니다');

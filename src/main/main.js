@@ -47,12 +47,15 @@ const os = require('os');
 const fs = require('fs');
 const net = require('net');
 const WebSocket = require('ws');
+const sharp = require('sharp');
 const config = require('./config/config');
 const PytestService = require('./services/pytestService');
 const ScriptManager = require('./services/scriptManager');
 const EnvironmentChecker = require('./services/environmentChecker');
 const DbService = require('./services/dbService');
 const ChromeForTestingService = require('./services/chromeForTestingService');
+const DomSnapshotService = require('./services/domSnapshotService');
+const ScreenshotService = require('./services/screenshotService');
 
 // 프로덕션 모드 경로 초기화는 app.whenReady()에서 처리
 // createWindow()가 호출되기 전에 경로가 설정되어야 함
@@ -68,6 +71,21 @@ let globalRecordingState = false;
 
 /** @type {WebSocket} CDP WebSocket 연결 (URL 변경 감지를 위해 유지) */
 let globalCdpWs = null;
+
+/** @type {number|null} 현재 녹화 중인 브라우저의 CDP 포트 */
+let currentCdpPort = null;
+
+/** @type {string|null} 현재 녹화 중인 브라우저의 타겟 ID */
+let currentTargetId = null;
+
+/** @type {number} 스크린샷 캡처용 CDP 명령 ID 카운터 */
+let screenshotCommandIdCounter = 10000; // 다른 명령과 구분하기 위해 10000부터 시작
+
+/** @type {number} 전역 CDP 명령 ID 카운터 (DOM 캡처 스크립트 주입 등) */
+let globalCdpCommandIdCounter = 1; // 1부터 시작
+
+/** @type {Map<number, Promise>} TC별 save-event-step 동시 실행 방지용 락 */
+const saveEventStepLocks = new Map();
 
 /** @type {http.Server} 녹화 데이터 수신용 HTTP 서버 */
 let recordingServer = null;
@@ -200,10 +218,7 @@ function startRecordingServer() {
       <body>
         <div class="container">
           <h1>🎬 녹화 준비 완료</h1>
-          <p>크롬 확장 프로그램이 자동으로 녹화를 시작합니다...</p>
-          <div class="status">
-            ✅ 확장 프로그램의 사이드 패널이 자동으로 열립니다
-          </div>
+          <p> 🔴Record 클릭시 녹화를 시작합니다...</p>
           <div class="info">
             <div><strong>TC ID:</strong> ${tcId || 'N/A'}</div>
             <div><strong>프로젝트 ID:</strong> ${projectId || 'N/A'}</div>
@@ -527,6 +542,11 @@ function handleExtensionMessage(ws, data) {
       console.log('[Extension] 녹화 중지 요청 수신');
       globalRecordingState = false;
       
+      // CDP 포트 및 타겟 ID 초기화
+      currentCdpPort = null;
+      currentTargetId = null;
+      console.log('[Recording] CDP 포트 및 타겟 ID 초기화');
+      
       // CDP WebSocket 연결 종료
       if (globalCdpWs && globalCdpWs.readyState === WebSocket.OPEN) {
         console.log('[CDP] 녹화 중지: CDP WebSocket 연결 종료');
@@ -722,6 +742,7 @@ function handleExtensionMessage(ws, data) {
       
     case 'element-selection':
     case 'ELEMENT_SELECTION_START':
+    case 'ELEMENT_SELECTION_CANCEL':
       // 요소 선택 관련 메시지 (Content Script로 전달)
       console.log('[Extension] 요소 선택 메시지 수신:', data.type || messageType);
       
@@ -729,7 +750,7 @@ function handleExtensionMessage(ws, data) {
       // 실제로는 Content Script가 직접 WebSocket에 연결되어 있으므로
       // Background Script를 통해 Content Script에 메시지 전달
       broadcastToExtensions({
-        type: 'element-selection',
+        type: data.type || messageType,
         ...data
       });
       
@@ -742,7 +763,6 @@ function handleExtensionMessage(ws, data) {
     case 'ELEMENT_SELECTION_PICKED':
     case 'ELEMENT_SELECTION_ERROR':
     case 'ELEMENT_SELECTION_CANCELLED':
-    case 'ELEMENT_SELECTION_CANCEL':
       // 요소 선택 결과 메시지 (Content Script에서 전송)
       console.log('[Extension] 요소 선택 결과 수신:', data.type || messageType);
       
@@ -823,6 +843,211 @@ function broadcastToExtensions(message) {
  * @param {string} targetUrl - 주입할 페이지 URL
  */
 /**
+ * CDP를 통해 스크린샷 캡처
+ * @param {number} cdpPort - Chrome DevTools Protocol 포트
+ * @param {string} targetId - 타겟 ID (선택사항)
+ * @returns {Promise<string|null>} base64 인코딩된 PNG 이미지 (data:image/png;base64,...) 또는 null
+ */
+async function captureScreenshotViaCDP(cdpPort, targetId = null) {
+  try {
+    console.log(`[Screenshot] CDP 연결 시도: 포트=${cdpPort}, targetId=${targetId || '(자동 탐지)'}`);
+    
+    // 스크린샷은 항상 새 WebSocket 연결 사용 (메시지 핸들러 충돌 방지)
+    let cdpWs = null;
+    
+    // targetId가 없으면 /json/list에서 가져오기
+    if (!targetId) {
+        // targetId가 없으면 /json/list에서 가져오기
+        const listUrl = `http://127.0.0.1:${cdpPort}/json/list`;
+        console.log(`[Screenshot] 타겟 목록 조회: ${listUrl}`);
+        
+        const listResponse = await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            reject(new Error('타겟 목록 조회 타임아웃'));
+          }, 5000);
+          
+          http.get(listUrl, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+              clearTimeout(timeout);
+              try {
+                resolve(JSON.parse(data));
+              } catch (e) {
+                reject(e);
+              }
+            });
+          }).on('error', (error) => {
+            clearTimeout(timeout);
+            reject(error);
+          });
+        });
+        
+        if (listResponse && listResponse.length > 0) {
+          targetId = listResponse[0].id;
+          // 전역 변수에 저장
+          currentTargetId = targetId;
+          console.log(`[Screenshot] 타겟 ID 자동 탐지: ${targetId}`);
+      } else {
+        console.warn('[Screenshot] 타겟을 찾을 수 없습니다 (목록이 비어있음)');
+        return null;
+      }
+    }
+    
+    const wsUrl = `ws://127.0.0.1:${cdpPort}/devtools/page/${targetId}`;
+    cdpWs = new WebSocket(wsUrl);
+    
+    // 연결 대기
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('CDP WebSocket 연결 타임아웃'));
+      }, 5000);
+      
+      cdpWs.on('open', () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+      
+      cdpWs.on('error', (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+    });
+    
+    console.log(`[Screenshot] ✅ WebSocket 연결 완료`);
+    
+    // Page 도메인 활성화 (스크린샷 전 필수)
+    // 변수 선언 (핸들러에서 사용)
+    let enableRequestId, enableResolved, enableResolve, enableReject, enableTimeout;
+    let requestId, screenshotResolved, screenshotResolve, screenshotReject, screenshotTimeout;
+    
+    // 단일 메시지 핸들러로 모든 CDP 응답 처리
+    const allMessageHandler = (data) => {
+      try {
+        const message = JSON.parse(data.toString());
+        // Page.enable 응답 처리
+        if (message.id === enableRequestId) {
+          if (enableResolved) return;
+          enableResolved = true;
+          clearTimeout(enableTimeout);
+          if (message.error) {
+            console.warn(`[Screenshot] Page.enable 오류 (무시하고 계속):`, message.error.message);
+          } else {
+            console.log(`[Screenshot] ✅ Page.enable 성공`);
+          }
+          enableResolve();
+        }
+        // 스크린샷 응답 처리
+        else if (message.id === requestId) {
+          if (screenshotResolved) return;
+          screenshotResolved = true;
+          clearTimeout(screenshotTimeout);
+          
+          if (message.error) {
+            const errorMsg = message.error.message || '스크린샷 캡처 실패';
+            console.error(`[Screenshot] ❌ CDP 응답 오류:`, errorMsg);
+            screenshotReject(new Error(errorMsg));
+          } else if (message.result && message.result.data) {
+            console.log(`[Screenshot] ✅ 스크린샷 캡처 성공: requestId=${requestId}, 데이터 크기=${message.result.data.length} bytes`);
+            screenshotResolve('data:image/png;base64,' + message.result.data);
+          } else {
+            console.error(`[Screenshot] ❌ 응답에 데이터 없음:`, JSON.stringify(message));
+            screenshotReject(new Error('스크린샷 데이터가 없습니다'));
+          }
+        }
+      } catch (e) {
+        // 무시
+      }
+    };
+    
+    // 단일 메시지 핸들러 등록
+    cdpWs.on('message', allMessageHandler);
+    
+    // Page.enable 호출
+    try {
+      enableRequestId = screenshotCommandIdCounter++;
+      enableResolved = false;
+      await new Promise((resolve, reject) => {
+        enableResolve = resolve;
+        enableReject = reject;
+        enableTimeout = setTimeout(() => {
+          if (!enableResolved) {
+            enableResolved = true;
+            console.warn(`[Screenshot] Page.enable 타임아웃 (계속 진행)`);
+            resolve(); // 타임아웃해도 계속 진행
+          }
+        }, 3000);
+        
+        cdpWs.send(JSON.stringify({ id: enableRequestId, method: 'Page.enable' }));
+      });
+    } catch (enableError) {
+      console.warn(`[Screenshot] Page.enable 실패 (계속 진행):`, enableError.message);
+    }
+    
+    // Page.captureScreenshot 호출 (PNG 형식)
+    // 정수형 ID 사용 (CDP 요구사항) - 안전한 범위 유지
+    requestId = screenshotCommandIdCounter++;
+    console.log(`[Screenshot] CDP 명령 전송: requestId=${requestId}, method=Page.captureScreenshot (PNG)`);
+    
+    const screenshotPromise = new Promise((resolve, reject) => {
+      screenshotResolve = resolve;
+      screenshotReject = reject;
+      screenshotResolved = false;
+      
+      screenshotTimeout = setTimeout(() => {
+        if (!screenshotResolved) {
+          screenshotResolved = true;
+          console.error(`[Screenshot] ❌ 타임아웃: requestId=${requestId}, WebSocket 상태=${cdpWs.readyState}`);
+          reject(new Error('스크린샷 캡처 타임아웃'));
+        }
+      }, 10000);
+      
+      // WebSocket 상태 확인
+      if (cdpWs.readyState !== WebSocket.OPEN) {
+        screenshotResolved = true;
+        clearTimeout(screenshotTimeout);
+        reject(new Error(`WebSocket이 열려있지 않습니다 (상태: ${cdpWs.readyState})`));
+        return;
+      }
+      
+      // Page.captureScreenshot 요청 전송 (정수형 ID 사용)
+      // PNG 형식으로 캡처
+      const request = {
+        id: requestId,
+        method: 'Page.captureScreenshot',
+        params: { format: 'png' }
+      };
+      
+      console.log(`[Screenshot] CDP 요청 전송:`, JSON.stringify(request));
+      try {
+        cdpWs.send(JSON.stringify(request));
+        console.log(`[Screenshot] ✅ CDP 요청 전송 완료: requestId=${requestId}`);
+      } catch (sendError) {
+        screenshotResolved = true;
+        clearTimeout(screenshotTimeout);
+        console.error(`[Screenshot] ❌ CDP 요청 전송 실패:`, sendError.message);
+        reject(new Error(`CDP 요청 전송 실패: ${sendError.message}`));
+      }
+    });
+    
+    const screenshot = await screenshotPromise;
+    
+    // 메시지 핸들러 제거
+    cdpWs.removeListener('message', allMessageHandler);
+    
+    // 새로 생성한 WebSocket이면 닫기 (globalCdpWs가 아닌 경우)
+    if (cdpWs !== globalCdpWs && cdpWs.readyState === WebSocket.OPEN) {
+      cdpWs.close();
+    }
+    
+    return screenshot;
+  } catch (error) {
+    console.warn('[Screenshot] 스크린샷 캡처 실패:', error.message);
+    return null;
+  }
+}
+
+/**
  * CDP 서버가 준비될 때까지 대기
  * @param {number} cdpPort - CDP 포트
  * @param {number} maxRetries - 최대 재시도 횟수
@@ -869,6 +1094,12 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
     console.log('⏳ CDP 서버 준비 대기 중...');
     const targets = await waitForCDPServer(cdpPort);
     
+    // 타겟 목록이 있으면 첫 번째 타겟의 ID를 저장 (백업용)
+    if (targets && targets.length > 0 && targets[0].id && !currentTargetId) {
+      currentTargetId = targets[0].id;
+      console.log(`[Recording] 타겟 ID 저장 (첫 번째 타겟): ${currentTargetId}`);
+    }
+    
     // 대상 탭 찾기 (모든 탭에서 찾기)
     const targetTab = targets.find(tab => 
       tab.url && (tab.url.includes('localhost:3000') || tab.url.includes('127.0.0.1:3000'))
@@ -888,6 +1119,12 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
     }
     
     console.log('✅ 대상 탭 발견:', targetTab.url);
+    
+    // 타겟 ID를 전역 변수에 저장 (스크린샷 캡처 시 사용)
+    if (targetTab.id) {
+      currentTargetId = targetTab.id;
+      console.log(`[Recording] 타겟 ID 저장 (대상 탭): ${currentTargetId}`);
+    }
     
     // selectorUtils.js 파일 읽기 (CDP 스크립트에 포함)
     const selectorUtilsPath = path.join(__dirname, '../renderer/utils/selectorUtils.js');
@@ -1672,6 +1909,8 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
             text: elementData.element.text,
             value: elementData.element.value
           },
+          clientRect: elementData.clientRect,
+          page: elementData.page,
           stage: 'root', // 기본값, 필요시 수정 가능
           timestamp: Date.now()
         }));
@@ -1737,7 +1976,7 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
         className: target.className || null,
         text: (target.innerText || target.textContent || "").trim().substring(0, 100) || null
       },
-      value: target.value || target.textContent?.trim() || null,
+      value: null, // click은 value 불필요
       selectorCandidates: selectorCandidates,
       selectors: selectorCandidates.map(c => c.selector || c),
       clientRect: {
@@ -1785,7 +2024,7 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
         className: target.className || null,
         text: (target.innerText || target.textContent || "").trim().substring(0, 100) || null
       },
-      value: target.value || target.textContent?.trim() || null,
+      value: null, // doubleClick은 value 불필요
       selectorCandidates: selectorCandidates,
       selectors: selectorCandidates.map(c => c.selector || c),
       clientRect: {
@@ -1838,7 +2077,7 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
         className: target.className || null,
         text: (target.innerText || target.textContent || "").trim().substring(0, 100) || null
       },
-      value: target.value || target.textContent?.trim() || null,
+      value: null, // rightClick은 value 불필요
       selectorCandidates: selectorCandidates,
       selectors: selectorCandidates.map(c => c.selector || c),
       clientRect: {
@@ -2832,6 +3071,7 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
                 });
               }
             } else if (message.id && pendingNavigationEventCommands && pendingNavigationEventCommands.has(message.id)) {
+              // ⭐ 우선 처리: Navigation Event 명령 (ID가 작아도 먼저 확인)
               // Runtime.evaluate 응답 처리 (Navigation Event)
               const pending = pendingNavigationEventCommands.get(message.id);
               clearTimeout(pending.timeout);
@@ -3569,15 +3809,16 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
               if (cdpWs.readyState === WebSocket.OPEN && globalRecordingState) {
                 setTimeout(() => {
                   try {
+                    const commandId = globalCdpCommandIdCounter++;
                     cdpWs.send(JSON.stringify({
-                      id: Math.floor(Date.now()), // 정수형 ID
+                      id: commandId, // 전역 카운터 사용 (안전한 정수 범위)
                       method: 'Runtime.evaluate',
                       params: {
                         expression: domCaptureScript,
                         userGesture: false
                       }
                     }));
-                    console.log('[CDP] 페이지 로드 완료 후 DOM 캡처 스크립트 재주입');
+                    console.log(`[CDP] 페이지 로드 완료 후 DOM 캡처 스크립트 재주입 (commandId=${commandId})`);
                   } catch (err) {
                     console.error('[CDP] 스크립트 재주입 실패:', err);
                   }
@@ -3854,13 +4095,44 @@ function convertEventToStep(event, index = 0) {
   };
 
   // Target 추출 및 정규화
-  if (event.target) {
+  // 셀렉터 우선순위: selectorCandidates > primarySelector > selectors 객체 > selectors 배열 > target 객체 직접 추출
+  let targetSelector = null;
+  
+  // 1. selectorCandidates에서 추출 (최우선 - 이미 생성된 최적의 셀렉터)
+  if (event.selectorCandidates && Array.isArray(event.selectorCandidates) && event.selectorCandidates.length > 0) {
+    const topCandidate = event.selectorCandidates[0];
+    if (topCandidate) {
+      // type이 'text'이고 textValue가 있으면 text:"..." 형태로 구성
+      if (topCandidate.type === 'text' && topCandidate.textValue) {
+        targetSelector = `text:"${topCandidate.textValue}"`;
+      } else if (topCandidate.selector) {
+        // selector 필드가 있으면 사용하되, text= 같은 불완전한 경우 textValue로 재구성
+        if (topCandidate.selector.startsWith('text=') && topCandidate.textValue) {
+          // text=로 시작하는데 값이 없으면 textValue 사용
+          targetSelector = `text:"${topCandidate.textValue}"`;
+        } else {
+          targetSelector = topCandidate.selector;
+        }
+      } else if (topCandidate.textValue) {
+        // selector가 없지만 textValue가 있으면 text:"..." 형태로 구성
+        targetSelector = `text:"${topCandidate.textValue}"`;
+      } else if (topCandidate.xpathValue) {
+        // xpathValue가 있으면 사용
+        targetSelector = topCandidate.xpathValue;
+      }
+    }
+  }
+  
+  // 2. primarySelector에서 추출
+  if (!targetSelector && event.primarySelector) {
+    targetSelector = event.primarySelector;
+  }
+  
+  // 3. event.target이 있는 경우 selectors 객체에서 추출
+  if (!targetSelector && event.target) {
     const selectors = event.target.selectors || {};
     
-    // Selector 우선순위: id > css > xpath > text > name
-    let targetSelector = null;
-    
-    // 1. selectors 객체에서 추출
+    // Selector 우선순위: id > css > xpath > text > name > dataTestId
     if (selectors.id) {
       targetSelector = `#${selectors.id.replace(/^#/, '')}`;
     } else if (selectors.css) {
@@ -3874,44 +4146,37 @@ function convertEventToStep(event, index = 0) {
     } else if (selectors.dataTestId) {
       targetSelector = `[data-testid="${selectors.dataTestId}"]`;
     }
-    
-    // 2. selectorCandidates에서 추출 (최우선 셀렉터 사용)
-    if (!targetSelector && event.selectorCandidates && Array.isArray(event.selectorCandidates) && event.selectorCandidates.length > 0) {
-      // 가장 높은 점수의 셀렉터 사용
-      const topCandidate = event.selectorCandidates[0];
-      if (topCandidate && topCandidate.selector) {
-        targetSelector = topCandidate.selector;
+  }
+  
+  // 4. selectors 배열에서 추출
+  if (!targetSelector && event.selectors && Array.isArray(event.selectors) && event.selectors.length > 0) {
+    targetSelector = event.selectors[0];
+  }
+  
+  // 5. target 객체에서 직접 추출
+  if (!targetSelector && event.target) {
+    if (event.target.id) {
+      targetSelector = `#${event.target.id}`;
+    } else if (event.target.className) {
+      const classes = event.target.className.split(/\s+/).filter(c => c).join('.');
+      if (classes) {
+        targetSelector = `.${classes}`;
       }
+    } else if (event.target.tagName) {
+      targetSelector = event.target.tagName.toLowerCase();
+    } else if (event.target.text) {
+      targetSelector = `text:"${event.target.text}"`;
+    } else if (event.target.selector) {
+      targetSelector = event.target.selector;
+    } else if (event.target.xpath) {
+      targetSelector = event.target.xpath;
     }
-    
-    // 3. selectors 배열에서 추출
-    if (!targetSelector && event.selectors && Array.isArray(event.selectors) && event.selectors.length > 0) {
-      targetSelector = event.selectors[0];
-    }
-    
-    // 4. target 객체에서 직접 추출
-    if (!targetSelector) {
-      if (event.target.id) {
-        targetSelector = `#${event.target.id}`;
-      } else if (event.target.className) {
-        const classes = event.target.className.split(/\s+/).filter(c => c).join('.');
-        if (classes) {
-          targetSelector = `.${classes}`;
-        }
-      } else if (event.target.tagName) {
-        targetSelector = event.target.tagName.toLowerCase();
-      } else if (event.target.text) {
-        targetSelector = `text:"${event.target.text}"`;
-      } else if (event.target.selector) {
-        targetSelector = event.target.selector;
-      } else if (event.target.xpath) {
-        targetSelector = event.target.xpath;
-      }
-    }
-    
-    step.target = targetSelector;
-    
-    // Description 생성 (디버깅용)
+  }
+  
+  step.target = targetSelector;
+  
+  // Description 생성 (디버깅용)
+  if (event.target) {
     const targetInfo = [];
     if (event.target.tagName) targetInfo.push(`tag:${event.target.tagName}`);
     if (event.target.id) targetInfo.push(`id:${event.target.id}`);
@@ -3920,15 +4185,19 @@ function convertEventToStep(event, index = 0) {
     if (targetInfo.length > 0) {
       step.description = targetInfo.join(', ');
     }
-    
-    // target이 여전히 null이면 경고 및 상세 디버깅
-    if (!step.target) {
-      console.warn(`[Recording] ⚠️ 이벤트 ${index} (${step.action})의 target을 추출할 수 없습니다.`);
-      console.warn(`[Recording] 이벤트 전체 구조:`, JSON.stringify(event, null, 2));
+  }
+  
+  // target이 여전히 null이면 경고 및 상세 디버깅
+  if (!step.target) {
+    console.warn(`[Recording] ⚠️ 이벤트 ${index} (${step.action})의 target을 추출할 수 없습니다.`);
+    console.warn(`[Recording] 이벤트 전체 구조:`, JSON.stringify(event, null, 2));
+    if (event.target) {
       console.warn(`[Recording] target 객체:`, event.target);
-      console.warn(`[Recording] selectors 객체:`, selectors);
     }
-  } else if (event.selector) {
+  }
+  
+  // 추가 fallback: event.selector 또는 event.xpath가 직접 있는 경우
+  if (!step.target && event.selector) {
     // target이 없지만 selector가 직접 있는 경우
     step.target = event.selector;
     console.log(`[Recording] selector에서 target 추출: ${step.target}`);
@@ -3950,10 +4219,28 @@ function convertEventToStep(event, index = 0) {
   if (keywordAction === 'wait' || keywordAction === 'waitForElement' || event.type === 'wait') {
     step.condition = event.condition || 'visible';
     step.timeout = event.timeout || 5000;
-    if (!step.target && event.target) {
-      // wait의 경우 target이 selector여야 함
-      const selectors = event.target.selectors || {};
-      step.target = selectors.css || selectors.xpath || selectors.id || null;
+    // wait의 경우 target이 selector여야 함 (이미 위에서 설정되었지만, 없으면 재시도)
+    if (!step.target) {
+      // selectorCandidates 우선 사용
+      if (event.selectorCandidates && Array.isArray(event.selectorCandidates) && event.selectorCandidates.length > 0) {
+        const topCandidate = event.selectorCandidates[0];
+        if (topCandidate && topCandidate.selector) {
+          step.target = topCandidate.selector;
+        }
+      }
+      // selectorCandidates가 없으면 selectors 객체에서 추출
+      if (!step.target && event.target) {
+        const selectors = event.target.selectors || {};
+        step.target = selectors.css || selectors.xpath || selectors.id || null;
+      }
+    }
+    // waitForElement는 요소 대기이므로 value는 null
+    if (keywordAction === 'waitForElement') {
+      step.value = null;
+    }
+    // wait (시간 대기)는 value가 시간 값
+    if (keywordAction === 'wait' && event.value) {
+      step.value = String(event.value);
     }
   }
 
@@ -3965,11 +4252,46 @@ function convertEventToStep(event, index = 0) {
     if (event.expected !== undefined) {
       step.expected = event.expected;
     }
-    if (!step.target && event.target) {
-      const selectors = event.target.selectors || {};
-      step.target = selectors.css || selectors.xpath || selectors.id || null;
+    // verify의 경우 target이 selector여야 함 (이미 위에서 설정되었지만, 없으면 재시도)
+    if (!step.target) {
+      // selectorCandidates 우선 사용
+      if (event.selectorCandidates && Array.isArray(event.selectorCandidates) && event.selectorCandidates.length > 0) {
+        const topCandidate = event.selectorCandidates[0];
+        if (topCandidate && topCandidate.selector) {
+          step.target = topCandidate.selector;
+        }
+      }
+      // selectorCandidates가 없으면 selectors 객체에서 추출
+      if (!step.target && event.target) {
+        const selectors = event.target.selectors || {};
+        step.target = selectors.css || selectors.xpath || selectors.id || null;
+      }
+    }
+    // verifyText는 value가 검증할 텍스트
+    if (keywordAction === 'verifyText') {
+      // value가 있으면 그대로 사용, 없으면 null
+      step.value = event.value || null;
+    } else if (keywordAction === 'verifyElementPresent' || keywordAction === 'verifyElementNotPresent') {
+      // 요소 존재/부재 검증은 value 불필요
+      step.value = null;
+    } else if (keywordAction === 'verifyTitle' || keywordAction === 'verifyUrl') {
+      // 타이틀/URL 검증은 value가 검증할 값
+      step.value = event.value || null;
     }
   }
+
+  // 각 액션 타입별 value 처리
+  if (keywordAction === 'click' || keywordAction === 'doubleClick' || keywordAction === 'rightClick' || keywordAction === 'hover' || keywordAction === 'clear') {
+    // 클릭, 더블클릭, 우클릭, 호버, 클리어는 value 불필요
+    step.value = null;
+  } else if (keywordAction === 'type') {
+    // type은 value가 입력할 텍스트
+    step.value = event.value || null;
+  } else if (keywordAction === 'select') {
+    // select는 value가 선택할 옵션
+    step.value = event.value || null;
+  }
+  // navigate/open/goto, wait, verify는 이미 위에서 처리됨
 
   // URL 정보는 description에 추가 (선택사항)
   // event.url 또는 event.page.url에서 URL 추출
@@ -4241,6 +4563,15 @@ app.whenReady().then(async () => {
         console.log('✅ 로컬 SQLite 데이터베이스 연결 완료');
         console.log(`📁 데이터베이스 위치: ${dbConfig.path}`);
         console.log(`🔧 DB 모드: 로컬 (SQLite)`);
+        
+        // 앱 시작 시 오래된 DOM 스냅샷 정리
+        DomSnapshotService.cleanupOldSnapshots().then((deletedCount) => {
+          if (deletedCount > 0) {
+            console.log(`✅ 오래된 DOM 스냅샷 ${deletedCount}개 정리 완료`);
+          }
+        }).catch((error) => {
+          console.warn('⚠️ DOM 스냅샷 정리 실패:', error.message);
+        });
       } else {
         console.warn('⚠️ 데이터베이스 초기화는 완료되었지만 연결 상태를 확인할 수 없습니다.');
       }
@@ -4363,6 +4694,80 @@ ipcMain.handle('toggle-devtools', () => {
 });
 
 /**
+ * DOM 스냅샷 저장 IPC 핸들러
+ * @param {Electron.IpcMainInvokeEvent} event - IPC 이벤트 객체
+ * @param {string} pageUrl - 정규화된 페이지 URL
+ * @param {string} domStructure - DOM 구조 문자열 (압축 전)
+ * @param {string} snapshotDate - 스냅샷 날짜 (ISO 문자열)
+ * @returns {Promise<Object>} 저장 결과
+ */
+ipcMain.handle('save-dom-snapshot', async (event, pageUrl, domStructure, snapshotDate) => {
+  try {
+    const date = new Date(snapshotDate);
+    const result = await DomSnapshotService.saveSnapshot(pageUrl, domStructure, date);
+    return { success: true, ...result };
+  } catch (error) {
+    console.error('❌ DOM 스냅샷 저장 IPC 핸들러 오류:', error);
+    return { success: false, error: error.message || 'DOM 스냅샷 저장 실패' };
+  }
+});
+
+/**
+ * DOM 스냅샷 존재 여부 확인 IPC 핸들러
+ * @param {Electron.IpcMainInvokeEvent} event - IPC 이벤트 객체
+ * @param {string} pageUrl - 정규화된 페이지 URL
+ * @param {string} startDate - 시작 날짜 (ISO 문자열)
+ * @param {string} endDate - 종료 날짜 (ISO 문자열)
+ * @returns {Promise<boolean>} 존재 여부
+ */
+ipcMain.handle('check-dom-snapshot', async (event, pageUrl, startDate, endDate) => {
+  try {
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    const exists = await DomSnapshotService.checkSnapshotInPeriod(pageUrl, start, end);
+    return exists;
+  } catch (error) {
+    console.error('❌ DOM 스냅샷 확인 IPC 핸들러 오류:', error);
+    return false;
+  }
+});
+
+/**
+ * 오래된 DOM 스냅샷 정리 IPC 핸들러
+ * @param {Electron.IpcMainInvokeEvent} event - IPC 이벤트 객체
+ * @returns {Promise<Object>} 정리 결과
+ */
+ipcMain.handle('get-step-screenshot', async (event, tcId, stepIndex) => {
+  try {
+    const screenshot = await ScreenshotService.getScreenshot(tcId, stepIndex);
+    return screenshot;
+  } catch (error) {
+    console.error('[Screenshot] 스크린샷 조회 실패:', error);
+    return null;
+  }
+});
+
+ipcMain.handle('delete-step-screenshots', async (event, tcId) => {
+  try {
+    const deletedCount = await ScreenshotService.deleteScreenshots(tcId);
+    return deletedCount;
+  } catch (error) {
+    console.error('[Screenshot] 스크린샷 삭제 실패:', error);
+    return 0;
+  }
+});
+
+ipcMain.handle('cleanup-old-snapshots', async (event) => {
+  try {
+    const deletedCount = await DomSnapshotService.cleanupOldSnapshots();
+    return { success: true, deletedCount };
+  } catch (error) {
+    console.error('❌ DOM 스냅샷 정리 IPC 핸들러 오류:', error);
+    return { success: false, error: error.message || 'DOM 스냅샷 정리 실패', deletedCount: 0 };
+  }
+});
+
+/**
  * Pytest 테스트 실행 IPC 핸들러
  * 렌더러 프로세스에서 pytest 테스트 실행 요청 처리
  * 
@@ -4392,6 +4797,119 @@ ipcMain.handle('run-python-script', async (event, testFile, args = [], options =
 });
 
 /**
+ * 재귀적으로 디렉토리 내부의 모든 파일과 디렉토리를 삭제
+ * Windows 권한 문제를 해결하기 위해 파일 속성 변경 후 삭제
+ * @param {string} dirPath - 삭제할 디렉토리 경로
+ * @param {Object} fs - fs.promises 객체
+ * @param {Object} path - path 모듈
+ */
+async function removeDirectoryRecursive(dirPath, fs, path) {
+  try {
+    const entries = await fs.readdir(dirPath, { withFileTypes: true });
+    
+    // 모든 항목을 병렬로 처리
+    await Promise.all(entries.map(async (entry) => {
+      const entryPath = path.join(dirPath, entry.name);
+      
+      if (entry.isDirectory()) {
+        // 디렉토리인 경우 재귀적으로 삭제
+        await removeDirectoryRecursive(entryPath, fs, path);
+        // 디렉토리 삭제 시도
+        try {
+          await fs.rmdir(entryPath);
+        } catch (rmdirError) {
+          // Windows에서 권한 문제 시 속성 변경 후 재시도
+          if (rmdirError.code === 'EPERM' || rmdirError.code === 'EACCES') {
+            try {
+              // chmod를 사용하여 권한 변경 시도 (Windows에서는 제한적)
+              await fs.rm(entryPath, { recursive: true, force: true });
+            } catch (retryError) {
+              // 재시도 실패는 무시하고 계속 진행
+            }
+          }
+        }
+      } else {
+        // 파일인 경우 삭제
+        try {
+          await fs.unlink(entryPath);
+        } catch (unlinkError) {
+          // Windows에서 권한 문제 시 속성 변경 후 재시도
+          if (unlinkError.code === 'EPERM' || unlinkError.code === 'EACCES') {
+            try {
+              // chmod를 사용하여 읽기 전용 해제 시도
+              const { chmod } = require('fs').promises;
+              await chmod(entryPath, 0o666);
+              await fs.unlink(entryPath);
+            } catch (retryError) {
+              // 재시도 실패는 무시하고 계속 진행
+            }
+          }
+        }
+      }
+    }));
+  } catch (readError) {
+    // 디렉토리 읽기 실패는 무시 (이미 삭제되었거나 존재하지 않음)
+  }
+}
+
+/**
+ * 임시 디렉토리 삭제 헬퍼 함수 (재시도 로직 포함)
+ * Windows에서 파일이 사용 중일 때 발생하는 EPERM 에러를 처리
+ * @param {string} tempDir - 삭제할 임시 디렉토리 경로
+ * @param {number} maxRetries - 최대 재시도 횟수 (기본값: 5)
+ * @param {number} retryDelay - 재시도 간 지연 시간(ms) (기본값: 500)
+ */
+async function cleanupTempDir(tempDir, maxRetries = 5, retryDelay = 500) {
+  const fs = require('fs').promises;
+  const path = require('path');
+  
+  // 디렉토리 존재 여부 확인
+  try {
+    await fs.access(tempDir);
+  } catch (accessError) {
+    // 디렉토리가 없으면 성공으로 처리
+    return;
+  }
+  
+  // pytest 프로세스가 완전히 종료될 시간을 주기 위해 초기 지연
+  await new Promise(resolve => setTimeout(resolve, 500));
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // 재귀적으로 모든 파일과 디렉토리 삭제
+      await removeDirectoryRecursive(tempDir, fs, path);
+      
+      // 최상위 디렉토리 삭제 시도
+      try {
+        await fs.rmdir(tempDir);
+        return; // 성공
+      } catch (rmdirError) {
+        // rmdir 실패 시 rm으로 재시도
+        try {
+          await fs.rm(tempDir, { recursive: true, force: true });
+          return; // 성공
+        } catch (rmError) {
+          // rm도 실패하면 다음 시도로
+          throw rmError;
+        }
+      }
+    } catch (error) {
+      if (attempt === maxRetries) {
+        // 최종 시도 실패 시 경고만 출력 (에러를 throw하지 않음)
+        console.warn(`임시 파일 삭제 실패 (${attempt}회 시도): ${tempDir}`);
+        console.warn(`에러: ${error.code || error.message}`);
+        console.warn('다음 실행 시 자동으로 정리됩니다.');
+        return; // 실패해도 계속 진행
+      }
+      
+      // 재시도 전 대기 (시도 횟수에 따라 지연 시간 증가)
+      const delay = retryDelay * attempt;
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+}
+
+/**
  * 여러 스크립트를 임시 파일로 생성하여 실행
  * DB에서 코드를 가져와 임시 파일 생성 → 실행 → 삭제
  */
@@ -4402,6 +4920,17 @@ ipcMain.handle('run-python-scripts', async (event, scripts, args = [], options =
   const pageObjectsDir = path.join(tempDir, 'page_objects');
   
   try {
+    // 0. 이전 실행의 임시 디렉토리가 남아있으면 정리 시도
+    try {
+      await fs.access(tempDir);
+      // 디렉토리가 존재하면 정리 시도 (백그라운드, 실패해도 계속 진행)
+      cleanupTempDir(tempDir, 2, 200).catch(() => {
+        // 정리 실패는 무시 (다음 실행 시 다시 시도)
+      });
+    } catch {
+      // 디렉토리가 없으면 정상 진행
+    }
+    
     // 1. 임시 디렉토리 생성
     await fs.mkdir(tempDir, { recursive: true });
     await fs.mkdir(pageObjectsDir, { recursive: true });
@@ -4522,21 +5051,13 @@ ipcMain.handle('run-python-scripts', async (event, scripts, args = [], options =
       cwd: tempDir  // 임시 디렉토리에서 실행
     });
     
-    // 6. 임시 파일 삭제
-    try {
-      await fs.rm(tempDir, { recursive: true, force: true });
-    } catch (cleanupError) {
-      console.warn('임시 파일 삭제 실패:', cleanupError);
-    }
+    // 6. 임시 파일 삭제 (재시도 로직 포함)
+    await cleanupTempDir(tempDir);
     
     return result;
   } catch (error) {
     // 에러 발생 시에도 임시 파일 삭제 시도
-    try {
-      await fs.rm(tempDir, { recursive: true, force: true });
-    } catch (cleanupError) {
-      console.warn('임시 파일 삭제 실패:', cleanupError);
-    }
+    await cleanupTempDir(tempDir);
     
     return {
       success: false,
@@ -4895,12 +5416,20 @@ ipcMain.handle('open-browser', async (event, options) => {
         console.log(`✅ CDP 포트 ${CDP_PORT} 사용 가능`);
       }
       
+      // 전역 변수에 CDP 포트 저장
+      currentCdpPort = CDP_PORT;
+      console.log(`[Recording] CDP 포트 저장: ${currentCdpPort}`);
+      
       const chromeArgs = [
         recordingUrl,
         '--new-window',
         `--remote-debugging-port=${CDP_PORT}`,
         '--disable-web-security',
-        '--disable-features=IsolateOrigins,site-per-process'
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-extensions-except=hemlilhhjhpkpgeonbmaknbffgapneam',
+        '--disable-software-rasterizer',  // 소프트웨어 래스터라이저 비활성화
+        '--disable-dev-shm-usage',  // 공유 메모리 문제 해결
+        '--disable-background-networking'  // 백그라운드 네트워킹 비활성화 (캐시 오류 감소)
       ];
       
       // 기존 Chrome 프로필 사용 (로그인 정보 유지)
@@ -5260,13 +5789,19 @@ ipcMain.handle('open-browser', async (event, options) => {
         }
         
         try {
-          await injectDomEventCaptureViaCDP(CDP_PORT, recordingUrl);
+          // currentCdpPort를 사용 (전역 변수에 저장된 실제 포트)
+          const actualCdpPort = currentCdpPort || CDP_PORT;
+          console.log(`[Recording] DOM 이벤트 캡처 스크립트 주입 시도: 포트=${actualCdpPort} (CDP_PORT=${CDP_PORT}, currentCdpPort=${currentCdpPort})`);
+          await injectDomEventCaptureViaCDP(actualCdpPort, recordingUrl);
           console.log('✅ DOM 이벤트 캡처 스크립트 주입 성공');
         } catch (error) {
+          // currentCdpPort를 사용 (전역 변수에 저장된 실제 포트)
+          const actualCdpPort = currentCdpPort || CDP_PORT;
+          
           console.warn('⚠️ CDP를 통한 DOM 이벤트 캡처 스크립트 주입 실패:', error.message);
           console.log('ℹ️ Chrome이 CDP 모드로 실행되었는지 확인하세요.');
           console.log('ℹ️ 실행 중인 Chrome을 모두 종료한 후 다시 시도해보세요.');
-          console.log(`ℹ️ CDP 포트 ${CDP_PORT}가 사용 가능한지 확인하세요.`);
+          console.log(`ℹ️ CDP 포트 ${actualCdpPort}가 사용 가능한지 확인하세요.`);
           console.log('ℹ️ Chrome 프로세스가 정상적으로 시작되었는지 확인하세요.');
           
           // 추가 디버깅 정보
@@ -5275,9 +5810,9 @@ ipcMain.handle('open-browser', async (event, options) => {
           }
           
           // CDP 서버 연결 테스트
-          console.log(`🔍 CDP 서버 연결 테스트: http://127.0.0.1:${CDP_PORT}/json/list`);
+          console.log(`🔍 CDP 서버 연결 테스트: http://127.0.0.1:${actualCdpPort}/json/list`);
           try {
-            const testReq = http.get(`http://127.0.0.1:${CDP_PORT}/json/list`, { timeout: 2000 }, (res) => {
+            const testReq = http.get(`http://127.0.0.1:${actualCdpPort}/json/list`, { timeout: 2000 }, (res) => {
               let data = '';
               res.on('data', (chunk) => { data += chunk; });
               res.on('end', () => {
@@ -5631,7 +6166,7 @@ ipcMain.handle('api-create-test-case', async (event, data) => {
 
 ipcMain.handle('api-update-test-case', async (event, id, data) => {
   try {
-    const { name, description, steps, tags, status, order_index, parent_id } = data;
+    const { name, description, preconditions, steps, tags, status, order_index, parent_id } = data;
     
     // 현재 항목 정보 조회
     const currentItem = DbService.get('SELECT type FROM test_cases WHERE id = ?', [id]);
@@ -5669,6 +6204,7 @@ ipcMain.handle('api-update-test-case', async (event, id, data) => {
         `UPDATE test_cases 
          SET name = COALESCE(?, name), 
              description = COALESCE(?, description), 
+             preconditions = COALESCE(?, preconditions), 
              steps = COALESCE(?, steps), 
              tags = COALESCE(?, tags), 
              status = COALESCE(?, status), 
@@ -5679,6 +6215,7 @@ ipcMain.handle('api-update-test-case', async (event, id, data) => {
         [
           name || null,
           description || null,
+          preconditions || null,
           steps || null,
           tags || null,
           status || null,
@@ -5692,6 +6229,7 @@ ipcMain.handle('api-update-test-case', async (event, id, data) => {
         `UPDATE test_cases 
          SET name = COALESCE(?, name), 
              description = COALESCE(?, description), 
+             preconditions = COALESCE(?, preconditions), 
              steps = COALESCE(?, steps), 
              tags = COALESCE(?, tags), 
              status = COALESCE(?, status), 
@@ -5701,6 +6239,7 @@ ipcMain.handle('api-update-test-case', async (event, id, data) => {
         [
           name || null,
           description || null,
+          preconditions || null,
           steps || null,
           tags || null,
           status || null,
@@ -5889,70 +6428,148 @@ ipcMain.handle('api-get-test-case-full', async (event, id) => {
  * 실시간 이벤트를 TC step으로 저장
  */
 ipcMain.handle('save-event-step', async (event, { tcId, projectId, event: eventData }) => {
-  try {
-    if (!tcId || !eventData) {
-      return { success: false, error: 'tcId와 event가 필요합니다' };
-    }
-    
-    // 1. 이벤트를 step으로 변환
-    const newStep = convertEventToStep(eventData, 0);
-    
-    // 2. 기존 steps 읽기
-    const testCase = DbService.get('SELECT steps FROM test_cases WHERE id = ?', [tcId]);
-    if (!testCase) {
-      return { success: false, error: `TC ID ${tcId}를 찾을 수 없습니다` };
-    }
-    
-    let existingSteps = [];
-    if (testCase.steps) {
-      try {
-        existingSteps = JSON.parse(testCase.steps);
-        if (!Array.isArray(existingSteps)) {
+  // 동시 실행 방지를 위한 락: 같은 TC에 대한 요청은 순차 처리
+  let lockPromise = saveEventStepLocks.get(tcId);
+  if (!lockPromise) {
+    lockPromise = Promise.resolve();
+  }
+  
+  const newLockPromise = lockPromise.then(async () => {
+    try {
+      if (!tcId || !eventData) {
+        return { success: false, error: 'tcId와 event가 필요합니다' };
+      }
+      
+      // 상호작용 이벤트 판별
+      const INTERACTION_ACTIONS = ['click', 'type', 'select', 'hover', 'doubleClick', 'rightClick', 'clear'];
+      const action = eventData.action || eventData.type;
+      const isInteractionEvent = INTERACTION_ACTIONS.includes(action);
+      
+      // 1. 이벤트를 step으로 변환
+      const newStep = convertEventToStep(eventData, 0);
+      
+      // 2. 기존 steps 읽기 (락 내에서 최신 데이터 읽기)
+      const testCase = DbService.get('SELECT steps FROM test_cases WHERE id = ?', [tcId]);
+      if (!testCase) {
+        return { success: false, error: `TC ID ${tcId}를 찾을 수 없습니다` };
+      }
+      
+      let existingSteps = [];
+      if (testCase.steps) {
+        try {
+          existingSteps = JSON.parse(testCase.steps);
+          if (!Array.isArray(existingSteps)) {
+            existingSteps = [];
+          }
+        } catch (e) {
+          console.warn('[Recording] 기존 steps 파싱 실패, 빈 배열로 시작:', e);
           existingSteps = [];
         }
-      } catch (e) {
-        console.warn('[Recording] 기존 steps 파싱 실패, 빈 배열로 시작:', e);
-        existingSteps = [];
       }
-    }
-    
-    // 3. 새 step 추가
-    existingSteps.push(newStep);
-    
-    // 4. 업데이트된 steps 저장
-    const stepsJson = JSON.stringify(existingSteps);
-    const updateResult = DbService.run(
-      'UPDATE test_cases SET steps = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [stepsJson, tcId]
-    );
-    
-    // 5. DB 저장 검증 (실제로 저장되었는지 확인)
-    if (updateResult) {
-      const verifyTC = DbService.get('SELECT steps FROM test_cases WHERE id = ?', [tcId]);
-      if (verifyTC && verifyTC.steps) {
+      
+      // 3. 중복 체크: 같은 action, target, value를 가진 step이 최근 1초 이내에 있으면 건너뛰기
+      const now = Date.now();
+      const isDuplicate = existingSteps.some(step => {
+        if (step.action === newStep.action && 
+            step.target === newStep.target && 
+            step.value === newStep.value) {
+          // timestamp가 있으면 1초 이내인지 확인
+          if (step.timestamp && newStep.timestamp) {
+            const timeDiff = Math.abs(newStep.timestamp - step.timestamp);
+            return timeDiff < 1000; // 1초 이내
+          }
+          // timestamp가 없으면 마지막 step과 비교
+          const lastStep = existingSteps[existingSteps.length - 1];
+          return lastStep && 
+                 lastStep.action === newStep.action && 
+                 lastStep.target === newStep.target && 
+                 lastStep.value === newStep.value;
+        }
+        return false;
+      });
+      
+      if (isDuplicate) {
+        console.log(`[Recording] 중복 이벤트 건너뛰기: TC ${tcId}, action: ${newStep.action}, target: ${newStep.target}`);
+        return { success: true, skipped: true, reason: 'duplicate' };
+      }
+      
+      // 4. 새 step 추가
+      existingSteps.push(newStep);
+      const stepIndex = existingSteps.length - 1;
+      
+      // 5. 상호작용 이벤트인 경우 스크린샷 캡처 및 저장
+      if (isInteractionEvent) {
         try {
-          const savedSteps = JSON.parse(verifyTC.steps);
-          console.log(`[Recording] ✅ 실시간 step 저장 완료 및 검증 성공: TC ${tcId}, Step ${savedSteps.length}개 (action: ${newStep.action}, target: ${newStep.target || '(없음)'})`);
-        } catch (e) {
-          console.warn(`[Recording] ⚠️ 저장 검증 중 파싱 오류:`, e);
-          console.log(`[Recording] ✅ 실시간 step 저장 완료: TC ${tcId}, Step ${existingSteps.length} (action: ${newStep.action}, target: ${newStep.target || '(없음)'})`);
+          // CDP 포트 찾기 (이벤트 데이터 > 전역 변수 > 기본값 순서)
+          const cdpPort = eventData.cdpPort || eventData.page?.cdpPort || currentCdpPort || 9222;
+          const targetId = eventData.targetId || eventData.page?.targetId || currentTargetId || null;
+          
+          console.log(`[Recording] 스크린샷 캡처 시도: cdpPort=${cdpPort}, targetId=${targetId || '(자동 탐지)'}`);
+          
+          // 스크린샷 캡처
+          const screenshot = await captureScreenshotViaCDP(cdpPort, targetId);
+          
+          if (screenshot) {
+            // 스크린샷 저장
+            await ScreenshotService.saveScreenshot(tcId, stepIndex, screenshot);
+            // step 객체에 screenshot 플래그 추가
+            newStep.screenshot = true;
+            // existingSteps 배열의 마지막 항목도 업데이트
+            existingSteps[stepIndex].screenshot = true;
+            console.log(`[Recording] ✅ 스크린샷 캡처 및 저장 완료: TC ${tcId}, Step ${stepIndex}`);
+          } else {
+            console.warn(`[Recording] ⚠️ 스크린샷 캡처 실패: TC ${tcId}, Step ${stepIndex}`);
+          }
+        } catch (screenshotError) {
+          console.warn(`[Recording] ⚠️ 스크린샷 처리 중 오류 (이벤트 저장은 계속):`, screenshotError.message);
+          // 스크린샷 실패해도 이벤트 저장은 계속
+        }
+      }
+      
+      // 6. 업데이트된 steps 저장
+      const stepsJson = JSON.stringify(existingSteps);
+      const updateResult = DbService.run(
+        'UPDATE test_cases SET steps = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [stepsJson, tcId]
+      );
+      
+      // 7. DB 저장 검증 (실제로 저장되었는지 확인)
+      if (updateResult) {
+        const verifyTC = DbService.get('SELECT steps FROM test_cases WHERE id = ?', [tcId]);
+        if (verifyTC && verifyTC.steps) {
+          try {
+            const savedSteps = JSON.parse(verifyTC.steps);
+            console.log(`[Recording] ✅ 실시간 step 저장 완료 및 검증 성공: TC ${tcId}, Step ${savedSteps.length}개 (action: ${newStep.action}, target: ${newStep.target || '(없음)'})`);
+          } catch (e) {
+            console.warn(`[Recording] ⚠️ 저장 검증 중 파싱 오류:`, e);
+            console.log(`[Recording] ✅ 실시간 step 저장 완료: TC ${tcId}, Step ${existingSteps.length} (action: ${newStep.action}, target: ${newStep.target || '(없음)'})`);
+          }
+        } else {
+          console.error(`[Recording] ❌ 저장 검증 실패: TC ${tcId}의 steps가 DB에 없습니다!`);
         }
       } else {
-        console.error(`[Recording] ❌ 저장 검증 실패: TC ${tcId}의 steps가 DB에 없습니다!`);
+        console.error(`[Recording] ❌ DB 업데이트 실패: TC ${tcId}`);
       }
-    } else {
-      console.error(`[Recording] ❌ DB 업데이트 실패: TC ${tcId}`);
+      
+      return {
+        success: true,
+        stepIndex: stepIndex,
+        step: newStep
+      };
+    } catch (error) {
+      console.error('[Recording] ❌ 실시간 step 저장 실패:', error);
+      return { success: false, error: error.message };
+    } finally {
+      // 락 해제
+      saveEventStepLocks.delete(tcId);
     }
-    
-    return {
-      success: true,
-      stepIndex: existingSteps.length - 1,
-      step: newStep
-    };
-  } catch (error) {
-    console.error('[Recording] ❌ 실시간 step 저장 실패:', error);
-    return { success: false, error: error.message };
-  }
+  });
+  
+  // 락 저장
+  saveEventStepLocks.set(tcId, newLockPromise);
+  
+  // 결과 반환
+  return newLockPromise;
 });
 
 /**
@@ -6051,28 +6668,97 @@ ipcMain.handle('sync-events-to-tc', async (event, { tcId, events }) => {
       return { success: false, error: 'events는 배열이어야 합니다' };
     }
     
-    const testCase = DbService.get('SELECT id FROM test_cases WHERE id = ?', [tcId]);
+    const testCase = DbService.get('SELECT steps FROM test_cases WHERE id = ?', [tcId]);
     if (!testCase) {
       return { success: false, error: `TC ID ${tcId}를 찾을 수 없습니다` };
     }
     
+    // 기존 steps 읽기 (실시간 저장된 steps 포함)
+    let existingSteps = [];
+    if (testCase.steps) {
+      try {
+        existingSteps = JSON.parse(testCase.steps);
+        if (!Array.isArray(existingSteps)) {
+          existingSteps = [];
+        }
+      } catch (e) {
+        console.warn('[Recording] 기존 steps 파싱 실패, 빈 배열로 시작:', e);
+        existingSteps = [];
+      }
+    }
+    
     // 이벤트를 steps로 변환
-    const steps = events.map((event, index) => {
+    const newSteps = events.map((event, index) => {
       return convertEventToStep(event, index);
     });
     
-    // steps 저장
-    const stepsJson = JSON.stringify(steps);
+    // 실시간 저장된 steps와 새 steps를 병합하여 최종 steps 생성
+    // 실시간 저장이 이미 완료되어 있으면 기존 steps 유지, 아니면 새 steps로 교체
+    let finalSteps;
+    let addedCount = 0;
+    let needsUpdate = false;
+    
+    if (existingSteps.length > 0) {
+      // 기존 steps가 있으면 실시간 저장이 완료된 것으로 간주
+      // 하지만 새 steps와 비교하여 더 많은 steps가 있으면 업데이트
+      if (newSteps.length > existingSteps.length) {
+        // 새 steps가 더 많으면 병합 (중복 제거)
+        const existingStepsMap = new Map();
+        existingSteps.forEach((step, idx) => {
+          const key = `${step.action || ''}_${step.target || ''}_${step.value || ''}`;
+          existingStepsMap.set(key, idx);
+        });
+        
+        // 새 steps 중 기존에 없는 것만 추가
+        const mergedSteps = [...existingSteps];
+        newSteps.forEach(newStep => {
+          const key = `${newStep.action || ''}_${newStep.target || ''}_${newStep.value || ''}`;
+          if (!existingStepsMap.has(key)) {
+            mergedSteps.push(newStep);
+            addedCount++;
+          }
+        });
+        
+        if (addedCount > 0) {
+          finalSteps = mergedSteps;
+          needsUpdate = true;
+          console.log(`[Recording] 새 steps ${addedCount}개 추가하여 병합 (기존: ${existingSteps.length}, 최종: ${finalSteps.length})`);
+        } else {
+          finalSteps = existingSteps;
+          console.log(`[Recording] 실시간 저장된 ${existingSteps.length}개의 steps가 이미 있음. 추가할 새 steps 없음.`);
+        }
+      } else {
+        // 기존 steps가 더 많거나 같으면 그대로 유지
+        finalSteps = existingSteps;
+        console.log(`[Recording] 실시간 저장된 ${existingSteps.length}개의 steps 유지 (새 steps: ${newSteps.length})`);
+      }
+    } else {
+      // 기존 steps가 없으면 새 steps로 초기화
+      finalSteps = newSteps;
+      addedCount = newSteps.length;
+      needsUpdate = true;
+      console.log(`[Recording] 새 steps ${addedCount}개로 초기화`);
+    }
+    
+    // 항상 최종 저장을 보장 (변경사항이 있든 없든 DB에 확실히 저장)
+    const stepsJson = JSON.stringify(finalSteps);
     DbService.run(
       'UPDATE test_cases SET steps = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
       [stepsJson, tcId]
     );
     
-    console.log(`[Recording] ✅ TC ${tcId}에 ${steps.length}개의 steps 동기화 완료`);
+    if (needsUpdate) {
+      console.log(`[Recording] TC ${tcId}의 steps를 DB에 저장 완료 (변경사항 있음, ${finalSteps.length}개)`);
+    } else {
+      console.log(`[Recording] TC ${tcId}의 steps를 DB에 최종 저장 완료 (변경사항 없음, 보장, ${finalSteps.length}개)`);
+    }
+    
+    const finalStepCount = finalSteps.length;
+    console.log(`[Recording] ✅ TC ${tcId}에 ${finalStepCount}개의 steps 동기화 완료 (기존: ${existingSteps.length}, 추가: ${addedCount})`);
     
     return {
       success: true,
-      stepCount: steps.length
+      stepCount: finalStepCount
     };
   } catch (error) {
     console.error('[Recording] ❌ TC steps 동기화 실패:', error);

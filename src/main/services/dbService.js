@@ -59,6 +59,9 @@ async function init() {
     // 테이블 생성
     createTables();
     
+    // 마이그레이션 실행 (컬럼 추가 등)
+    migrateTables();
+    
     // 변경사항 저장
     saveDatabase();
     
@@ -107,6 +110,7 @@ function createTables() {
       parent_id INTEGER,
       name TEXT NOT NULL,
       description TEXT,
+      preconditions TEXT,
       type TEXT DEFAULT 'test_case' CHECK(type IN ('folder', 'test_case')),
       steps TEXT,
       tags TEXT,
@@ -200,6 +204,26 @@ function createTables() {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (page_object_id) REFERENCES page_objects(id) ON DELETE CASCADE,
       UNIQUE(page_object_id, name)
+    )`,
+
+    // 페이지 DOM 스냅샷 테이블
+    `CREATE TABLE IF NOT EXISTS page_dom_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      page_url TEXT NOT NULL,
+      dom_structure TEXT NOT NULL,
+      snapshot_date DATE NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+
+    // 테스트케이스 스텝 스크린샷 테이블
+    `CREATE TABLE IF NOT EXISTS test_case_steps_screenshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      test_case_id INTEGER NOT NULL,
+      step_index INTEGER NOT NULL,
+      screenshot TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (test_case_id) REFERENCES test_cases(id) ON DELETE CASCADE,
+      UNIQUE(test_case_id, step_index)
     )`
   ];
 
@@ -221,7 +245,12 @@ function createTables() {
       'CREATE INDEX IF NOT EXISTS idx_objects_name ON objects(name)',
       'CREATE INDEX IF NOT EXISTS idx_page_objects_project_id ON page_objects(project_id)',
       'CREATE INDEX IF NOT EXISTS idx_page_objects_name ON page_objects(name)',
-      'CREATE INDEX IF NOT EXISTS idx_page_object_methods_page_object_id ON page_object_methods(page_object_id)'
+      'CREATE INDEX IF NOT EXISTS idx_page_object_methods_page_object_id ON page_object_methods(page_object_id)',
+      'CREATE INDEX IF NOT EXISTS idx_page_dom_snapshots_page_url ON page_dom_snapshots(page_url)',
+      'CREATE INDEX IF NOT EXISTS idx_page_dom_snapshots_snapshot_date ON page_dom_snapshots(snapshot_date)',
+      'CREATE INDEX IF NOT EXISTS idx_page_dom_snapshots_url_date ON page_dom_snapshots(page_url, snapshot_date)',
+      'CREATE INDEX IF NOT EXISTS idx_step_screenshots_test_case_id ON test_case_steps_screenshots(test_case_id)',
+      'CREATE INDEX IF NOT EXISTS idx_step_screenshots_step_index ON test_case_steps_screenshots(test_case_id, step_index)'
     ];
 
     // 쿼리 실행
@@ -290,7 +319,7 @@ function cleanupOldResults(keepCount = 100) {
  */
 function migrateTables() {
   try {
-    // test_cases 테이블에 tc_number 컬럼이 있는지 확인
+    // test_cases 테이블에 컬럼이 있는지 확인
     const tableInfo = db.exec("PRAGMA table_info(test_cases)");
     if (tableInfo && tableInfo.length > 0) {
       // sql.js는 결과를 {columns: [...], values: [[...], ...]} 형태로 반환
@@ -310,6 +339,21 @@ function migrateTables() {
         }
       } else {
         console.log('✅ tc_number 컬럼이 이미 존재합니다.');
+      }
+      
+      // preconditions 컬럼이 없으면 추가
+      if (!columnNames.includes('preconditions')) {
+        console.log('📝 test_cases 테이블에 preconditions 컬럼 추가 중...');
+        try {
+          db.exec('ALTER TABLE test_cases ADD COLUMN preconditions TEXT');
+          console.log('✅ preconditions 컬럼 추가 완료');
+          saveDatabase();
+        } catch (alterError) {
+          // 이미 컬럼이 있거나 다른 오류
+          console.warn('⚠️ preconditions 컬럼 추가 실패:', alterError.message);
+        }
+      } else {
+        console.log('✅ preconditions 컬럼이 이미 존재합니다.');
       }
     }
   } catch (error) {
@@ -468,6 +512,179 @@ function backup(backupPath) {
   }
 }
 
+/**
+ * DOM 스냅샷 저장
+ * @param {string} pageUrl - 정규화된 페이지 URL
+ * @param {string} domStructure - 압축된 DOM 구조
+ * @param {Date} snapshotDate - 스냅샷 날짜
+ * @returns {Promise<Object>} 저장 결과
+ */
+function saveDomSnapshot(pageUrl, domStructure, snapshotDate) {
+  try {
+    ensureInitialized();
+    
+    const dateStr = snapshotDate.toISOString().split('T')[0]; // YYYY-MM-DD 형식
+    
+    const result = run(
+      `INSERT INTO page_dom_snapshots (page_url, dom_structure, snapshot_date)
+       VALUES (?, ?, ?)`,
+      [pageUrl, domStructure, dateStr]
+    );
+    
+    console.log(`✅ DOM 스냅샷 저장 완료: ${pageUrl} (${dateStr})`);
+    return { success: true, id: result.lastID };
+  } catch (error) {
+    console.error('❌ DOM 스냅샷 저장 실패:', error);
+    throw error;
+  }
+}
+
+/**
+ * 특정 기간 내 스냅샷 존재 여부 확인
+ * @param {string} pageUrl - 정규화된 페이지 URL
+ * @param {Date} startDate - 시작 날짜
+ * @param {Date} endDate - 종료 날짜
+ * @returns {Promise<boolean>} 존재 여부
+ */
+function checkDomSnapshotInPeriod(pageUrl, startDate, endDate) {
+  try {
+    ensureInitialized();
+    
+    const startDateStr = startDate.toISOString().split('T')[0];
+    const endDateStr = endDate.toISOString().split('T')[0];
+    
+    const result = get(
+      `SELECT COUNT(*) as count FROM page_dom_snapshots
+       WHERE page_url = ? AND snapshot_date >= ? AND snapshot_date <= ?`,
+      [pageUrl, startDateStr, endDateStr]
+    );
+    
+    return result && result.count > 0;
+  } catch (error) {
+    console.error('❌ DOM 스냅샷 확인 실패:', error);
+    return false;
+  }
+}
+
+/**
+ * 60일 이상 된 스냅샷 삭제
+ * @returns {Promise<number>} 삭제된 레코드 수
+ */
+function cleanupOldDomSnapshots() {
+  try {
+    ensureInitialized();
+    
+    // 60일 전 날짜 계산
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - 60);
+    const cutoffDateStr = cutoffDate.toISOString().split('T')[0];
+    
+    // 삭제 전 개수 확인
+    const beforeCount = get(
+      `SELECT COUNT(*) as count FROM page_dom_snapshots WHERE snapshot_date < ?`,
+      [cutoffDateStr]
+    );
+    
+    const deletedCount = beforeCount ? beforeCount.count : 0;
+    
+    if (deletedCount > 0) {
+      const result = run(
+        `DELETE FROM page_dom_snapshots WHERE snapshot_date < ?`,
+        [cutoffDateStr]
+      );
+      
+      console.log(`✅ 오래된 DOM 스냅샷 ${result.changes}개 삭제 (60일 이상)`);
+      return result.changes;
+    }
+    
+    return 0;
+  } catch (error) {
+    console.warn('⚠️ DOM 스냅샷 정리 실패:', error.message);
+    return 0;
+  }
+}
+
+/**
+ * 스텝 스크린샷 저장
+ * @param {number} tcId - 테스트케이스 ID
+ * @param {number} stepIndex - 스텝 인덱스
+ * @param {string} screenshot - base64 인코딩된 스크린샷 (data:image/png;base64,...)
+ * @returns {Promise<Object>} 저장 결과
+ */
+function saveStepScreenshot(tcId, stepIndex, screenshot) {
+  try {
+    ensureInitialized();
+    
+    // 기존 스크린샷이 있으면 업데이트, 없으면 삽입
+    const existing = get(
+      'SELECT id FROM test_case_steps_screenshots WHERE test_case_id = ? AND step_index = ?',
+      [tcId, stepIndex]
+    );
+    
+    if (existing) {
+      run(
+        'UPDATE test_case_steps_screenshots SET screenshot = ?, created_at = CURRENT_TIMESTAMP WHERE test_case_id = ? AND step_index = ?',
+        [screenshot, tcId, stepIndex]
+      );
+    } else {
+      run(
+        'INSERT INTO test_case_steps_screenshots (test_case_id, step_index, screenshot) VALUES (?, ?, ?)',
+        [tcId, stepIndex, screenshot]
+      );
+    }
+    
+    saveDatabase();
+    return { success: true };
+  } catch (error) {
+    console.error('❌ 스텝 스크린샷 저장 실패:', error);
+    throw error;
+  }
+}
+
+/**
+ * 스텝 스크린샷 조회
+ * @param {number} tcId - 테스트케이스 ID
+ * @param {number} stepIndex - 스텝 인덱스
+ * @returns {string|null} base64 인코딩된 스크린샷 또는 null
+ */
+function getStepScreenshot(tcId, stepIndex) {
+  try {
+    ensureInitialized();
+    
+    const result = get(
+      'SELECT screenshot FROM test_case_steps_screenshots WHERE test_case_id = ? AND step_index = ?',
+      [tcId, stepIndex]
+    );
+    
+    return result ? result.screenshot : null;
+  } catch (error) {
+    console.error('❌ 스텝 스크린샷 조회 실패:', error);
+    return null;
+  }
+}
+
+/**
+ * 테스트케이스의 모든 스텝 스크린샷 삭제
+ * @param {number} tcId - 테스트케이스 ID
+ * @returns {Promise<number>} 삭제된 레코드 수
+ */
+function deleteStepScreenshots(tcId) {
+  try {
+    ensureInitialized();
+    
+    const result = run(
+      'DELETE FROM test_case_steps_screenshots WHERE test_case_id = ?',
+      [tcId]
+    );
+    
+    saveDatabase();
+    return result.changes || 0;
+  } catch (error) {
+    console.error('❌ 스텝 스크린샷 삭제 실패:', error);
+    return 0;
+  }
+}
+
 module.exports = {
   init,
   run,
@@ -476,5 +693,11 @@ module.exports = {
   close,
   cleanupOldResults,
   getConfig,
-  backup
+  backup,
+  saveDomSnapshot,
+  checkDomSnapshotInPeriod,
+  cleanupOldDomSnapshots,
+  saveStepScreenshot,
+  getStepScreenshot,
+  deleteStepScreenshots
 };

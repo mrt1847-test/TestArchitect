@@ -1225,6 +1225,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  // 요소 선택 결과 전송
+  if (msg && (msg.type === 'ELEMENT_SELECTION_PICKED' || 
+              msg.type === 'ELEMENT_SELECTION_ERROR' || 
+              msg.type === 'ELEMENT_SELECTION_CANCELLED')) {
+    console.log('[Background] 요소 선택 결과 수신:', msg.type, '전체 메시지:', JSON.stringify(msg, null, 2));
+    sendWebSocketMessage({
+      type: msg.type,
+      ...msg
+    });
+    sendResponse({ ok: true });
+    return true;
+  }
+
   return false;
 });
 

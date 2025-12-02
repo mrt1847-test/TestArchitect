@@ -464,10 +464,8 @@ function handleExtensionMessage(ws, data) {
   const messageType = data.type || 'unknown';
   console.log('[Extension] 메시지 수신:', messageType);
   
-  // 디버깅: 전체 메시지 로그 (개발 모드)
-  if (process.env.NODE_ENV !== 'production') {
-    console.log('[Extension] 전체 메시지:', JSON.stringify(data, null, 2));
-  }
+  // 디버깅: 전체 메시지 로그
+  console.log('[Extension] 전체 메시지:', JSON.stringify(data, null, 2));
   
   switch (messageType) {
     case 'ping':

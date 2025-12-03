@@ -39,6 +39,29 @@ function normalizeEventRecord(event) {
 }
 
 /**
+ * URL 정규화 함수
+ * 쿼리 파라미터를 제거하여 기본 경로만 반환
+ * @param {string} url - 정규화할 URL
+ * @returns {string} 정규화된 URL (기본 경로만)
+ */
+function normalizeUrl(url) {
+  if (!url || typeof url !== 'string') return url;
+  
+  try {
+    const urlObj = new URL(url);
+    // 기본 경로만 반환 (쿼리 파라미터 제거)
+    return `${urlObj.protocol}//${urlObj.host}${urlObj.pathname}`;
+  } catch (e) {
+    // URL 파싱 실패 시 쿼리 스트링만 제거
+    const queryIndex = url.indexOf('?');
+    if (queryIndex !== -1) {
+      return url.substring(0, queryIndex);
+    }
+    return url;
+  }
+}
+
+/**
  * 셀렉터 타입 추론
  */
 function inferSelectorType(selector) {
@@ -299,12 +322,20 @@ function buildPlaywrightLocatorExpressionForAction(base, selectorInfo, pythonLik
 function buildPlaywrightPythonAction(ev, selectorInfo, base = 'page') {
   // Assertion actions that don't require selector
   if (ev && (ev.action === 'verifyTitle' || ev.action === 'verifyUrl')) {
-    const value = escapeForPythonString(ev.value || '');
     if (ev.action === 'verifyTitle') {
+      const value = escapeForPythonString(ev.value || '');
       return `assert ${base}.title() == "${value}"`;
     }
     if (ev.action === 'verifyUrl') {
-      return `assert ${base}.url == "${value}"`;
+      // URL 정규화 적용
+      const normalizedUrl = normalizeUrl(ev.value || '');
+      const value = escapeForPythonString(normalizedUrl);
+      // 페이지 이동 완료를 기다린 후 검증
+      // 두 줄을 배열로 반환하여 각 줄에 들여쓰기가 적용되도록 함
+      return [
+        `${base}.wait_for_url(lambda url: normalize_url(url) == "${value}", timeout=10000)`,
+        `assert normalize_url(${base}.url) == "${value}"`
+      ];
     }
   }
   if (!ev || !selectorInfo || !selectorInfo.selector) return null;
@@ -363,8 +394,15 @@ function buildPlaywrightPythonAction(ev, selectorInfo, base = 'page') {
     return `assert ${base}.title() == "${expectedTitle}"`;
   }
   if (ev.action === 'verifyUrl') {
-    const expectedUrl = escapeForPythonString(value || '');
-    return `assert ${base}.url == "${expectedUrl}"`;
+    // URL 정규화 적용
+    const normalizedUrl = normalizeUrl(value || '');
+    const expectedUrl = escapeForPythonString(normalizedUrl);
+    // 페이지 이동 완료를 기다린 후 검증
+    // 두 줄을 배열로 반환하여 각 줄에 들여쓰기가 적용되도록 함
+    return [
+      `${base}.wait_for_url(lambda url: normalize_url(url) == "${expectedUrl}", timeout=10000)`,
+      `assert normalize_url(${base}.url) == "${expectedUrl}"`
+    ];
   }
   return null;
 }
@@ -380,7 +418,11 @@ function buildPlaywrightJSAction(ev, selectorInfo, base = 'page') {
       return `expect(await ${base}.title()).toBe("${value}");`;
     }
     if (ev.action === 'verifyUrl') {
-      return `expect(${base}.url()).toBe("${value}");`;
+      // URL 정규화 적용
+      const normalizedUrl = normalizeUrl(ev.value || '');
+      const normalizedValue = escapeForJSString(normalizedUrl);
+      // 페이지 이동 완료를 기다린 후 검증
+      return `await ${base}.waitForURL(url => normalizeUrl(url) === "${normalizedValue}", { timeout: 10000 });\n  expect(normalizeUrl(${base}.url())).toBe("${normalizedValue}");`;
     }
   }
   if (!ev || !selectorInfo || !selectorInfo.selector) return null;
@@ -439,8 +481,11 @@ function buildPlaywrightJSAction(ev, selectorInfo, base = 'page') {
     return `expect(await ${base}.title()).toBe("${expectedTitle}");`;
   }
   if (ev.action === 'verifyUrl') {
-    const expectedUrl = escapeForJSString(value || '');
-    return `expect(${base}.url()).toBe("${expectedUrl}");`;
+    // URL 정규화 적용
+    const normalizedUrl = normalizeUrl(value || '');
+    const expectedUrl = escapeForJSString(normalizedUrl);
+    // 페이지 이동 완료를 기다린 후 검증
+    return `await ${base}.waitForURL(url => normalizeUrl(url) === "${expectedUrl}", { timeout: 10000 });\n  expect(normalizeUrl(${base}.url())).toBe("${expectedUrl}");`;
   }
   return null;
 }
@@ -456,7 +501,15 @@ function buildSeleniumPythonAction(ev, selectorInfo, driverVar = 'driver') {
       return `assert ${driverVar}.title == "${value}"`;
     }
     if (ev.action === 'verifyUrl') {
-      return `assert ${driverVar}.current_url == "${value}"`;
+      // URL 정규화 적용
+      const normalizedUrl = normalizeUrl(ev.value || '');
+      const normalizedValue = escapeForPythonString(normalizedUrl);
+      // 페이지 이동 완료를 기다린 후 검증
+      // 두 줄을 배열로 반환하여 각 줄에 들여쓰기가 적용되도록 함
+      return [
+        `WebDriverWait(${driverVar}, 10).until(lambda d: normalize_url(d.current_url) == "${normalizedValue}")`,
+        `assert normalize_url(${driverVar}.current_url) == "${normalizedValue}"`
+      ];
     }
   }
   if (!ev || !selectorInfo || !selectorInfo.selector) return null;
@@ -533,8 +586,15 @@ function buildSeleniumPythonAction(ev, selectorInfo, driverVar = 'driver') {
     return `assert ${driverVar}.title == "${expectedTitle}"`;
   }
   if (ev.action === 'verifyUrl') {
-    const expectedUrl = escapeForPythonString(value || '');
-    return `assert ${driverVar}.current_url == "${expectedUrl}"`;
+    // URL 정규화 적용
+    const normalizedUrl = normalizeUrl(value || '');
+    const expectedUrl = escapeForPythonString(normalizedUrl);
+    // 페이지 이동 완료를 기다린 후 검증
+    // 두 줄을 배열로 반환하여 각 줄에 들여쓰기가 적용되도록 함
+    return [
+      `WebDriverWait(${driverVar}, 10).until(lambda d: normalize_url(d.current_url) == "${expectedUrl}")`,
+      `assert normalize_url(${driverVar}.current_url) == "${expectedUrl}"`
+    ];
   }
   return null;
 }
@@ -678,6 +738,19 @@ export function generateCode(events, manualList, framework, language) {
   if (frameworkLower === 'playwright') {
     if (languageLower === 'python') {
       lines.push("from playwright.sync_api import sync_playwright");
+      lines.push("from urllib.parse import urlparse");
+      lines.push("");
+      lines.push("def normalize_url(url):");
+      lines.push("    \"\"\"URL 정규화: 쿼리 파라미터를 제거하여 기본 경로만 반환\"\"\"");
+      lines.push("    if not url:");
+      lines.push("        return url");
+      lines.push("    try:");
+      lines.push("        parsed = urlparse(url)");
+      lines.push("        return f\"{parsed.scheme}://{parsed.netloc}{parsed.path}\"");
+      lines.push("    except:");
+      lines.push("        # URL 파싱 실패 시 쿼리 스트링만 제거");
+      lines.push("        query_index = url.find('?')");
+      lines.push("        return url[:query_index] if query_index != -1 else url");
       lines.push("");
       lines.push("with sync_playwright() as p:");
       lines.push("  browser = p.chromium.launch(headless=False)");
@@ -704,7 +777,12 @@ export function generateCode(events, manualList, framework, language) {
           }
           const actionLine = buildPlaywrightPythonAction(event, selectorInfo, currentBase);
           if (actionLine) {
-            lines.push(`  ${actionLine}`);
+            // 배열인 경우 각 줄에 들여쓰기 적용
+            if (Array.isArray(actionLine)) {
+              actionLine.forEach(line => lines.push(`  ${line}`));
+            } else {
+              lines.push(`  ${actionLine}`);
+            }
           }
         } else if (entry.kind === 'manual') {
           emitManualActionLines(lines, entry.action, frameworkLower, languageLower, '  ');
@@ -742,7 +820,12 @@ export function generateCode(events, manualList, framework, language) {
           }
           const actionLine = buildPlaywrightPythonAction(event, selectorInfo, currentBase);
           if (actionLine) {
-            lines.push(`    ${actionLine}`);
+            // 배열인 경우 각 줄에 들여쓰기 적용
+            if (Array.isArray(actionLine)) {
+              actionLine.forEach(line => lines.push(`    ${line}`));
+            } else {
+              lines.push(`    ${actionLine}`);
+            }
             hasEmittedAction = true;
           }
         } else if (entry.kind === 'manual') {
@@ -766,6 +849,19 @@ export function generateCode(events, manualList, framework, language) {
       lines.push("  run_test()");
     } else if (languageLower === 'javascript') {
       lines.push("const { chromium } = require('playwright');");
+      lines.push("");
+      lines.push("function normalizeUrl(url) {");
+      lines.push("  // URL 정규화: 쿼리 파라미터를 제거하여 기본 경로만 반환");
+      lines.push("  if (!url) return url;");
+      lines.push("  try {");
+      lines.push("    const urlObj = new URL(url);");
+      lines.push("    return `${urlObj.protocol}//${urlObj.host}${urlObj.pathname}`;");
+      lines.push("  } catch (e) {");
+      lines.push("    // URL 파싱 실패 시 쿼리 스트링만 제거");
+      lines.push("    const queryIndex = url.indexOf('?');");
+      lines.push("    return queryIndex !== -1 ? url.substring(0, queryIndex) : url;");
+      lines.push("  }");
+      lines.push("}");
       lines.push("");
       lines.push("(async () => {");
       lines.push("  const browser = await chromium.launch({ headless: false });");
@@ -842,7 +938,21 @@ export function generateCode(events, manualList, framework, language) {
       lines.push("from selenium import webdriver");
       lines.push("from selenium.webdriver.common.by import By");
       lines.push("from selenium.webdriver.common.action_chains import ActionChains");
-      lines.push("from selenium.webdriver.support.ui import Select");
+      lines.push("from selenium.webdriver.support.ui import Select, WebDriverWait");
+      lines.push("from urllib.parse import urlparse");
+      lines.push("");
+      lines.push("def normalize_url(url):");
+      lines.push("    \"\"\"URL 정규화: 쿼리 파라미터를 제거하여 기본 경로만 반환\"\"\"");
+      lines.push("    if not url:");
+      lines.push("        return url");
+      lines.push("    try:");
+      lines.push("        parsed = urlparse(url)");
+      lines.push("        return f\"{parsed.scheme}://{parsed.netloc}{parsed.path}\"");
+      lines.push("    except:");
+      lines.push("        # URL 파싱 실패 시 쿼리 스트링만 제거");
+      lines.push("        query_index = url.find('?')");
+      lines.push("        return url[:query_index] if query_index != -1 else url");
+      lines.push("");
       lines.push("");
       lines.push("driver = webdriver.Chrome()");
       lines.push("driver.get('REPLACE_URL')");
@@ -863,7 +973,12 @@ export function generateCode(events, manualList, framework, language) {
           }
           const actionLine = buildSeleniumPythonAction(event, selectorInfo);
           if (actionLine) {
-            lines.push(actionLine);
+            // 배열인 경우 각 줄에 들여쓰기 적용
+            if (Array.isArray(actionLine)) {
+              actionLine.forEach(line => lines.push(`  ${line}`));
+            } else {
+              lines.push(`  ${actionLine}`);
+            }
           }
         } else if (entry.kind === 'manual') {
           emitManualActionLines(lines, entry.action, frameworkLower, languageLower, '');

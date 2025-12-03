@@ -1603,29 +1603,140 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
       }
     }
     
+    // 중간 처리 페이지 필터링 함수
+    function shouldFilterIntermediateUrl(url) {
+      if (!url) return false;
+      const urlLower = url.toLowerCase();
+      
+      // 보편적인 중간 처리 페이지 패턴
+      const intermediatePatterns = [
+        /loginproc/i,
+        /redirect/i,
+        /processing/i,
+        /intermediate/i,
+        /callback/i,
+        /return/i,
+        /success/i,
+        /confirm/i,
+        /verify/i,
+        /auth/i,
+        /token/i,
+        /oauth/i,
+        /handshake/i,
+        /exchange/i
+      ];
+      
+      return intermediatePatterns.some(pattern => pattern.test(urlLower));
+    }
+    
+    // 중간 처리 페이지는 필터링
+    if (shouldFilterIntermediateUrl(currentUrl)) {
+      console.log('[DOM Capture] 중간 처리 페이지 필터링:', currentUrl);
+      return;
+    }
+    
+    // URL 안정화 추적을 위한 변수 (전역 또는 적절한 스코프에 저장)
+    if (!window.__testarchitect_urlStabilityTracker) {
+      window.__testarchitect_urlStabilityTracker = {
+        url: null,
+        timestamp: null,
+        timer: null,
+        pendingEvent: null
+      };
+    }
+    
+    const tracker = window.__testarchitect_urlStabilityTracker;
+    
     // 클릭 이벤트와 동일한 패턴으로 sendEvent 직접 호출
     if (isUserInteraction) {
-      // 사용자 상호작용으로 인한 이동 → verifyUrl assertion 생성
-      sendEvent({
-        action: 'verifyUrl',
-        value: currentUrl,
-        selectors: [],
-        target: null,
-        iframeContext: null,
-        clientRect: null,
-        metadata: { 
-          domEvent: 'navigation', 
-          source: source || 'cdp-user-interaction',
-          cdpDetected: true
-        },
-        domContext: null,
-        page: {
+      // URL이 변경되었거나 첫 번째 URL인 경우
+      if (tracker.url !== currentUrl) {
+        // 기존 타이머 취소
+        if (tracker.timer) {
+          clearTimeout(tracker.timer);
+        }
+        
+        // 새로운 URL로 추적 시작
+        tracker.url = currentUrl;
+        tracker.timestamp = Date.now();
+        
+        // verifyUrl 이벤트 데이터 준비
+        tracker.pendingEvent = {
+          action: 'verifyUrl',
+          value: currentUrl,
+          selectors: [],
+          target: null,
+          iframeContext: null,
+          clientRect: null,
+          metadata: { 
+            domEvent: 'navigation', 
+            source: source || 'cdp-user-interaction',
+            cdpDetected: true
+          },
+          domContext: null,
+          page: {
+            url: currentUrl,
+            title: currentTitle
+          },
           url: currentUrl,
-          title: currentTitle
-        },
-        url: currentUrl,
-        primarySelector: currentUrl
-      });
+          primarySelector: currentUrl
+        };
+        
+        // 500ms 후에 URL이 여전히 같으면 안정화된 것으로 간주하여 이벤트 생성
+        tracker.timer = setTimeout(() => {
+          // URL이 여전히 같은지 확인 (연속 URL 변경 무시)
+          if (tracker.url === currentUrl && tracker.pendingEvent) {
+            // 최종 안정화된 URL로 이벤트 생성
+            sendEvent(tracker.pendingEvent);
+            
+            // verifyUrl 처리 완료 표시
+            window.__testarchitect_verifyUrlDecided = {
+              url: currentUrl,
+              timestamp: Date.now()
+            };
+            setTimeout(() => {
+              if (window.__testarchitect_verifyUrlDecided && 
+                  window.__testarchitect_verifyUrlDecided.url === currentUrl) {
+                delete window.__testarchitect_verifyUrlDecided;
+              }
+            }, 5000);
+            
+            // 처리된 URL 저장
+            window.__testarchitect_lastProcessTime = Date.now();
+            window.__testarchitect_lastProcessedUrl = currentUrl;
+          }
+          
+          // 추적 상태 초기화
+          tracker.pendingEvent = null;
+          tracker.timer = null;
+        }, 500); // 500ms 안정화 대기
+      } else {
+        // 같은 URL이면 타이머만 연장 (이미 추적 중)
+        if (tracker.timer) {
+          clearTimeout(tracker.timer);
+          tracker.timer = setTimeout(() => {
+            if (tracker.url === currentUrl && tracker.pendingEvent) {
+              sendEvent(tracker.pendingEvent);
+              
+              window.__testarchitect_verifyUrlDecided = {
+                url: currentUrl,
+                timestamp: Date.now()
+              };
+              setTimeout(() => {
+                if (window.__testarchitect_verifyUrlDecided && 
+                    window.__testarchitect_verifyUrlDecided.url === currentUrl) {
+                  delete window.__testarchitect_verifyUrlDecided;
+                }
+              }, 5000);
+              
+              window.__testarchitect_lastProcessTime = Date.now();
+              window.__testarchitect_lastProcessedUrl = currentUrl;
+            }
+            tracker.pendingEvent = null;
+            tracker.timer = null;
+          }, 500);
+        }
+      }
     } else {
       // 직접 입력으로 인한 이동 → navigate 이벤트 생성
       sendEvent({
@@ -1668,20 +1779,8 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
             delete window.__testarchitect_navigateDecided;
           }
         }, 5000);
-      } else {
-        // ⭐ verifyUrl도 처리되었음을 표시 (중복 방지용)
-        window.__testarchitect_verifyUrlDecided = {
-          url: currentUrl,
-          timestamp: Date.now()
-        };
-        // 5초 후 자동 삭제
-        setTimeout(() => {
-          if (window.__testarchitect_verifyUrlDecided && 
-              window.__testarchitect_verifyUrlDecided.url === currentUrl) {
-            delete window.__testarchitect_verifyUrlDecided;
-          }
-        }, 5000);
       }
+      // verifyUrl은 디바운싱 로직에서 처리되므로 여기서는 제거
     } catch (err) {
       console.error('[DOM Capture] URL 저장 실패:', err);
     }
@@ -3507,12 +3606,33 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
                           const currentUrl = window.location.href;
                           const targetUrl = ${escapedUrl};
                           
+                          // 중간 처리 페이지 필터링 함수
+                          function shouldFilterIntermediateUrl(url) {
+                            if (!url) return false;
+                            const urlLower = url.toLowerCase();
+                            const intermediatePatterns = [
+                              /loginproc/i, /redirect/i, /processing/i, /intermediate/i,
+                              /callback/i, /verify/i,
+                              /token/i, /oauth/i, /handshake/i, /sso/i, /saml/i,
+                              /loading/i, /wait/i, /waiting/i, /transit/i,
+                              /session/i, /signin/i, /jump/i
+                            ];
+                            return intermediatePatterns.some(pattern => pattern.test(urlLower));
+                          }
+                          
+                          // 중간 처리 페이지는 필터링
+                          if (shouldFilterIntermediateUrl(currentUrl)) {
+                            console.log('[DOM Capture] Page.navigatedWithinDocument: 중간 처리 페이지 필터링:', currentUrl);
+                            return;
+                          }
+                          
                           // URL이 변경되었는지 확인
                           if (currentUrl === targetUrl || currentUrl.startsWith(targetUrl.split('?')[0])) {
                             // SPA 내부 네비게이션은 사용자 상호작용으로 간주 → verifyUrl
+                            // 디바운싱 로직이 __testarchitect_createNavigationEvent 내부에서 처리됨
                             if (window.__testarchitect_createNavigationEvent) {
                               window.__testarchitect_createNavigationEvent(currentUrl, true, 'cdp-navigatedWithinDocument');
-                              console.log('[DOM Capture] Page.navigatedWithinDocument: verifyUrl 이벤트 생성 완료', currentUrl);
+                              console.log('[DOM Capture] Page.navigatedWithinDocument: verifyUrl 이벤트 생성 요청 (디바운싱 적용)', currentUrl);
                             } else {
                               console.error('[DOM Capture] window.__testarchitect_createNavigationEvent 함수가 없습니다!');
                             }
@@ -5040,9 +5160,63 @@ ipcMain.handle('run-python-scripts', async (event, scripts, args = [], options =
       const filename = `test_tc${script.tcId}_${sanitizedName}.${extension}`;
       const filePath = path.join(tempDir, filename);
       
-      await fs.writeFile(filePath, script.code, 'utf-8');
+      // Python 코드를 pytest 형식으로 변환
+      let finalCode = script.code || '';
+      if (script.language === 'python' && finalCode) {
+        // pytest 형식인지 확인 (test_ 함수가 있는지)
+        const hasTestFunction = /^\s*def\s+test_/m.test(finalCode) || /^\s*class\s+Test/m.test(finalCode);
+        
+        if (!hasTestFunction) {
+          // pytest 형식이 아니면 test_ 함수로 감싸기
+          console.log(`[DEBUG] 코드를 pytest 형식으로 변환 중: ${filename}`);
+          
+          // 들여쓰기 정규화 (코드가 이미 들여쓰기가 있는 경우)
+          const lines = finalCode.split('\n');
+          
+          // 최소 들여쓰기 찾기
+          let minIndent = Infinity;
+          for (const line of lines) {
+            if (line.trim().length > 0) {
+              const indent = line.match(/^(\s*)/)[1].length;
+              minIndent = Math.min(minIndent, indent);
+            }
+          }
+          if (minIndent === Infinity) minIndent = 0;
+          
+          // 코드를 들여쓰기 제거하고 다시 들여쓰기 (함수 내부는 4칸 들여쓰기)
+          const normalizedLines = lines.map(line => {
+            if (line.trim().length === 0) return '';
+            const lineIndent = line.match(/^(\s*)/)[1].length;
+            const relativeIndent = lineIndent - minIndent;
+            return '    ' + '    '.repeat(relativeIndent) + line.trim();
+          });
+          
+          // test_ 함수로 감싸기
+          const testFunctionName = `test_tc${script.tcId}_${sanitizedName}`;
+          
+          // import pytest가 이미 있는지 확인
+          const hasPytestImport = /^\s*import\s+pytest/m.test(finalCode) || /^\s*from\s+pytest/m.test(finalCode);
+          const pytestImport = hasPytestImport ? '' : 'import pytest\n\n';
+          
+          finalCode = `${pytestImport}def ${testFunctionName}():\n    """${script.name || 'Test'}"""\n${normalizedLines.join('\n')}\n`;
+          
+          console.log(`[DEBUG] 변환된 코드 (처음 500자):\n${finalCode.substring(0, 500)}`);
+        } else {
+          console.log(`[DEBUG] 코드가 이미 pytest 형식입니다: ${filename}`);
+        }
+      }
+      
+      // 디버깅: 생성되는 파일 정보 로깅
+      console.log(`[DEBUG] 테스트 파일 생성: ${filename}`);
+      console.log(`[DEBUG] TC ID: ${script.tcId}, 스크립트 이름: ${script.name}`);
+      console.log(`[DEBUG] 코드 길이: ${finalCode?.length || 0} bytes`);
+      
+      await fs.writeFile(filePath, finalCode, 'utf-8');
       testFiles.push(filename);
     }
+    
+    console.log(`[DEBUG] 생성된 테스트 파일 목록: ${testFiles.join(', ')}`);
+    console.log(`[DEBUG] 임시 디렉토리: ${tempDir}`);
     
     // 5. pytest 실행 (temp 디렉토리에서)
     // 파일명만 전달 (상대 경로)

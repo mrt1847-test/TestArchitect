@@ -105,8 +105,28 @@ class PytestService {
           },
           async (error, stdout, stderr) => {
             try {
+              // 디버깅: pytest 실행 결과 로깅
+              console.log('[DEBUG] pytest 실행 완료');
+              console.log('[DEBUG] exit code:', error ? error.code : 0);
+              console.log('[DEBUG] stdout 길이:', stdout?.length || 0);
+              console.log('[DEBUG] stderr 길이:', stderr?.length || 0);
+              if (stdout && stdout.length > 0) {
+                // 전체 stdout 출력 (에러 메시지 확인을 위해)
+                console.log('[DEBUG] stdout 전체:\n', stdout);
+              }
+              if (stderr && stderr.length > 0) {
+                console.log('[DEBUG] stderr 전체:\n', stderr);
+              }
+              
               // 리포트 파일 읽기
               const reportData = this._readReportFile(reportFile);
+              
+              if (reportData) {
+                console.log('[DEBUG] 리포트 데이터 summary:', reportData.summary);
+                console.log('[DEBUG] 리포트 데이터 tests 개수:', reportData.tests?.length || 0);
+              } else {
+                console.warn('[DEBUG] 리포트 파일이 없거나 읽을 수 없음:', reportFile);
+              }
 
               // 리포트 파일 정리
               this._cleanupReportFile(reportFile);

@@ -3265,11 +3265,20 @@ async function runSelectedTCs() {
     // 스크립트 코드를 전달하여 임시 파일 생성 후 실행
     const result = await window.electronAPI.runPythonScripts(scriptsToRun, [], options);
     
+    // 디버깅: 실행 결과 로깅
+    console.log('=== 테스트 실행 결과 디버깅 ===');
+    console.log('result.success:', result.success);
+    console.log('result.data:', result.data);
+    console.log('scriptsToRun:', scriptsToRun.map(s => ({ tcId: s.tcId, name: s.name })));
+    console.log('tcFileMap:', Array.from(tcFileMap.entries()));
+    
     // 결과 파싱 및 매핑
     const results = [];
     const executedTcIds = new Set(); // 실행된 TC ID 추적
     
     if (result.success && result.data && result.data.tests) {
+      console.log('pytest 테스트 결과 개수:', result.data.tests.length);
+      console.log('pytest 테스트 목록:', result.data.tests.map(t => t.nodeid));
       // pytest JSON 리포트에서 각 테스트 결과 추출
       for (const test of result.data.tests) {
         const testName = test.nodeid; // 예: "test_tc1_login.py::test_login" 또는 "test_tc1_login::test_login"
@@ -3337,6 +3346,28 @@ async function runSelectedTCs() {
         
         if (tcInfo) {
           executedTcIds.add(tcInfo.tcId);
+          
+          // 에러 메시지 추출 (여러 소스에서 시도)
+          let errorMessage = null;
+          if (test.outcome === 'failed' || test.outcome === 'error') {
+            // 1. test.call.longrepr (가장 상세한 에러 정보)
+            if (test.call?.longrepr) {
+              errorMessage = test.call.longrepr;
+            }
+            // 2. test.setup?.longrepr (setup 에러)
+            else if (test.setup?.longrepr) {
+              errorMessage = test.setup.longrepr;
+            }
+            // 3. test.teardown?.longrepr (teardown 에러)
+            else if (test.teardown?.longrepr) {
+              errorMessage = test.teardown.longrepr;
+            }
+            // 4. 간단한 에러 메시지
+            else {
+              errorMessage = `테스트가 ${test.outcome === 'failed' ? '실패' : '에러'}했습니다.`;
+            }
+          }
+          
           results.push({
             tcId: tcInfo.tcId,
             scriptId: tcInfo.scriptId,
@@ -3345,7 +3376,7 @@ async function runSelectedTCs() {
               success: test.outcome === 'passed',
               outcome: test.outcome,
               duration: test.duration,
-              error: test.call?.longrepr || null
+              error: errorMessage
             },
             status: test.outcome === 'passed' ? 'passed' : test.outcome === 'failed' ? 'failed' : 'error'
           });
@@ -3378,14 +3409,72 @@ async function runSelectedTCs() {
       // scriptsToRun에 포함된 TC는 실행 시도했지만 결과가 없는 경우
       const attemptedTcIds = new Set(scriptsToRun.map(s => s.tcId));
       
+      console.log('실행된 TC IDs:', Array.from(executedTcIds));
+      console.log('시도한 TC IDs:', Array.from(attemptedTcIds));
+      console.log('요청한 TC IDs:', tcIds);
+      
       for (const tcId of tcIds) {
         if (!results.find(r => r.tcId === tcId)) {
           if (attemptedTcIds.has(tcId)) {
             // 스크립트는 있었지만 실행 결과가 없는 경우
+            const script = scriptsToRun.find(s => s.tcId === tcId);
+            const expectedFileName = tcFileMap.get(Array.from(tcFileMap.keys()).find(k => tcFileMap.get(k).tcId === tcId));
+            
+            console.warn(`TC #${tcId} 실행 결과 없음:`, {
+              scriptName: script?.name,
+              expectedFileName: expectedFileName ? Array.from(tcFileMap.keys()).find(k => tcFileMap.get(k).tcId === tcId) : 'N/A',
+              pytestTests: result.data.tests.map(t => t.nodeid)
+            });
+            
+            // pytest 결과에 summary 정보가 있으면 추가 정보 제공
+            let errorMsg = '테스트 실행 결과를 찾을 수 없습니다';
+            
+            if (result.data && result.data.summary) {
+              const summary = result.data.summary;
+              if (summary.total === 0) {
+                // pytest 수집 에러인지 확인 (ERROR collecting 메시지)
+                if (result.stdout && result.stdout.includes('ERROR collecting')) {
+                  // ERROR collecting 부분 추출
+                  const errorMatch = result.stdout.match(/ERROR collecting[^\n]*\n([\s\S]*?)(?=\n={20,}|\ncollected|\n$)/);
+                  if (errorMatch) {
+                    errorMsg = `pytest가 테스트 파일을 수집하는 중 오류가 발생했습니다:\n\n${errorMatch[1].trim()}`;
+                  } else {
+                    // ERROR collecting은 있지만 상세 메시지를 못 찾은 경우
+                    const errorSection = result.stdout.match(/ERROR collecting[^\n]*\n([\s\S]*?)(?=\n={20,}|\ncollected)/);
+                    if (errorSection) {
+                      errorMsg = `pytest 수집 오류:\n\n${errorSection[1].trim()}`;
+                    } else {
+                      errorMsg = '테스트 파일 수집 중 오류가 발생했습니다. 파일에 문법 오류나 import 오류가 있을 수 있습니다.';
+                      if (result.stdout) {
+                        errorMsg += `\n\npytest 출력:\n${result.stdout.substring(0, 2000)}`;
+                      }
+                    }
+                  }
+                } else {
+                  errorMsg = '테스트가 발견되지 않았습니다. 테스트 파일에 `test_`로 시작하는 함수가 있는지 확인하세요.';
+                  if (result.stdout) {
+                    // stdout이 길면 처음과 끝 부분만 표시
+                    const preview = result.stdout.length > 1000 
+                      ? result.stdout.substring(0, 500) + '\n... (중략) ...\n' + result.stdout.substring(result.stdout.length - 500)
+                      : result.stdout;
+                    errorMsg += `\n\npytest 출력:\n${preview}`;
+                  }
+                }
+              } else {
+                errorMsg += `\n(pytest summary: total=${summary.total}, passed=${summary.passed || 0}, failed=${summary.failed || 0})`;
+              }
+            } else if (result.stdout) {
+              // summary가 없어도 stdout이 있으면 표시
+              const preview = result.stdout.length > 2000 
+                ? result.stdout.substring(0, 1000) + '\n... (중략) ...\n' + result.stdout.substring(result.stdout.length - 1000)
+                : result.stdout;
+              errorMsg += `\n\npytest 출력:\n${preview}`;
+            }
+            
             results.push({
               tcId,
               name: `TC #${tcId}`,
-              error: '테스트 실행 결과를 찾을 수 없습니다 (파일명 매핑 실패 가능)',
+              error: errorMsg,
               status: 'error'
             });
           } else {
@@ -3399,8 +3488,40 @@ async function runSelectedTCs() {
           }
         }
       }
+    } else if (result.success && result.data && !result.data.tests) {
+      // pytest는 성공했지만 테스트 결과가 없는 경우 (테스트 함수가 없거나 실행되지 않음)
+      console.warn('pytest 실행 성공했지만 테스트 결과가 없음:', result.data);
+      
+      const attemptedTcIds = new Set(scriptsToRun.map(s => s.tcId));
+      for (const tcId of tcIds) {
+        if (attemptedTcIds.has(tcId)) {
+          const script = scriptsToRun.find(s => s.tcId === tcId);
+          let errorMsg = '테스트가 실행되지 않았습니다. 테스트 함수가 없거나 pytest 규칙을 따르지 않을 수 있습니다.';
+          if (result.data.summary) {
+            errorMsg += `\n(pytest summary: total=${result.data.summary.total})`;
+          }
+          if (result.stdout) {
+            errorMsg += `\n출력: ${result.stdout.substring(0, 200)}...`;
+          }
+          
+          results.push({
+            tcId,
+            name: `TC #${tcId}`,
+            error: errorMsg,
+            status: 'error'
+          });
+        } else {
+          results.push({
+            tcId,
+            name: `TC #${tcId}`,
+            error: '스크립트가 없거나 pytest 형식이 아닙니다',
+            status: 'error'
+          });
+        }
+      }
     } else {
       // 전체 실행 실패
+      console.error('테스트 실행 실패:', result);
       results.push({
         error: result.error || '테스트 실행 실패',
         status: 'error',
@@ -3419,6 +3540,14 @@ async function runSelectedTCs() {
     runSelectedBtn.disabled = false;
     runSelectedBtn.innerHTML = '<span class="btn-icon">▶️</span> 선택한 TC 실행';
   }
+}
+
+// HTML 이스케이프 유틸리티 함수
+function escapeHtml(text) {
+  if (!text) return '';
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
 }
 
 function displayResults(results) {
@@ -3450,19 +3579,45 @@ function displayResults(results) {
     };
 
     if (item.error) {
+      const errorText = escapeHtml(item.error);
       resultDiv.innerHTML = `
         <div class="result-header">
-          <span class="result-name">${item.name}</span>
-          <span class="result-status">에러</span>
+          <span class="result-name">${item.name || 'Unknown'}</span>
+          <span class="result-status error">에러</span>
         </div>
-        <div>${item.error}</div>
+        <div class="result-error" style="margin-top: 8px; padding: 8px; background-color: #fee; border-left: 3px solid #f00; border-radius: 4px;">
+          <pre style="margin: 0; padding: 8px; background-color: #fff; border: 1px solid #ddd; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; font-size: 12px; line-height: 1.4;">${errorText}</pre>
+        </div>
       `;
     } else if (item.result) {
+      const statusText = item.result.success ? '통과' : '실패';
+      const statusClass = item.result.success ? 'passed' : 'failed';
+      
+      let errorDetails = '';
+      if (!item.result.success && item.result.error) {
+        // 에러 메시지가 있으면 표시 (줄바꿈 유지)
+        const errorText = escapeHtml(item.result.error);
+        errorDetails = `<div class="result-error" style="margin-top: 8px; padding: 8px; background-color: #fee; border-left: 3px solid #f00; border-radius: 4px;">
+          <strong style="color: #c00;">에러 상세:</strong>
+          <pre style="margin: 4px 0 0 0; padding: 8px; background-color: #fff; border: 1px solid #ddd; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; font-size: 12px; line-height: 1.4;">${errorText}</pre>
+        </div>`;
+      } else if (!item.result.success && item.result.outcome === 'failed') {
+        // outcome이 failed인데 error가 없는 경우
+        errorDetails = `<div class="result-error" style="margin-top: 8px; padding: 8px; background-color: #fee; border-left: 3px solid #f00; border-radius: 4px;">
+          <strong style="color: #c00;">테스트 실패</strong>
+          <p style="margin: 4px 0 0 0;">테스트가 실패했습니다. 상세 정보는 pytest 리포트를 확인하세요.</p>
+        </div>`;
+      }
+      
       resultDiv.innerHTML = `
         <div class="result-header">
-          <span class="result-name">${item.name}</span>
-          <span class="result-status">${item.result.success ? '통과' : '실패'}</span>
+          <span class="result-name">${item.name || 'Unknown'}</span>
+          <span class="result-status ${statusClass}">${statusText}</span>
         </div>
+        ${errorDetails}
+        ${item.result.duration !== undefined ? `
+          <div class="result-duration">소요 시간: ${(item.result.duration * 1000).toFixed(0)}ms</div>
+        ` : ''}
         ${item.result.data ? `
           <div class="result-details">
             <pre>${JSON.stringify(item.result.data, null, 2)}</pre>

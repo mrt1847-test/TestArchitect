@@ -3303,7 +3303,18 @@ function addVerifyAction(verifyType, path, value, elementInfo = null) {
     if (verifyType === 'verifyTitle') {
       value = value || currentTitle;
     } else if (verifyType === 'verifyUrl') {
-      value = value || currentUrl;
+      // URL 정규화 적용 (쿼리 파라미터 제거)
+      const rawUrl = value || currentUrl;
+      if (rawUrl) {
+        try {
+          const urlObj = new URL(rawUrl);
+          value = `${urlObj.protocol}//${urlObj.host}${urlObj.pathname}`;
+        } catch (e) {
+          // URL 파싱 실패 시 쿼리 스트링만 제거
+          const queryIndex = rawUrl.indexOf('?');
+          value = queryIndex !== -1 ? rawUrl.substring(0, queryIndex) : rawUrl;
+        }
+      }
     }
     
     eventRecord = {

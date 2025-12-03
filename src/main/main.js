@@ -6684,14 +6684,13 @@ ipcMain.handle('save-event-step', async (event, { tcId, projectId, event: eventD
           const screenshot = await captureScreenshotViaCDP(cdpPort, targetId);
           
           if (screenshot) {
-            // 스크린샷을 로컬 DB에 저장
+            // 스크린샷 저장
             await ScreenshotService.saveScreenshot(tcId, stepIndex, screenshot);
-            // step 객체에 스크린샷 참조 포함 (step_index 매핑 문제 해결)
-            const screenshotRef = `screenshot://tc_${tcId}_step_${stepIndex}`;
-            newStep.screenshot = screenshotRef;
+            // step 객체에 screenshot 플래그 추가
+            newStep.screenshot = true;
             // existingSteps 배열의 마지막 항목도 업데이트
-            existingSteps[stepIndex].screenshot = screenshotRef;
-            console.log(`[Recording] ✅ 스크린샷 캡처 및 저장 완료: TC ${tcId}, Step ${stepIndex}, 참조: ${screenshotRef}`);
+            existingSteps[stepIndex].screenshot = true;
+            console.log(`[Recording] ✅ 스크린샷 캡처 및 저장 완료: TC ${tcId}, Step ${stepIndex}`);
           } else {
             console.warn(`[Recording] ⚠️ 스크린샷 캡처 실패: TC ${tcId}, Step ${stepIndex}`);
           }

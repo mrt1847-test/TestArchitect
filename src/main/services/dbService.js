@@ -608,7 +608,7 @@ function cleanupOldDomSnapshots() {
  * 스텝 스크린샷 저장
  * @param {number} tcId - 테스트케이스 ID
  * @param {number} stepIndex - 스텝 인덱스
- * @param {string} screenshot - base64 인코딩된 스크린샷 (data:image/png;base64,...)
+ * @param {string} screenshot - base64 인코딩된 스크린샷 (data:image/jpeg;base64,...)
  * @returns {Promise<Object>} 저장 결과
  */
 function saveStepScreenshot(tcId, stepIndex, screenshot) {

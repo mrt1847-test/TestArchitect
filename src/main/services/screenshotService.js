@@ -13,7 +13,7 @@ class ScreenshotService {
    * 스텝 스크린샷 저장
    * @param {number} tcId - 테스트케이스 ID
    * @param {number} stepIndex - 스텝 인덱스
-   * @param {string} screenshotData - base64 인코딩된 스크린샷 (data:image/png;base64,...)
+   * @param {string} screenshotData - base64 인코딩된 스크린샷 (data:image/jpeg;base64,...)
    * @returns {Promise<Object>} 저장 결과
    */
   async saveScreenshot(tcId, stepIndex, screenshotData) {

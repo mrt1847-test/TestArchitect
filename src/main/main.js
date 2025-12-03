@@ -846,8 +846,172 @@ function broadcastToExtensions(message) {
  * CDP를 통해 스크린샷 캡처
  * @param {number} cdpPort - Chrome DevTools Protocol 포트
  * @param {string} targetId - 타겟 ID (선택사항)
- * @returns {Promise<string|null>} base64 인코딩된 PNG 이미지 (data:image/png;base64,...) 또는 null
+ * @returns {Promise<string|null>} base64 인코딩된 JPEG 이미지 (data:image/jpeg;base64,...) 또는 null
  */
+/**
+ * 페이지 안정화 후 스크린샷 캡처 (하이브리드 접근)
+ * - 네비게이션 발생 시: Page.loadEventFired 또는 networkIdle 대기 후 캡처
+ * - 네비게이션 없을 시: 짧은 지연(150ms) 후 즉시 캡처
+ */
+async function captureScreenshotWithStability(cdpPort, targetId = null, waitForNavigation = false) {
+  try {
+    // 네비게이션 대기 여부에 따라 처리
+    if (waitForNavigation) {
+      console.log(`[Screenshot] 네비게이션 대기 후 스크린샷 캡처: cdpPort=${cdpPort}`);
+      
+      // 네비게이션 발생 시: CDP 이벤트 대기
+      const screenshot = await waitForPageStabilityAndCapture(cdpPort, targetId);
+      return screenshot;
+    } else {
+      // 네비게이션 없을 시: 짧은 지연 후 캡처
+      console.log(`[Screenshot] 짧은 지연 후 스크린샷 캡처: cdpPort=${cdpPort}`);
+      await new Promise(resolve => setTimeout(resolve, 150)); // 150ms 지연
+      const screenshot = await captureScreenshotViaCDP(cdpPort, targetId);
+      return screenshot;
+    }
+  } catch (error) {
+    console.warn('[Screenshot] 안정화 대기 중 오류, 즉시 캡처 시도:', error.message);
+    // 오류 발생 시 즉시 캡처 시도
+    return await captureScreenshotViaCDP(cdpPort, targetId);
+  }
+}
+
+/**
+ * 페이지 안정화 대기 후 스크린샷 캡처
+ * Page.loadEventFired 또는 networkIdle 이벤트 대기
+ */
+async function waitForPageStabilityAndCapture(cdpPort, targetId = null) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      // 타겟 ID 확인
+      if (!targetId) {
+        const listUrl = `http://127.0.0.1:${cdpPort}/json/list`;
+        const listResponse = await new Promise((resolve, reject) => {
+          http.get(listUrl, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+              try {
+                resolve(JSON.parse(data));
+              } catch (e) {
+                reject(e);
+              }
+            });
+          }).on('error', reject);
+        });
+        
+        if (listResponse && listResponse.length > 0) {
+          targetId = listResponse[0].id;
+        } else {
+          reject(new Error('타겟을 찾을 수 없습니다'));
+          return;
+        }
+      }
+      
+      const wsUrl = `ws://127.0.0.1:${cdpPort}/devtools/page/${targetId}`;
+      const cdpWs = new WebSocket(wsUrl);
+      
+      let stabilityResolved = false;
+      let screenshotCaptured = false;
+      const STABILITY_TIMEOUT = 5000; // 5초 타임아웃 (네비게이션이 없을 수 있음)
+      const MAX_WAIT_TIME = 3000; // 최대 3초 대기 (네비게이션이 빠르게 발생하지 않으면 짧은 지연 후 캡처)
+      
+      const captureAndResolve = () => {
+        if (!stabilityResolved) {
+          stabilityResolved = true;
+          screenshotCaptured = true;
+          clearTimeout(timeout);
+          clearTimeout(maxWaitTimeout);
+          if (cdpWs && cdpWs.readyState === WebSocket.OPEN) {
+            cdpWs.close();
+          }
+          
+          // 약간의 추가 지연 후 캡처 (렌더링 완료 대기)
+          setTimeout(() => {
+            captureScreenshotViaCDP(cdpPort, targetId).then(resolve).catch(reject);
+          }, 200);
+        }
+      };
+      
+      const timeout = setTimeout(() => {
+        if (!stabilityResolved) {
+          console.warn('[Screenshot] 페이지 안정화 대기 타임아웃, 즉시 캡처 시도');
+          captureAndResolve();
+        }
+      }, STABILITY_TIMEOUT);
+      
+      // 최대 대기 시간 후에도 캡처 (네비게이션이 없을 수 있음)
+      const maxWaitTimeout = setTimeout(() => {
+        if (!screenshotCaptured) {
+          console.log('[Screenshot] 최대 대기 시간 경과, 스크린샷 캡처 (네비게이션 없음으로 판단)');
+          captureAndResolve();
+        }
+      }, MAX_WAIT_TIME);
+      
+      cdpWs.on('open', () => {
+        console.log('[Screenshot] 페이지 안정화 감지를 위한 WebSocket 연결 완료');
+        
+        // Page.enable
+        cdpWs.send(JSON.stringify({ id: 1, method: 'Page.enable' }));
+        // Network.enable
+        cdpWs.send(JSON.stringify({ id: 2, method: 'Network.enable' }));
+        
+        let loadEventReceived = false;
+        let networkIdleReceived = false;
+        
+        cdpWs.on('message', (data) => {
+          try {
+            const message = JSON.parse(data.toString());
+            
+            // Page.loadEventFired 감지
+            if (message.method === 'Page.loadEventFired') {
+              if (!stabilityResolved && !loadEventReceived) {
+                loadEventReceived = true;
+                console.log('[Screenshot] Page.loadEventFired 감지, 페이지 안정화 완료');
+                captureAndResolve();
+              }
+            }
+            
+            // Page.lifecycleEvent의 networkIdle 감지
+            if (message.method === 'Page.lifecycleEvent' && 
+                message.params && 
+                message.params.name === 'networkIdle') {
+              if (!stabilityResolved && !networkIdleReceived) {
+                networkIdleReceived = true;
+                console.log('[Screenshot] networkIdle 감지, 페이지 안정화 완료');
+                captureAndResolve();
+              }
+            }
+          } catch (e) {
+            // 무시
+          }
+        });
+        
+        cdpWs.on('error', (error) => {
+          if (!stabilityResolved) {
+            stabilityResolved = true;
+            clearTimeout(timeout);
+            clearTimeout(maxWaitTimeout);
+            console.warn('[Screenshot] WebSocket 오류, 즉시 캡처 시도:', error.message);
+            captureScreenshotViaCDP(cdpPort, targetId).then(resolve).catch(reject);
+          }
+        });
+      });
+      
+      cdpWs.on('error', (error) => {
+        if (!stabilityResolved) {
+          stabilityResolved = true;
+          clearTimeout(timeout);
+          clearTimeout(maxWaitTimeout);
+          reject(error);
+        }
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
 async function captureScreenshotViaCDP(cdpPort, targetId = null) {
   try {
     console.log(`[Screenshot] CDP 연결 시도: 포트=${cdpPort}, targetId=${targetId || '(자동 탐지)'}`);
@@ -949,7 +1113,7 @@ async function captureScreenshotViaCDP(cdpPort, targetId = null) {
             screenshotReject(new Error(errorMsg));
           } else if (message.result && message.result.data) {
             console.log(`[Screenshot] ✅ 스크린샷 캡처 성공: requestId=${requestId}, 데이터 크기=${message.result.data.length} bytes`);
-            screenshotResolve('data:image/png;base64,' + message.result.data);
+            screenshotResolve('data:image/jpeg;base64,' + message.result.data);
           } else {
             console.error(`[Screenshot] ❌ 응답에 데이터 없음:`, JSON.stringify(message));
             screenshotReject(new Error('스크린샷 데이터가 없습니다'));
@@ -984,10 +1148,10 @@ async function captureScreenshotViaCDP(cdpPort, targetId = null) {
       console.warn(`[Screenshot] Page.enable 실패 (계속 진행):`, enableError.message);
     }
     
-    // Page.captureScreenshot 호출 (PNG 형식)
+    // Page.captureScreenshot 호출 (JPEG 형식, 품질 50)
     // 정수형 ID 사용 (CDP 요구사항) - 안전한 범위 유지
     requestId = screenshotCommandIdCounter++;
-    console.log(`[Screenshot] CDP 명령 전송: requestId=${requestId}, method=Page.captureScreenshot (PNG)`);
+    console.log(`[Screenshot] CDP 명령 전송: requestId=${requestId}, method=Page.captureScreenshot (JPEG, quality=50)`);
     
     const screenshotPromise = new Promise((resolve, reject) => {
       screenshotResolve = resolve;
@@ -1011,11 +1175,14 @@ async function captureScreenshotViaCDP(cdpPort, targetId = null) {
       }
       
       // Page.captureScreenshot 요청 전송 (정수형 ID 사용)
-      // PNG 형식으로 캡처
+      // JPEG 형식으로 캡처 (품질 50)
       const request = {
         id: requestId,
         method: 'Page.captureScreenshot',
-        params: { format: 'png' }
+        params: { 
+          format: 'jpeg',
+          quality: 50
+        }
       };
       
       console.log(`[Screenshot] CDP 요청 전송:`, JSON.stringify(request));
@@ -6671,17 +6838,41 @@ ipcMain.handle('save-event-step', async (event, { tcId, projectId, event: eventD
       existingSteps.push(newStep);
       const stepIndex = existingSteps.length - 1;
       
-      // 5. 상호작용 이벤트인 경우 스크린샷 캡처 및 저장
+      // 5. 상호작용 이벤트인 경우 스크린샷 캡처 및 저장 (하이브리드 접근)
       if (isInteractionEvent) {
         try {
           // CDP 포트 찾기 (이벤트 데이터 > 전역 변수 > 기본값 순서)
           const cdpPort = eventData.cdpPort || eventData.page?.cdpPort || currentCdpPort || 9222;
           const targetId = eventData.targetId || eventData.page?.targetId || currentTargetId || null;
           
-          console.log(`[Recording] 스크린샷 캡처 시도: cdpPort=${cdpPort}, targetId=${targetId || '(자동 탐지)'}`);
+          // 네비게이션 발생 여부 감지 (하이브리드 접근)
+          // 1. 링크 클릭인지 확인 (target이 a 태그이거나 href 속성이 있는 경우)
+          const isLinkClick = action === 'click' && (
+            (eventData.target && (eventData.target.tag === 'a' || eventData.target.tag === 'A')) ||
+            (eventData.target && eventData.target.href) ||
+            (newStep.target && typeof newStep.target === 'string' && newStep.target.includes('a[')) ||
+            (eventData.primarySelector && typeof eventData.primarySelector === 'string' && eventData.primarySelector.includes('a['))
+          );
           
-          // 스크린샷 캡처
-          const screenshot = await captureScreenshotViaCDP(cdpPort, targetId);
+          // 2. 이벤트 데이터에 네비게이션 정보가 있는지 확인
+          const hasNavigationInfo = eventData.metadata?.domEvent === 'navigation' || 
+                                   eventData.metadata?.navigation === true ||
+                                   eventData.navigation === true;
+          
+          // 3. 버튼이나 폼 제출인 경우 네비게이션 가능성 높음
+          const isFormSubmit = action === 'click' && (
+            (eventData.target && (eventData.target.tag === 'button' || eventData.target.tag === 'BUTTON')) ||
+            (newStep.target && typeof newStep.target === 'string' && newStep.target.includes('button['))
+          );
+          
+          // 4. 네비게이션 발생 가능성 판단
+          // 링크 클릭, 폼 제출, 또는 명시적 네비게이션 정보가 있으면 대기
+          const waitForNavigation = isLinkClick || isFormSubmit || hasNavigationInfo;
+          
+          console.log(`[Recording] 스크린샷 캡처 시도: cdpPort=${cdpPort}, targetId=${targetId || '(자동 탐지)'}, waitForNavigation=${waitForNavigation}`);
+          
+          // 하이브리드 접근: 네비게이션 발생 시 안정화 대기, 없을 시 짧은 지연 후 캡처
+          const screenshot = await captureScreenshotWithStability(cdpPort, targetId, waitForNavigation);
           
           if (screenshot) {
             // 스크린샷 저장
@@ -6690,7 +6881,7 @@ ipcMain.handle('save-event-step', async (event, { tcId, projectId, event: eventD
             newStep.screenshot = true;
             // existingSteps 배열의 마지막 항목도 업데이트
             existingSteps[stepIndex].screenshot = true;
-            console.log(`[Recording] ✅ 스크린샷 캡처 및 저장 완료: TC ${tcId}, Step ${stepIndex}`);
+            console.log(`[Recording] ✅ 스크린샷 캡처 및 저장 완료: TC ${tcId}, Step ${stepIndex}, navigation=${waitForNavigation}`);
           } else {
             console.warn(`[Recording] ⚠️ 스크린샷 캡처 실패: TC ${tcId}, Step ${stepIndex}`);
           }

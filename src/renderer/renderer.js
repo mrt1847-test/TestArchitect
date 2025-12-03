@@ -2069,7 +2069,12 @@ function displayTCDetail(tc) {
                 const target = step.target || '(대상 없음)';
                 const value = step.value || null;
                 const description = step.description || null;
-                const hasScreenshot = step.screenshot === true;
+                // 스크린샷 참조 확인 (새로운 참조 형식 또는 기존 플래그 형식 모두 지원)
+  const hasScreenshot = step.screenshot && (
+    (typeof step.screenshot === 'string' && step.screenshot.startsWith('screenshot://')) ||
+    (typeof step.screenshot === 'string' && step.screenshot.startsWith('data:')) ||
+    step.screenshot === true  // 기존 플래그 형식 호환성
+  );
                 
                 return `
                 <div class="step-item" data-step-index="${idx}">
@@ -2539,7 +2544,12 @@ function createKeywordRow(index, step) {
     actionSelect.value = step.action || '';
   }
   
-  const hasScreenshot = step.screenshot === true;
+  // 스크린샷 참조 확인 (새로운 참조 형식 또는 기존 플래그 형식 모두 지원)
+  const hasScreenshot = step.screenshot && (
+    (typeof step.screenshot === 'string' && step.screenshot.startsWith('screenshot://')) ||
+    (typeof step.screenshot === 'string' && step.screenshot.startsWith('data:')) ||
+    step.screenshot === true  // 기존 플래그 형식 호환성
+  );
   const tcId = currentTC ? currentTC.id : null;
   
   tr.innerHTML = `
@@ -2605,18 +2615,48 @@ function createKeywordRow(index, step) {
  */
 async function loadStepScreenshot(tcId, stepIndex, imgElement) {
   try {
-    if (!window.electronAPI || !window.electronAPI.getStepScreenshot) {
-      console.warn('[Screenshot] electronAPI.getStepScreenshot이 없습니다');
-      return;
+    // step 객체에서 스크린샷 참조 확인
+    if (currentTC && currentTC.steps && currentTC.steps[stepIndex]) {
+      const step = currentTC.steps[stepIndex];
+      if (step.screenshot) {
+        // 참조 형식: "screenshot://tc_2_step_0"
+        if (typeof step.screenshot === 'string' && step.screenshot.startsWith('screenshot://')) {
+          // 참조에서 tcId와 stepIndex 추출
+          const match = step.screenshot.match(/screenshot:\/\/tc_(\d+)_step_(\d+)/);
+          if (match) {
+            const refTcId = parseInt(match[1], 10);
+            const refStepIndex = parseInt(match[2], 10);
+            
+            // 로컬 DB에서 실제 스크린샷 데이터 조회
+            if (window.electronAPI && window.electronAPI.getStepScreenshot) {
+              const screenshot = await window.electronAPI.getStepScreenshot(refTcId, refStepIndex);
+              if (screenshot) {
+                imgElement.src = screenshot;
+                imgElement.style.display = 'block';
+                return;
+              }
+            }
+          }
+        } else if (typeof step.screenshot === 'string' && step.screenshot.startsWith('data:')) {
+          // 기존 base64 데이터 직접 포함 형식 (호환성)
+          imgElement.src = step.screenshot;
+          imgElement.style.display = 'block';
+          return;
+        }
+      }
     }
     
-    const screenshot = await window.electronAPI.getStepScreenshot(tcId, stepIndex);
-    if (screenshot) {
-      imgElement.src = screenshot;
-      imgElement.style.display = 'block';
-    } else {
-      imgElement.style.display = 'none';
+    // 폴백: step_index로 직접 조회 (기존 방식 호환성)
+    if (window.electronAPI && window.electronAPI.getStepScreenshot) {
+      const screenshot = await window.electronAPI.getStepScreenshot(tcId, stepIndex);
+      if (screenshot) {
+        imgElement.src = screenshot;
+        imgElement.style.display = 'block';
+        return;
+      }
     }
+    
+    imgElement.style.display = 'none';
   } catch (error) {
     console.error('[Screenshot] 스크린샷 로드 실패:', error);
     if (imgElement) {
@@ -3948,6 +3988,11 @@ function createEditStepRow(index, step) {
   const tr = document.createElement('tr');
   tr.style.borderBottom = '1px solid #eee';
   
+  // 기존 step 데이터를 data attribute로 보존 (스크린샷 참조 등)
+  if (step) {
+    tr.setAttribute('data-original-step', JSON.stringify(step));
+  }
+  
   // Action 드롭다운
   let actionSelect;
   try {
@@ -4024,7 +4069,20 @@ function getStepsFromTable(stepsBody) {
     const description = row.querySelector('.step-description')?.value || '';
     
     if (action) {
+      // 기존 step 데이터 복원 (스크린샷 참조 등)
+      let originalStep = {};
+      const originalStepData = row.getAttribute('data-original-step');
+      if (originalStepData) {
+        try {
+          originalStep = JSON.parse(originalStepData);
+        } catch (e) {
+          console.warn('기존 step 데이터 파싱 실패:', e);
+        }
+      }
+      
+      // 기존 필드 보존 + 새로운 값으로 업데이트
       steps.push({
+        ...originalStep,  // 기존 필드 보존 (screenshot 참조 등)
         action: action.trim(),
         target: target.trim(),
         value: value.trim(),

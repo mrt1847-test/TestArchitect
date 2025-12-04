@@ -422,8 +422,15 @@ function buildPlaywrightPythonAction(ev, selectorInfo, base = 'page') {
   }
   if (ev.action === 'verifyImage') {
     // 이미지 비교 (pytest-playwright-visual-snapshot 사용)
-    // conftest.assert_snapshot_func()을 통해 사용
-    return `conftest.assert_snapshot_func(${getLocator()})`;
+    // locator.screenshot()으로 이미지를 캡처하고 assert_snapshot에 전달
+    const locatorVar = getLocator();
+    const imageVar = `image_${Math.random().toString(36).substr(2, 9)}`;
+    const snapshotName = ev.snapshotName || ev.value || 'snapshot';
+    
+    return [
+      `${imageVar} = ${locatorVar}.screenshot()`,
+      `assert_snapshot(${imageVar}, name="${snapshotName}.jpeg")`
+    ];
   }
   return null;
 }
@@ -838,24 +845,26 @@ export function generateCode(events, manualList, framework, language) {
     if (languageLower === 'python') {
       // pytest 형식으로 생성
       lines.push("import pytest");
-      lines.push("import conftest");
-      lines.push("from urllib.parse import urlparse");
-      lines.push("");
-      lines.push("def normalize_url(url):");
-      lines.push("    \"\"\"URL 정규화: 쿼리 파라미터를 제거하여 기본 경로만 반환\"\"\"");
-      lines.push("    if not url:");
-      lines.push("        return url");
-      lines.push("    try:");
-      lines.push("        parsed = urlparse(url)");
-      lines.push("        return f\"{parsed.scheme}://{parsed.netloc}{parsed.path}\"");
-      lines.push("    except:");
-      lines.push("        # URL 파싱 실패 시 쿼리 스트링만 제거");
-      lines.push("        query_index = url.find('?')");
-      lines.push("        return url[:query_index] if query_index != -1 else url");
+      
+      // verifyUrl 액션이 있는지 확인
+      const hasVerifyUrl = timeline.some(entry => 
+        entry.kind === 'event' && entry.event && entry.event.action === 'verifyUrl'
+      );
+      
+      // verifyImage 액션이 있는지 확인
+      const hasVerifyImage = timeline.some(entry => 
+        entry.kind === 'event' && entry.event && entry.event.action === 'verifyImage'
+      );
+      
+      // 필요한 import 추가
+      if (hasVerifyUrl) {
+        lines.push("from test_utils import normalize_url");
+      }
       lines.push("");
       
-      // 항상 page fixture만 사용 (assert_snapshot은 conftest.assert_snapshot_func()로 사용)
-      lines.push("def test_generated(page):");
+      // fixture 설정: page는 항상 필요, verifyImage가 있으면 assert_snapshot도 추가
+      const fixtureParams = hasVerifyImage ? "page, assert_snapshot" : "page";
+      lines.push(`def test_generated(${fixtureParams}):`);
       lines.push("    \"\"\"Generated test case\"\"\"");
       
       let currentFrameContext = null;
@@ -1041,19 +1050,15 @@ export function generateCode(events, manualList, framework, language) {
       lines.push("from selenium.webdriver.common.by import By");
       lines.push("from selenium.webdriver.common.action_chains import ActionChains");
       lines.push("from selenium.webdriver.support.ui import Select, WebDriverWait");
-      lines.push("from urllib.parse import urlparse");
-      lines.push("");
-      lines.push("def normalize_url(url):");
-      lines.push("    \"\"\"URL 정규화: 쿼리 파라미터를 제거하여 기본 경로만 반환\"\"\"");
-      lines.push("    if not url:");
-      lines.push("        return url");
-      lines.push("    try:");
-      lines.push("        parsed = urlparse(url)");
-      lines.push("        return f\"{parsed.scheme}://{parsed.netloc}{parsed.path}\"");
-      lines.push("    except:");
-      lines.push("        # URL 파싱 실패 시 쿼리 스트링만 제거");
-      lines.push("        query_index = url.find('?')");
-      lines.push("        return url[:query_index] if query_index != -1 else url");
+      
+      // verifyUrl 액션이 있는지 확인
+      const hasVerifyUrl = timeline.some(entry => 
+        entry.kind === 'event' && entry.event && entry.event.action === 'verifyUrl'
+      );
+      
+      if (hasVerifyUrl) {
+        lines.push("from test_utils import normalize_url");
+      }
       lines.push("");
       lines.push("");
       lines.push("driver = webdriver.Chrome()");

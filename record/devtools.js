@@ -1,1 +1,0 @@
-chrome.devtools.panels.create('AI Test Recorder',null,'panel.html', function(panel){console.log('panel loaded')});

@@ -258,6 +258,10 @@ class PythonRuntime {
   static getPlaywrightEnv(runtime) {
     const env = { ...process.env };
     
+    // ✅ Windows 한글 경로 처리를 위한 인코딩 설정
+    env.PYTHONIOENCODING = 'utf-8';
+    env.PYTHONUTF8 = '1';
+    
     if (runtime.isBundled) {
       const browsersPath = this._getPlaywrightBrowsersPath(runtime.isBundled);
       if (browsersPath) {

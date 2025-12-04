@@ -103,6 +103,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   /**
+   * verifyImage 요소 스크린샷 캡처
+   * @param {Object} params - { clientRect: { x, y, w, h } }
+   * @returns {Promise<Object>} { success: boolean, imageData?: string, error?: string }
+   */
+  captureVerifyImage: (params) => {
+    return ipcRenderer.invoke('capture-verify-image', params);
+  },
+
+  /**
    * 서버 API 호출
    */
   /**
@@ -287,6 +296,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
    */
   getStepScreenshot: (tcId, stepIndex) => {
     return ipcRenderer.invoke('get-step-screenshot', tcId, stepIndex);
+  },
+  getSnapshotImage: (snapshotImageId) => {
+    return ipcRenderer.invoke('get-snapshot-image', snapshotImageId);
   },
 
   /**

@@ -17,51 +17,77 @@ sys.path.insert(0, str(project_root))
 
 def pytest_addoption(parser):
     """pytest 명령줄 옵션 추가"""
-    parser.addoption(
-        "--browser",
-        action="store",
-        default=os.getenv("TEST_BROWSER", "chromium"),
-        choices=["chromium", "firefox", "webkit", "chrome", "edge"],
-        help="사용할 브라우저 선택 (chromium, firefox, webkit, chrome, edge)"
-    )
-    parser.addoption(
-        "--headless",
-        action="store",
-        default=os.getenv("TEST_HEADLESS", "false"),  # 기본값을 false로 변경 (브라우저 표시)
-        choices=["true", "false"],
-        help="헤드리스 모드 실행 여부 (true, false)"
-    )
-    parser.addoption(
-        "--driver",
-        action="store",
-        default=os.getenv("TEST_DRIVER", "playwright"),
-        choices=["playwright", "selenium"],
-        help="사용할 웹드라이버 (playwright, selenium)"
-    )
-    parser.addoption(
-        "--base-url",
-        action="store",
-        default=os.getenv("TEST_BASE_URL", "http://localhost:8000"),
-        help="테스트 기본 URL"
-    )
-    parser.addoption(
-        "--mobile",
-        action="store",
-        default=os.getenv("TEST_MOBILE", "false"),
-        choices=["true", "false"],
-        help="모바일 디바이스 에뮬레이션 여부 (true, false)"
-    )
+    # 중복 등록 방지: try-except로 ValueError 처리
+    # pytest 7.x 이후 버전에서는 내부 API(_get_optional_actions)가 제거됨
+    # 따라서 try-except 방식으로 중복 등록 에러를 처리 (모든 pytest 버전 호환)
+    
+    # --browser와 --headless 옵션은 pytest-playwright 플러그인이 제공하므로 여기서 등록하지 않음
+    # pytest-playwright 플러그인이 이미 설치되어 있고 --browser, --headed/--headless 옵션을 제공함
+    
+    # --driver 옵션 등록
+    try:
+        parser.addoption(
+            "--driver",
+            action="store",
+            default=os.getenv("TEST_DRIVER", "playwright"),
+            choices=["playwright", "selenium"],
+            help="사용할 웹드라이버 (playwright, selenium)"
+        )
+    except ValueError:
+        # 이미 등록된 경우 무시 (중복 등록 방지)
+        pass
+    
+    # --base-url 옵션은 pytest-base-url 플러그인이 제공하므로 여기서 등록하지 않음
+    # pytest-base-url 플러그인이 이미 설치되어 있고 --base-url 옵션을 제공함
+    
+    # --mobile 옵션 등록
+    try:
+        parser.addoption(
+            "--mobile",
+            action="store",
+            default=os.getenv("TEST_MOBILE", "false"),
+            choices=["true", "false"],
+            help="모바일 디바이스 에뮬레이션 여부 (true, false)"
+        )
+    except ValueError:
+        # 이미 등록된 경우 무시 (중복 등록 방지)
+        pass
 
 
 @pytest.fixture(scope="session")
 def test_config(pytestconfig):
     """테스트 설정 fixture"""
+    # pytest-base-url 플러그인의 base_url 옵션 사용
+    try:
+        base_url = pytestconfig.getoption("base_url")
+    except (ValueError, AttributeError):
+        base_url = os.getenv("TEST_BASE_URL", "http://localhost:8000")
+    
+    # pytest-playwright 플러그인의 browser 옵션 사용
+    try:
+        browser = pytestconfig.getoption("--browser")
+        # ✅ browser가 리스트인 경우 첫 번째 값 사용 (unhashable type 에러 방지)
+        if isinstance(browser, list):
+            browser = browser[0] if browser else "chromium"
+    except (ValueError, AttributeError):
+        browser = os.getenv("TEST_BROWSER", "chromium")
+    
+    # pytest-playwright 플러그인의 headed 옵션 사용 (headless의 반대)
+    # --headed가 True면 headless=False, --headed가 False면 headless=True
+    try:
+        headed = pytestconfig.getoption("--headed", default=False)
+        headless = not headed
+    except (ValueError, AttributeError):
+        # --headed 옵션이 없으면 환경 변수 확인
+        headless_env = os.getenv("TEST_HEADLESS", "false")
+        headless = headless_env.lower() == "true"
+    
     return {
         "timeout": 30,
         "retry_count": 3,
-        "base_url": pytestconfig.getoption("--base-url"),
-        "browser": pytestconfig.getoption("--browser"),
-        "headless": pytestconfig.getoption("--headless") == "true",
+        "base_url": base_url,
+        "browser": browser,
+        "headless": headless,
         "driver": pytestconfig.getoption("--driver"),
         "mobile": pytestconfig.getoption("--mobile") == "true"
     }
@@ -295,31 +321,21 @@ def driver(test_config, request):
 # Visual Snapshot Testing
 # ============================================================================
 
-def assert_snapshot_func(target, name=None, **kwargs):
-    """pytest-playwright-visual-snapshot의 assert_snapshot을 일반 함수로 사용"""
-    try:
-        from playwright_visual_snapshot import assert_snapshot as _assert_snapshot
-        return _assert_snapshot(target, name=name, **kwargs)
-    except ImportError:
-        raise ImportError("pytest-playwright-visual-snapshot이 설치되지 않았습니다. 'pip install pytest-playwright-visual-snapshot' 실행하세요.")
-
-
-@pytest.fixture(scope="function")
-def assert_snapshot(request):
-    """pytest-playwright-visual-snapshot의 assert_snapshot fixture (호환성을 위해 유지)"""
-    return assert_snapshot_func
-
-
-@pytest.hookimpl(tryfirst=True, hookwrapper=True)
-def pytest_runtest_makereport(item, call):
-    """테스트 결과를 리포트에 저장 (스크린샷 캡처를 위해)"""
-    outcome = yield
-    rep = outcome.get_result()
-    setattr(item, f"rep_{rep.when}", rep)
+# snapshots 폴더 경로
+SNAPSHOTS_DIR = project_root / "snapshots"
+SNAPSHOTS_DIR.mkdir(exist_ok=True)
 
 
 def pytest_configure(config):
-    """pytest 설정 초기화"""
+    """pytest 설정 초기화 - snapshots 폴더 설정"""
+    # snapshots 폴더 생성
+    SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+    
+    # pytest-playwright-visual-snapshot 플러그인 설정
+    # snapshots 경로를 pytest.ini나 환경 변수로 설정 가능
+    if not config.getini("playwright_visual_snapshots_path"):
+        config.option.playwright_visual_snapshots_path = str(SNAPSHOTS_DIR)
+    
     # 커스텀 마커 등록
     config.addinivalue_line(
         "markers", "slow: 느린 테스트 (실행 시간이 오래 걸림)"
@@ -342,4 +358,15 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "regression: 회귀 테스트"
     )
+
+# pytest-playwright-visual-snapshot 패키지가 설치되어 있으면
+# 자동으로 assert_snapshot fixture를 제공하므로 여기서 정의하지 않음
+
+
+@pytest.hookimpl(tryfirst=True, hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """테스트 결과를 리포트에 저장 (스크린샷 캡처를 위해)"""
+    outcome = yield
+    rep = outcome.get_result()
+    setattr(item, f"rep_{rep.when}", rep)
 

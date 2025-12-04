@@ -1006,15 +1006,35 @@ function appendTimelineItem(ev, index) {
   actionLine.className = 'recorder-step-action';
   actionLine.textContent = actionLabel;
   
+  // verifyImage 액션의 경우 이미지 미리보기 추가
+  if (action === 'verifyImage' && ev.elementImageData) {
+    const imagePreview = document.createElement('div');
+    imagePreview.className = 'recorder-step-image-preview';
+    imagePreview.style.cssText = 'margin: 4px 0; max-width: 200px; max-height: 150px; border: 1px solid var(--vscode-border); border-radius: 4px; overflow: hidden;';
+    
+    const img = document.createElement('img');
+    img.src = ev.elementImageData;
+    img.style.cssText = 'width: 100%; height: auto; display: block;';
+    img.alt = '요소 이미지';
+    
+    imagePreview.appendChild(img);
+    stepContent.appendChild(actionLine);
+    stepContent.appendChild(imagePreview);
+  }
+  
   // 타겟 정보
   if (targetInfo || usedSelector) {
     const targetLine = document.createElement('div');
     targetLine.className = 'recorder-step-target';
     targetLine.textContent = targetInfo || usedSelector || '';
-    stepContent.appendChild(actionLine);
+    if (action !== 'verifyImage' || !ev.elementImageData) {
+      stepContent.appendChild(actionLine);
+    }
     stepContent.appendChild(targetLine);
   } else {
-    stepContent.appendChild(actionLine);
+    if (action !== 'verifyImage' || !ev.elementImageData) {
+      stepContent.appendChild(actionLine);
+    }
   }
   
   // 셀렉터 정보 (있는 경우)
@@ -1163,6 +1183,28 @@ function appendTimelineItem(ev, index) {
     valueRow.appendChild(valueLabel);
     valueRow.appendChild(valueValue);
     stepDetails.appendChild(valueRow);
+  }
+  
+  // 이미지 정보 (verifyImage 액션인 경우)
+  if (ev.action === 'verifyImage' && ev.elementImageData) {
+    const imageRow = document.createElement('div');
+    imageRow.className = 'step-detail-row';
+    const imageLabel = document.createElement('span');
+    imageLabel.className = 'step-detail-label';
+    imageLabel.textContent = '요소 이미지:';
+    const imageValue = document.createElement('div');
+    imageValue.className = 'step-detail-image';
+    imageValue.style.cssText = 'margin-top: 4px; max-width: 400px; max-height: 300px; border: 1px solid var(--vscode-border); border-radius: 4px; overflow: hidden;';
+    
+    const detailImg = document.createElement('img');
+    detailImg.src = ev.elementImageData;
+    detailImg.style.cssText = 'width: 100%; height: auto; display: block;';
+    detailImg.alt = '요소 이미지';
+    
+    imageValue.appendChild(detailImg);
+    imageRow.appendChild(imageLabel);
+    imageRow.appendChild(imageValue);
+    stepDetails.appendChild(imageRow);
   }
   
   // 스텝에 귀속된 Assertion 추가 섹션
@@ -3288,6 +3330,7 @@ function addVerifyAction(verifyType, path, value, elementInfo = null) {
       frame: { iframeContext },
       target: targetTag ? { tag: targetTag, id: elementInfo?.id || null, className: elementInfo?.className || null } : null,
       clientRect: clientRect,
+      elementImageData: null, // 스크린샷 캡처 후 채워짐
       metadata: {
         schemaVersion: 2,
         userAgent: navigator.userAgent
@@ -3304,6 +3347,28 @@ function addVerifyAction(verifyType, path, value, elementInfo = null) {
       primarySelectorXPath: targetEntry.xpathValue,
       primarySelectorMatchMode: targetEntry.matchMode
     };
+    
+    // verifyImage 액션인 경우 실시간 스크린샷 캡처
+    if (verifyType === 'verifyImage' && clientRect) {
+      console.log('[Recorder] verifyImage 액션 감지, 스크린샷 캡처 시작...');
+      captureVerifyImageScreenshot(clientRect).then(imageData => {
+        if (imageData) {
+          // 이벤트에 이미지 데이터 추가
+          eventRecord.elementImageData = imageData;
+          
+          // 이미 추가된 이벤트 업데이트
+          const lastEvent = allEvents[allEvents.length - 1];
+          if (lastEvent && lastEvent.timestamp === timestamp) {
+            lastEvent.elementImageData = imageData;
+            // 타임라인 새로고침하여 이미지 표시
+            syncTimelineFromEvents(allEvents, { selectLast: false });
+            console.log('[Recorder] ✅ verifyImage 이미지 데이터 추가 완료');
+          }
+        }
+      }).catch(error => {
+        console.warn('[Recorder] verifyImage 스크린샷 캡처 실패:', error);
+      });
+    }
   } else {
     // 타이틀/URL 검증 (요소 불필요)
     if (verifyType === 'verifyTitle') {
@@ -3372,6 +3437,51 @@ function addVerifyAction(verifyType, path, value, elementInfo = null) {
     verifyActionsContainer.classList.add('hidden');
   }
   setElementStatus(`${verifyType} 액션을 추가했습니다.`, 'success');
+}
+
+/**
+ * verifyImage 요소 스크린샷 캡처 헬퍼 함수
+ * @param {Object} clientRect - { x, y, w, h }
+ * @returns {Promise<string|null>} base64 이미지 데이터 또는 null
+ */
+async function captureVerifyImageScreenshot(clientRect) {
+  try {
+    // electronAPI 초기화 확인
+    if (!electronAPI) {
+      initElectronAPI();
+    }
+    
+    if (!electronAPI || !electronAPI.captureVerifyImage) {
+      console.warn('[Recorder] electronAPI.captureVerifyImage를 사용할 수 없습니다.');
+      return null;
+    }
+    
+    // clientRect 형식 통일: { x, y, width, height } 형식으로 변환
+    // recorder.js에서는 { x, y, w, h } 또는 { x, y, width, height } 형식일 수 있음
+    const normalizedClientRect = {
+      x: clientRect.x,
+      y: clientRect.y,
+      width: clientRect.width || clientRect.w,
+      height: clientRect.height || clientRect.h
+    };
+    
+    if (!normalizedClientRect.x || !normalizedClientRect.y || !normalizedClientRect.width || !normalizedClientRect.height) {
+      console.warn('[Recorder] 유효하지 않은 clientRect 정보:', clientRect);
+      return null;
+    }
+    
+    const result = await electronAPI.captureVerifyImage({ clientRect: normalizedClientRect });
+    if (result.success && result.imageData) {
+      console.log('[Recorder] ✅ verifyImage 스크린샷 캡처 성공');
+      return result.imageData;
+    } else {
+      console.warn('[Recorder] 스크린샷 캡처 실패:', result.error);
+      return null;
+    }
+  } catch (error) {
+    console.error('[Recorder] 스크린샷 캡처 중 오류:', error);
+    return null;
+  }
 }
 
 /**

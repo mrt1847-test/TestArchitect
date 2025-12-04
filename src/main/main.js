@@ -1215,6 +1215,214 @@ async function captureScreenshotViaCDP(cdpPort, targetId = null) {
 }
 
 /**
+ * 요소만 스크린샷 캡처 (좌표와 사이즈 기반)
+ * @param {number} cdpPort - CDP 포트
+ * @param {number} x - 요소의 X 좌표
+ * @param {number} y - 요소의 Y 좌표
+ * @param {number} width - 요소의 너비
+ * @param {number} height - 요소의 높이
+ * @param {number} targetId - 타겟 ID (선택사항)
+ * @returns {Promise<string|null>} base64 인코딩된 JPEG 이미지 (data:image/jpeg;base64,...) 또는 null
+ */
+async function captureElementScreenshotViaCDP(cdpPort, x, y, width, height, targetId = null) {
+  try {
+    console.log(`[ElementScreenshot] 요소 스크린샷 캡처: x=${x}, y=${y}, width=${width}, height=${height}`);
+    
+    // 스크린샷은 항상 새 WebSocket 연결 사용
+    let cdpWs = null;
+    
+    // targetId가 없으면 /json/list에서 가져오기
+    if (!targetId) {
+      const listUrl = `http://127.0.0.1:${cdpPort}/json/list`;
+      const listResponse = await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('타겟 목록 조회 타임아웃'));
+        }, 5000);
+        
+        http.get(listUrl, (res) => {
+          let data = '';
+          res.on('data', chunk => data += chunk);
+          res.on('end', () => {
+            clearTimeout(timeout);
+            try {
+              resolve(JSON.parse(data));
+            } catch (e) {
+              reject(e);
+            }
+          });
+        }).on('error', (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+      });
+      
+      if (listResponse && listResponse.length > 0) {
+        targetId = listResponse[0].id;
+        currentTargetId = targetId;
+        console.log(`[ElementScreenshot] 타겟 ID 자동 탐지: ${targetId}`);
+      } else {
+        console.warn('[ElementScreenshot] 타겟을 찾을 수 없습니다');
+        return null;
+      }
+    }
+    
+    const wsUrl = `ws://127.0.0.1:${cdpPort}/devtools/page/${targetId}`;
+    cdpWs = new WebSocket(wsUrl);
+    
+    // 연결 대기
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('CDP WebSocket 연결 타임아웃'));
+      }, 5000);
+      
+      cdpWs.on('open', () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+      
+      cdpWs.on('error', (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+    });
+    
+    console.log(`[ElementScreenshot] ✅ WebSocket 연결 완료`);
+    
+    // 변수 선언
+    let enableRequestId, enableResolved, enableResolve, enableReject, enableTimeout;
+    let requestId, screenshotResolved, screenshotResolve, screenshotReject, screenshotTimeout;
+    
+    // 메시지 핸들러
+    const allMessageHandler = (data) => {
+      try {
+        const message = JSON.parse(data.toString());
+        
+        if (message.id === enableRequestId) {
+          if (enableResolved) return;
+          enableResolved = true;
+          clearTimeout(enableTimeout);
+          if (message.error) {
+            console.warn(`[ElementScreenshot] Page.enable 오류 (무시하고 계속):`, message.error.message);
+          } else {
+            console.log(`[ElementScreenshot] ✅ Page.enable 성공`);
+          }
+          enableResolve();
+        } else if (message.id === requestId) {
+          if (screenshotResolved) return;
+          screenshotResolved = true;
+          clearTimeout(screenshotTimeout);
+          
+          if (message.error) {
+            const errorMsg = message.error.message || '요소 스크린샷 캡처 실패';
+            console.error(`[ElementScreenshot] ❌ CDP 응답 오류:`, errorMsg);
+            screenshotReject(new Error(errorMsg));
+          } else if (message.result && message.result.data) {
+            console.log(`[ElementScreenshot] ✅ 요소 스크린샷 캡처 성공: requestId=${requestId}, 데이터 크기=${message.result.data.length} bytes`);
+            screenshotResolve('data:image/jpeg;base64,' + message.result.data);
+          } else {
+            console.error(`[ElementScreenshot] ❌ 응답에 데이터 없음`);
+            screenshotReject(new Error('요소 스크린샷 데이터가 없습니다'));
+          }
+        }
+      } catch (e) {
+        // 무시
+      }
+    };
+    
+    cdpWs.on('message', allMessageHandler);
+    
+    // Page.enable 호출
+    try {
+      enableRequestId = screenshotCommandIdCounter++;
+      enableResolved = false;
+      await new Promise((resolve, reject) => {
+        enableResolve = resolve;
+        enableReject = reject;
+        enableTimeout = setTimeout(() => {
+          if (!enableResolved) {
+            enableResolved = true;
+            console.warn(`[ElementScreenshot] Page.enable 타임아웃 (계속 진행)`);
+            resolve();
+          }
+        }, 3000);
+        
+        cdpWs.send(JSON.stringify({ id: enableRequestId, method: 'Page.enable' }));
+      });
+    } catch (enableError) {
+      console.warn(`[ElementScreenshot] Page.enable 실패 (계속 진행):`, enableError.message);
+    }
+    
+    // Page.captureScreenshot 호출 (요소 영역만 clip 옵션 사용)
+    requestId = screenshotCommandIdCounter++;
+    console.log(`[ElementScreenshot] CDP 명령 전송: requestId=${requestId}, method=Page.captureScreenshot (요소 영역)`);
+    
+    const screenshotPromise = new Promise((resolve, reject) => {
+      screenshotResolve = resolve;
+      screenshotReject = reject;
+      screenshotResolved = false;
+      
+      screenshotTimeout = setTimeout(() => {
+        if (!screenshotResolved) {
+          screenshotResolved = true;
+          console.error(`[ElementScreenshot] ❌ 타임아웃: requestId=${requestId}`);
+          reject(new Error('요소 스크린샷 캡처 타임아웃'));
+        }
+      }, 10000);
+      
+      if (cdpWs.readyState !== WebSocket.OPEN) {
+        screenshotResolved = true;
+        clearTimeout(screenshotTimeout);
+        reject(new Error(`WebSocket이 열려있지 않습니다 (상태: ${cdpWs.readyState})`));
+        return;
+      }
+      
+      // clip 옵션을 사용하여 요소 영역만 캡처
+      const request = {
+        id: requestId,
+        method: 'Page.captureScreenshot',
+        params: {
+          format: 'jpeg',
+          quality: 90, // 요소 스크린샷은 품질을 높게 설정
+          clip: {
+            x: Math.round(x),
+            y: Math.round(y),
+            width: Math.round(width),
+            height: Math.round(height),
+            scale: 1.0
+          }
+        }
+      };
+      
+      console.log(`[ElementScreenshot] CDP 요청 전송:`, JSON.stringify(request));
+      try {
+        cdpWs.send(JSON.stringify(request));
+        console.log(`[ElementScreenshot] ✅ CDP 요청 전송 완료: requestId=${requestId}`);
+      } catch (sendError) {
+        screenshotResolved = true;
+        clearTimeout(screenshotTimeout);
+        console.error(`[ElementScreenshot] ❌ CDP 요청 전송 실패:`, sendError.message);
+        reject(new Error(`CDP 요청 전송 실패: ${sendError.message}`));
+      }
+    });
+    
+    const screenshot = await screenshotPromise;
+    
+    // 메시지 핸들러 제거
+    cdpWs.removeListener('message', allMessageHandler);
+    
+    // 새로 생성한 WebSocket이면 닫기
+    if (cdpWs !== globalCdpWs && cdpWs.readyState === WebSocket.OPEN) {
+      cdpWs.close();
+    }
+    
+    return screenshot;
+  } catch (error) {
+    console.warn('[ElementScreenshot] 요소 스크린샷 캡처 실패:', error.message);
+    return null;
+  }
+}
+
+/**
  * CDP 서버가 준비될 때까지 대기
  * @param {number} cdpPort - CDP 포트
  * @param {number} maxRetries - 최대 재시도 횟수
@@ -4595,6 +4803,239 @@ function convertEventToStep(event, index = 0) {
 }
 
 /**
+ * verifyImage 액션 처리: 요소 스크린샷 캡처 및 DB 저장
+ * @param {Array} steps - 변환된 스텝 배열
+ * @param {Array} events - 원본 이벤트 배열
+ * @param {number} tcId - 테스트케이스 ID
+ */
+async function processVerifyImageActions(steps, events, tcId) {
+  console.log('[verifyImage] verifyImage 액션 처리 시작...');
+  
+  // verifyImage 액션이 있는 스텝 찾기
+  const verifyImageSteps = [];
+  steps.forEach((step, index) => {
+    if (step.action === 'verifyImage') {
+      verifyImageSteps.push({
+        stepIndex: index,
+        step: step,
+        event: events[index]
+      });
+    }
+  });
+  
+  if (verifyImageSteps.length === 0) {
+    console.log('[verifyImage] verifyImage 액션이 없습니다.');
+    return;
+  }
+  
+  console.log(`[verifyImage] ${verifyImageSteps.length}개의 verifyImage 액션을 발견했습니다.`);
+  
+  // 각 verifyImage 액션 처리
+  for (const { stepIndex, step, event } of verifyImageSteps) {
+    try {
+      // clientRect 정보 확인
+      const clientRect = event?.clientRect || null;
+      
+      if (!clientRect || !clientRect.x || !clientRect.y || !clientRect.width || !clientRect.height) {
+        console.warn(`[verifyImage] Step ${stepIndex + 1}: clientRect 정보가 없습니다. 테스트 실행 시 처리됩니다.`);
+        // clientRect 정보가 없으면 나중에 테스트 실행 시 처리하도록 표시
+        step.snapshot_image_id = null;
+        step.snapshot_pending = true;
+        continue;
+      }
+      
+      // CDP 포트 확인 (녹화 중 브라우저가 아직 열려있는 경우)
+      if (!currentCdpPort) {
+        console.warn(`[verifyImage] Step ${stepIndex + 1}: CDP 연결이 없습니다. 테스트 실행 시 처리됩니다.`);
+        step.snapshot_image_id = null;
+        step.snapshot_pending = true;
+        continue;
+      }
+      
+      // 요소 스크린샷 캡처
+      console.log(`[verifyImage] Step ${stepIndex + 1}: 요소 스크린샷 캡처 시작...`);
+      const screenshot = await captureElementScreenshotViaCDP(
+        currentCdpPort,
+        clientRect.x,
+        clientRect.y,
+        clientRect.width,
+        clientRect.height,
+        currentTargetId
+      );
+      
+      if (!screenshot) {
+        console.warn(`[verifyImage] Step ${stepIndex + 1}: 스크린샷 캡처 실패. 테스트 실행 시 처리됩니다.`);
+        step.snapshot_image_id = null;
+        step.snapshot_pending = true;
+        continue;
+      }
+      
+      // base64 데이터에서 이미지 데이터 추출
+      let imageBuffer;
+      if (screenshot.startsWith('data:image')) {
+        const base64Data = screenshot.split(',')[1];
+        imageBuffer = Buffer.from(base64Data, 'base64');
+      } else {
+        imageBuffer = Buffer.from(screenshot, 'base64');
+      }
+      
+      // snapshot 이름 생성 (코드 생성 시와 동일한 형식)
+      // 코드 생성 시: ev.snapshotName || ev.value || 'snapshot'
+      // 따라서 step.value를 우선 사용하고, 없으면 'snapshot' 사용
+      const snapshotName = step.value || 'snapshot';
+      
+      // DB에 이미지 저장
+      const selector = step.target || null;
+      const result = DbService.run(
+        `INSERT INTO snapshot_images 
+         (test_case_id, step_index, snapshot_name, image_data, selector, element_x, element_y, element_width, element_height)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          tcId,
+          stepIndex,
+          snapshotName,
+          imageBuffer,
+          selector,
+          clientRect.x,
+          clientRect.y,
+          clientRect.width,
+          clientRect.height
+        ]
+      );
+      
+      if (result && result.lastID) {
+        step.snapshot_image_id = result.lastID;
+        step.snapshot_pending = false;
+        console.log(`[verifyImage] Step ${stepIndex + 1}: 스크린샷 저장 완료 (ID: ${result.lastID})`);
+      } else {
+        console.error(`[verifyImage] Step ${stepIndex + 1}: DB 저장 실패`);
+        step.snapshot_image_id = null;
+        step.snapshot_pending = true;
+      }
+    } catch (error) {
+      console.error(`[verifyImage] Step ${stepIndex + 1}: 처리 중 오류 발생:`, error);
+      step.snapshot_image_id = null;
+      step.snapshot_pending = true;
+    }
+  }
+  
+  console.log('[verifyImage] verifyImage 액션 처리 완료');
+}
+
+/**
+ * DB에서 스냅샷 이미지를 불러와서 snapshots 폴더에 저장
+ * @param {number} tcId - 테스트케이스 ID
+ * @param {string} snapshotsDir - snapshots 폴더 경로
+ * @param {string} testFileName - 테스트 파일명 (확장자 제외, 예: "test_tc17_Generated_python_script")
+ * @param {string} testFunctionName - 테스트 함수명 (예: "test_generated")
+ * @returns {Promise<Array<string>>} 저장된 파일 경로 배열
+ */
+async function loadSnapshotImagesFromDB(tcId, snapshotsDir, testFileName = null, testFunctionName = null) {
+  const fs = require('fs').promises;
+  const path = require('path');
+  const loadedFiles = [];
+  
+  try {
+    // TC의 steps 가져오기
+    const testCase = DbService.get('SELECT steps FROM test_cases WHERE id = ?', [tcId]);
+    if (!testCase || !testCase.steps) {
+      console.log(`[Snapshot] TC ${tcId}: steps가 없습니다.`);
+      return loadedFiles;
+    }
+    
+    let steps;
+    try {
+      steps = JSON.parse(testCase.steps);
+    } catch (e) {
+      console.warn(`[Snapshot] TC ${tcId}: steps 파싱 실패:`, e.message);
+      return loadedFiles;
+    }
+    
+    if (!Array.isArray(steps)) {
+      console.warn(`[Snapshot] TC ${tcId}: steps가 배열이 아닙니다.`);
+      return loadedFiles;
+    }
+    
+    // verifyImage 액션 찾기
+    const verifyImageSteps = steps.filter((step, index) => {
+      return step.action === 'verifyImage' && step.snapshot_image_id;
+    });
+    
+    if (verifyImageSteps.length === 0) {
+      console.log(`[Snapshot] TC ${tcId}: verifyImage 액션이 없습니다.`);
+      return loadedFiles;
+    }
+    
+    console.log(`[Snapshot] TC ${tcId}: ${verifyImageSteps.length}개의 verifyImage 액션 발견`);
+    
+    // pytest-playwright-visual-snapshot 플러그인 경로 구조에 맞게 저장
+    // 경로 구조: snapshots/{test_file_name}/{test_function_name}/{snapshot_name}
+    const testFileDir = testFileName ? path.join(snapshotsDir, testFileName) : snapshotsDir;
+    const testFunctionDir = testFunctionName ? path.join(testFileDir, testFunctionName) : testFileDir;
+    
+    // 디렉토리 생성
+    await fs.mkdir(testFunctionDir, { recursive: true });
+    
+    // 각 verifyImage 액션의 이미지 불러오기
+    for (const step of verifyImageSteps) {
+      const snapshotImageId = step.snapshot_image_id;
+      if (!snapshotImageId) continue;
+      
+      try {
+        // DB에서 이미지 조회
+        const snapshotImage = DbService.get(
+          'SELECT snapshot_name, image_data FROM snapshot_images WHERE id = ?',
+          [snapshotImageId]
+        );
+        
+        if (!snapshotImage || !snapshotImage.image_data) {
+          console.warn(`[Snapshot] TC ${tcId}: 이미지 ID ${snapshotImageId}를 찾을 수 없습니다.`);
+          continue;
+        }
+        
+        // 파일명 생성 (코드 생성 시와 동일한 형식)
+        // 코드 생성 시: name="${snapshotName}.jpeg" 형식으로 생성
+        let fileName = snapshotImage.snapshot_name;
+        // 확장자가 없으면 .jpeg 추가
+        if (!fileName.endsWith('.png') && !fileName.endsWith('.jpg') && !fileName.endsWith('.jpeg')) {
+          fileName = fileName + '.jpeg';
+        }
+        
+        // 파일 경로 (플러그인 경로 구조에 맞게)
+        const filePath = path.join(testFunctionDir, fileName);
+        
+        // 이미지 데이터 저장
+        // SQLite의 경우 image_data는 Buffer 또는 Uint8Array일 수 있음
+        let imageBuffer;
+        if (Buffer.isBuffer(snapshotImage.image_data)) {
+          imageBuffer = snapshotImage.image_data;
+        } else if (snapshotImage.image_data instanceof Uint8Array) {
+          imageBuffer = Buffer.from(snapshotImage.image_data);
+        } else if (typeof snapshotImage.image_data === 'string') {
+          // Base64 인코딩된 문자열인 경우
+          imageBuffer = Buffer.from(snapshotImage.image_data, 'base64');
+        } else {
+          console.warn(`[Snapshot] TC ${tcId}: 이미지 데이터 형식을 알 수 없습니다.`);
+          continue;
+        }
+        
+        await fs.writeFile(filePath, imageBuffer);
+        loadedFiles.push(filePath);
+        console.log(`[Snapshot] TC ${tcId}: 이미지 저장 완료 - ${filePath} (${imageBuffer.length} bytes)`);
+        
+      } catch (error) {
+        console.error(`[Snapshot] TC ${tcId}: 이미지 ID ${snapshotImageId} 저장 실패:`, error.message);
+      }
+    }
+    
+  } catch (error) {
+    console.error(`[Snapshot] TC ${tcId}: 스냅샷 이미지 불러오기 실패:`, error.message);
+  }
+  
+  return loadedFiles;
+}
+
+/**
  * 녹화 데이터를 TC와 스크립트에 반영
  */
 async function processRecordingData(recordingData) {
@@ -4637,6 +5078,9 @@ async function processRecordingData(recordingData) {
   } else {
     console.log(`[Recording] ✅ 모든 ${steps.length}개의 스텝이 유효합니다.`);
   }
+
+  // 1-1. verifyImage 액션 처리: 요소 스크린샷 캡처 및 DB 저장
+  await processVerifyImageActions(steps, events, tcId);
 
   // 2. TC 업데이트 (steps 저장)
   const tcUpdateData = {
@@ -5044,6 +5488,47 @@ ipcMain.handle('delete-step-screenshots', async (event, tcId) => {
   }
 });
 
+/**
+ * snapshot_image_id로 이미지 조회 IPC 핸들러
+ * @event ipcMain.handle:get-snapshot-image
+ */
+ipcMain.handle('get-snapshot-image', async (event, snapshotImageId) => {
+  try {
+    if (!snapshotImageId) {
+      return null;
+    }
+    
+    const imageData = DbService.getSnapshotImage(snapshotImageId);
+    if (!imageData || !imageData.image_data) {
+      return null;
+    }
+    
+    // image_data를 base64 data URL 형식으로 변환
+    let imageBuffer;
+    if (Buffer.isBuffer(imageData.image_data)) {
+      imageBuffer = imageData.image_data;
+    } else if (imageData.image_data instanceof Uint8Array) {
+      imageBuffer = Buffer.from(imageData.image_data);
+    } else if (typeof imageData.image_data === 'string') {
+      // 이미 base64 문자열인 경우
+      if (imageData.image_data.startsWith('data:')) {
+        return imageData.image_data;
+      }
+      // base64 문자열만 있는 경우 data URL 형식으로 변환
+      return `data:image/jpeg;base64,${imageData.image_data}`;
+    } else {
+      return null;
+    }
+    
+    // Buffer를 base64 data URL로 변환
+    const base64String = imageBuffer.toString('base64');
+    return `data:image/jpeg;base64,${base64String}`;
+  } catch (error) {
+    console.error('[Snapshot] 이미지 조회 실패:', error);
+    return null;
+  }
+});
+
 ipcMain.handle('cleanup-old-snapshots', async (event) => {
   try {
     const deletedCount = await DomSnapshotService.cleanupOldSnapshots();
@@ -5146,19 +5631,51 @@ async function removeDirectoryRecursive(dirPath, fs, path) {
  * @param {number} maxRetries - 최대 재시도 횟수 (기본값: 5)
  * @param {number} retryDelay - 재시도 간 지연 시간(ms) (기본값: 500)
  */
+/**
+ * ✅ 2️⃣ 안전한 cleanup 함수 (재시도 없음, 실패하면 포기)
+ * 다음 실행을 방해하지 않도록 실패 시 즉시 포기
+ */
+async function safeCleanup(tempDir) {
+  const fs = require('fs').promises;
+  
+  try {
+    await fs.access(tempDir);
+  } catch {
+    // 디렉토리가 없으면 성공으로 처리
+    return;
+  }
+  
+  try {
+    // pytest 프로세스가 완전히 종료될 시간을 주기 위해 초기 지연
+    await new Promise(resolve => setTimeout(resolve, 500));
+    await fs.rm(tempDir, { recursive: true, force: true });
+  } catch (error) {
+    // ✅ 실패하면 그냥 포기 (재시도 금지)
+    console.warn(`[DEBUG] cleanup skipped: ${tempDir} (${error.code || error.message})`);
+  }
+}
+
+/**
+ * @deprecated safeCleanup을 사용하세요
+ */
 async function cleanupTempDir(tempDir, maxRetries = 5, retryDelay = 500) {
   const fs = require('fs').promises;
   const path = require('path');
+  
+  console.log('[DEBUG] cleanupTempDir 호출됨:', tempDir);
+  console.log('[DEBUG] cleanupTempDir 호출 시점:', new Date().toISOString());
   
   // 디렉토리 존재 여부 확인
   try {
     await fs.access(tempDir);
   } catch (accessError) {
     // 디렉토리가 없으면 성공으로 처리
+    console.log('[DEBUG] temp 디렉토리가 이미 없음:', tempDir);
     return;
   }
   
   // pytest 프로세스가 완전히 종료될 시간을 주기 위해 초기 지연
+  console.log('[DEBUG] pytest 프로세스 종료 대기 중 (500ms)...');
   await new Promise(resolve => setTimeout(resolve, 500));
   
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -5203,19 +5720,30 @@ async function cleanupTempDir(tempDir, maxRetries = 5, retryDelay = 500) {
 ipcMain.handle('run-python-scripts', async (event, scripts, args = [], options = {}) => {
   const fs = require('fs').promises;
   const path = require('path');
-  const tempDir = path.join(config.paths.scripts, 'temp');
+  
+  // ✅ 1️⃣ 매 실행마다 고유한 temp 디렉토리 사용 (race condition 방지)
+  const runId = Date.now();
+  const baseTempDir = path.join(config.paths.scripts, 'temp');
+  const tempDir = path.join(baseTempDir, `run-${runId}`);
   const pageObjectsDir = path.join(tempDir, 'page_objects');
   
   try {
-    // 0. 이전 실행의 임시 디렉토리가 남아있으면 정리 시도
+    // 0. baseTempDir 생성 (없으면 생성)
+    await fs.mkdir(baseTempDir, { recursive: true });
+    
+    // 0-1. 이전 실행의 오래된 temp 디렉토리 정리 (백그라운드, 실패해도 무시)
+    // ✅ 고유한 runId를 사용하므로 다음 실행에 영향 없음
     try {
-      await fs.access(tempDir);
-      // 디렉토리가 존재하면 정리 시도 (백그라운드, 실패해도 계속 진행)
-      cleanupTempDir(tempDir, 2, 200).catch(() => {
-        // 정리 실패는 무시 (다음 실행 시 다시 시도)
-      });
+      const entries = await fs.readdir(baseTempDir);
+      for (const entry of entries) {
+        if (entry.startsWith('run-')) {
+          const oldRunDir = path.join(baseTempDir, entry);
+          // 백그라운드로 정리 시도 (실패해도 무시)
+          safeCleanup(oldRunDir).catch(() => {});
+        }
+      }
     } catch {
-      // 디렉토리가 없으면 정상 진행
+      // baseTempDir 읽기 실패는 무시
     }
     
     // 1. 임시 디렉토리 생성
@@ -5281,10 +5809,21 @@ ipcMain.handle('run-python-scripts', async (event, scripts, args = [], options =
     try {
       // 파일 존재 여부 확인
       await fs.access(conftestPath);
+      console.log('[DEBUG] conftest.py 원본 파일 확인:', conftestPath);
       // 파일 읽기 및 쓰기 (한글 경로 문제 방지)
       const conftestContent = await fs.readFile(conftestPath, 'utf-8');
+      console.log('[DEBUG] conftest.py 내용 읽기 완료, 크기:', conftestContent.length, 'bytes');
       await fs.writeFile(conftestDestPath, conftestContent, 'utf-8');
       console.log('[INFO] conftest.py copied successfully');
+      
+      // 복사 후 확인
+      try {
+        const destStats = await fs.stat(conftestDestPath);
+        console.log('[DEBUG] ✅ conftest.py 복사 확인:', conftestDestPath);
+        console.log('[DEBUG] 복사된 파일 크기:', destStats.size, 'bytes');
+      } catch (verifyError) {
+        console.error('[DEBUG] ❌ conftest.py 복사 후 확인 실패:', verifyError.message);
+      }
     } catch (error) {
       if (error.code === 'ENOENT') {
         // 여러 경로 시도 (개발/프로덕션 모드 모두 고려)
@@ -5299,13 +5838,27 @@ ipcMain.handle('run-python-scripts', async (event, scripts, args = [], options =
         let found = false;
         for (const altPath of altPaths) {
           try {
+            console.log('[DEBUG] conftest.py 대체 경로 시도:', altPath);
             await fs.access(altPath);
+            console.log('[DEBUG] conftest.py 대체 경로 발견:', altPath);
             const conftestContent = await fs.readFile(altPath, 'utf-8');
+            console.log('[DEBUG] conftest.py 내용 읽기 완료, 크기:', conftestContent.length, 'bytes');
             await fs.writeFile(conftestDestPath, conftestContent, 'utf-8');
             console.log(`[INFO] conftest.py copied from: ${altPath}`);
+            
+            // 복사 후 확인
+            try {
+              const destStats = await fs.stat(conftestDestPath);
+              console.log('[DEBUG] ✅ conftest.py 복사 확인:', conftestDestPath);
+              console.log('[DEBUG] 복사된 파일 크기:', destStats.size, 'bytes');
+            } catch (verifyError) {
+              console.error('[DEBUG] ❌ conftest.py 복사 후 확인 실패:', verifyError.message);
+            }
+            
             found = true;
             break;
           } catch (e) {
+            console.log('[DEBUG] conftest.py 대체 경로 실패:', altPath, e.message);
             // 다음 경로 시도
           }
         }
@@ -5320,13 +5873,118 @@ ipcMain.handle('run-python-scripts', async (event, scripts, args = [], options =
       // conftest.py가 없어도 계속 진행
     }
     
+    // 3-2. test_utils.py 복사 (공통 유틸리티 함수를 위해 필요)
+    const testUtilsPath = path.join(scriptsDir, 'test_utils.py');
+    const testUtilsDestPath = path.join(tempDir, 'test_utils.py');
+    
+    try {
+      // 파일 존재 여부 확인
+      await fs.access(testUtilsPath);
+      console.log('[DEBUG] test_utils.py 원본 파일 확인:', testUtilsPath);
+      // 파일 읽기 및 쓰기 (한글 경로 문제 방지)
+      const testUtilsContent = await fs.readFile(testUtilsPath, 'utf-8');
+      console.log('[DEBUG] test_utils.py 내용 읽기 완료, 크기:', testUtilsContent.length, 'bytes');
+      await fs.writeFile(testUtilsDestPath, testUtilsContent, 'utf-8');
+      console.log('[INFO] test_utils.py copied successfully');
+      
+      // 복사 후 확인
+      try {
+        const destStats = await fs.stat(testUtilsDestPath);
+        console.log('[DEBUG] ✅ test_utils.py 복사 확인:', testUtilsDestPath);
+        console.log('[DEBUG] 복사된 파일 크기:', destStats.size, 'bytes');
+      } catch (verifyError) {
+        console.error('[DEBUG] ❌ test_utils.py 복사 후 확인 실패:', verifyError.message);
+      }
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        // 여러 경로 시도 (개발/프로덕션 모드 모두 고려)
+        const altPaths = [
+          path.join(scriptsDir, 'test_utils.py'),  // config.paths.scripts 사용
+          isPackaged 
+            ? path.join(app.getAppPath(), 'scripts', 'test_utils.py')  // 프로덕션
+            : path.join(process.cwd(), 'scripts', 'test_utils.py'),   // 개발
+          path.join(__dirname, '..', '..', 'scripts', 'test_utils.py') // 상대 경로
+        ];
+        
+        let found = false;
+        for (const altPath of altPaths) {
+          try {
+            console.log('[DEBUG] test_utils.py 대체 경로 시도:', altPath);
+            await fs.access(altPath);
+            console.log('[DEBUG] test_utils.py 대체 경로 발견:', altPath);
+            const testUtilsContent = await fs.readFile(altPath, 'utf-8');
+            console.log('[DEBUG] test_utils.py 내용 읽기 완료, 크기:', testUtilsContent.length, 'bytes');
+            await fs.writeFile(testUtilsDestPath, testUtilsContent, 'utf-8');
+            console.log(`[INFO] test_utils.py copied from: ${altPath}`);
+            
+            // 복사 후 확인
+            try {
+              const destStats = await fs.stat(testUtilsDestPath);
+              console.log('[DEBUG] ✅ test_utils.py 복사 확인:', testUtilsDestPath);
+              console.log('[DEBUG] 복사된 파일 크기:', destStats.size, 'bytes');
+            } catch (verifyError) {
+              console.error('[DEBUG] ❌ test_utils.py 복사 후 확인 실패:', verifyError.message);
+            }
+            
+            found = true;
+            break;
+          } catch (e) {
+            console.log('[DEBUG] test_utils.py 대체 경로 실패:', altPath, e.message);
+          }
+        }
+        
+        if (!found) {
+          console.warn(`[WARN] test_utils.py not found. Tried: ${altPaths.map(p => path.resolve(p)).join(', ')}`);
+          console.warn('[WARN] Continuing without test_utils.py (normalize_url may not work)');
+        }
+      } else {
+        console.warn(`[WARN] Failed to copy test_utils.py: ${error.code || error.message}`);
+      }
+      // test_utils.py가 없어도 계속 진행
+    }
+    
+    // 3-3. snapshots 폴더 생성 및 DB에서 이미지 불러오기
+    const snapshotsDir = path.join(tempDir, 'snapshots');
+    await fs.mkdir(snapshotsDir, { recursive: true });
+    console.log('[INFO] snapshots 폴더 생성:', snapshotsDir);
+    
     // 4. TC 스크립트 파일 생성
     const testFiles = [];
+    console.log('[DEBUG] ========== 테스트 파일 생성 시작 ==========');
+    console.log(`[DEBUG] 받은 스크립트 개수: ${scripts.length}`);
+    
+    // 각 스크립트의 TC에서 verifyImage 액션 찾아서 이미지 불러오기
+    // (테스트 파일명과 함수명을 알기 위해 먼저 파일 생성 후 이미지 로드)
+    const loadedSnapshotFiles = []; // 테스트 실행 후 삭제할 파일 목록
+    
     for (const script of scripts) {
+      // TC ID 검증: 전달받은 tcId와 DB의 test_case_id가 일치해야 함
+      const providedTcId = script.tcId;
+      const dbTcId = script.test_case_id;
+      
+      console.log(`[DEBUG] 스크립트 처리 시작: id=${script.id}, name=${script.name}`);
+      console.log(`[DEBUG]   - 전달받은 tcId: ${providedTcId || 'N/A'}`);
+      console.log(`[DEBUG]   - DB의 test_case_id: ${dbTcId || 'N/A'}`);
+      
+      if (providedTcId && dbTcId && providedTcId !== dbTcId) {
+        console.error(`[ERROR] TC ID 불일치! 전달받은 tcId=${providedTcId}, DB의 test_case_id=${dbTcId}`);
+        console.error(`[ERROR] 스크립트 정보: id=${script.id}, name=${script.name}`);
+        console.error(`[ERROR] 전달받은 tcId를 사용합니다: ${providedTcId}`);
+      }
+      
+      // 전달받은 tcId를 우선 사용 (렌더러에서 명시적으로 전달한 값)
+      const tcId = providedTcId || dbTcId;
+      
+      if (!tcId) {
+        console.error(`[ERROR] TC ID를 찾을 수 없습니다. 스크립트: id=${script.id}, name=${script.name}`);
+        console.error(`[ERROR] 이 스크립트는 건너뜁니다.`);
+        continue; // 이 스크립트는 건너뛰기
+      }
+      
       const extension = script.language === 'python' ? 'py' : 
                        script.language === 'typescript' ? 'ts' : 'js';
       const sanitizedName = script.name.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
-      const filename = `test_tc${script.tcId}_${sanitizedName}.${extension}`;
+      const filename = `test_tc${tcId}_${sanitizedName}.${extension}`;
       const filePath = path.join(tempDir, filename);
       
       // Python 코드를 pytest 형식으로 변환
@@ -5361,7 +6019,7 @@ ipcMain.handle('run-python-scripts', async (event, scripts, args = [], options =
           });
           
           // test_ 함수로 감싸기
-          const testFunctionName = `test_tc${script.tcId}_${sanitizedName}`;
+          const testFunctionName = `test_tc${tcId}_${sanitizedName}`;
           
           // import pytest가 이미 있는지 확인
           const hasPytestImport = /^\s*import\s+pytest/m.test(finalCode) || /^\s*from\s+pytest/m.test(finalCode);
@@ -5377,30 +6035,129 @@ ipcMain.handle('run-python-scripts', async (event, scripts, args = [], options =
       
       // 디버깅: 생성되는 파일 정보 로깅
       console.log(`[DEBUG] 테스트 파일 생성: ${filename}`);
-      console.log(`[DEBUG] TC ID: ${script.tcId}, 스크립트 이름: ${script.name}`);
+      console.log(`[DEBUG] TC ID: ${tcId} (전달받은 값: ${providedTcId || 'N/A'}, DB 값: ${dbTcId || 'N/A'}), 스크립트 이름: ${script.name}`);
       console.log(`[DEBUG] 코드 길이: ${finalCode?.length || 0} bytes`);
+      console.log(`[DEBUG] 파일 전체 경로: ${filePath}`);
       
       await fs.writeFile(filePath, finalCode, 'utf-8');
+      
+      // 파일 생성 후 존재 여부 확인
+      try {
+        const fileStats = await fs.stat(filePath);
+        console.log(`[DEBUG] ✅ 파일 생성 확인: ${filePath}`);
+        console.log(`[DEBUG] 파일 크기: ${fileStats.size} bytes`);
+        console.log(`[DEBUG] 파일 수정 시간: ${fileStats.mtime}`);
+      } catch (statError) {
+        console.error(`[DEBUG] ❌ 파일 생성 후 확인 실패: ${filePath}`, statError.message);
+      }
+      
       testFiles.push(filename);
+      
+      // 테스트 파일명과 함수명 추출 (확장자 제거)
+      const testFileNameWithoutExt = filename.replace(/\.[^.]+$/, '');
+      // 코드에서 test_ 함수명 추출
+      let testFunctionName = 'test_generated'; // 기본값
+      const testFunctionMatch = finalCode.match(/def\s+(test_\w+)\s*\(/);
+      if (testFunctionMatch) {
+        testFunctionName = testFunctionMatch[1];
+      }
+      
+      // DB에서 스냅샷 이미지 불러오기 (플러그인 경로 구조에 맞게)
+      try {
+        const snapshotFiles = await loadSnapshotImagesFromDB(
+          tcId, 
+          snapshotsDir, 
+          testFileNameWithoutExt, 
+          testFunctionName
+        );
+        loadedSnapshotFiles.push(...snapshotFiles);
+      } catch (error) {
+        console.warn(`[WARN] TC ${tcId}의 스냅샷 이미지 불러오기 실패:`, error.message);
+      }
     }
     
     console.log(`[DEBUG] 생성된 테스트 파일 목록: ${testFiles.join(', ')}`);
     console.log(`[DEBUG] 임시 디렉토리: ${tempDir}`);
     
+    // 디버깅: pytest 실행 전 최종 상태 확인
+    console.log('[DEBUG] ========== pytest 실행 전 최종 상태 확인 ==========');
+    try {
+      const tempDirFiles = await fs.readdir(tempDir);
+      console.log('[DEBUG] temp 디렉토리 내 파일 목록:', tempDirFiles);
+      
+      // conftest.py 확인
+      const conftestPath = path.join(tempDir, 'conftest.py');
+      try {
+        const conftestStats = await fs.stat(conftestPath);
+        console.log('[DEBUG] ✅ conftest.py 존재:', conftestPath);
+        console.log('[DEBUG] conftest.py 크기:', conftestStats.size, 'bytes');
+      } catch (conftestError) {
+        console.error('[DEBUG] ❌ conftest.py 없음:', conftestPath);
+      }
+      
+      // 생성된 테스트 파일들 확인
+      for (const testFile of testFiles) {
+        const testFilePath = path.join(tempDir, testFile);
+        try {
+          const testFileStats = await fs.stat(testFilePath);
+          console.log(`[DEBUG] ✅ 테스트 파일 존재: ${testFile}`);
+          console.log(`[DEBUG] 테스트 파일 크기: ${testFileStats.size} bytes`);
+        } catch (testFileError) {
+          console.error(`[DEBUG] ❌ 테스트 파일 없음: ${testFile} (${testFilePath})`);
+        }
+      }
+    } catch (dirError) {
+      console.error('[DEBUG] ❌ temp 디렉토리 읽기 실패:', dirError.message);
+    }
+    console.log('[DEBUG] ==================================================');
+    
     // 5. pytest 실행 (temp 디렉토리에서)
-    // 파일명만 전달 (상대 경로)
+    // 절대 경로로 전달 (한글 경로 문제 해결)
     const result = await PytestService.runTests(testFiles, args, {
       ...options,
-      cwd: tempDir  // 임시 디렉토리에서 실행
+      cwd: tempDir  // 임시 디렉토리에서 실행 (conftest.py를 찾기 위해)
     });
     
-    // 6. 임시 파일 삭제 (재시도 로직 포함)
-    await cleanupTempDir(tempDir);
+    // 6. 임시 파일 삭제 (안전한 cleanup 사용)
+    // ✅ pytest 실행 완료 후에만 삭제 (exec 콜백에서 resolve된 후)
+    console.log('[DEBUG] TEMP DELETE CALLED AT:', new Date().toISOString());
+    console.log('[DEBUG] pytest 실행 완료 후 temp 디렉토리 삭제 시작');
+    
+    // 6-1. snapshots 폴더의 임시 이미지 파일 명시적 삭제 (선택사항)
+    // tempDir 전체가 삭제되므로 자동으로 삭제되지만, 명시적으로 정리
+    if (loadedSnapshotFiles.length > 0) {
+      console.log(`[Snapshot] ${loadedSnapshotFiles.length}개의 임시 스냅샷 파일 삭제 시작`);
+      for (const filePath of loadedSnapshotFiles) {
+        try {
+          await fs.unlink(filePath).catch(() => {}); // 파일이 없으면 무시
+        } catch (error) {
+          console.warn(`[Snapshot] 임시 파일 삭제 실패 (무시): ${filePath}`, error.message);
+        }
+      }
+      console.log('[Snapshot] 임시 스냅샷 파일 삭제 완료');
+    }
+    
+    await safeCleanup(tempDir);
     
     return result;
   } catch (error) {
     // 에러 발생 시에도 임시 파일 삭제 시도
-    await cleanupTempDir(tempDir);
+    console.log('[DEBUG] TEMP DELETE CALLED AT (ERROR):', new Date().toISOString());
+    console.log('[DEBUG] 에러 발생 후 temp 디렉토리 삭제 시작');
+    
+    // 에러 발생 시에도 snapshots 임시 파일 삭제
+    if (typeof loadedSnapshotFiles !== 'undefined' && loadedSnapshotFiles.length > 0) {
+      console.log(`[Snapshot] 에러 발생: ${loadedSnapshotFiles.length}개의 임시 스냅샷 파일 삭제 시작`);
+      for (const filePath of loadedSnapshotFiles) {
+        try {
+          await fs.unlink(filePath).catch(() => {});
+        } catch (unlinkError) {
+          console.warn(`[Snapshot] 임시 파일 삭제 실패 (무시): ${filePath}`);
+        }
+      }
+    }
+    
+    await safeCleanup(tempDir);
     
     return {
       success: false,
@@ -5522,6 +6279,65 @@ ipcMain.handle('capture-event', async (event, eventData) => {
     return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
+  }
+});
+
+/**
+ * verifyImage 요소 스크린샷 캡처 IPC 핸들러
+ * @event ipcMain.handle:capture-verify-image
+ */
+ipcMain.handle('capture-verify-image', async (event, { clientRect }) => {
+  try {
+    if (!clientRect || !currentCdpPort) {
+      return {
+        success: false,
+        error: 'clientRect 정보 또는 CDP 연결이 없습니다'
+      };
+    }
+    
+    // clientRect 형식 통일: { x, y, width, height } 또는 { x, y, w, h } 모두 지원
+    const x = clientRect.x;
+    const y = clientRect.y;
+    const width = clientRect.width || clientRect.w;
+    const height = clientRect.height || clientRect.h;
+    
+    if (x === undefined || y === undefined || width === undefined || height === undefined) {
+      return {
+        success: false,
+        error: '유효하지 않은 clientRect 정보입니다'
+      };
+    }
+    
+    console.log(`[verifyImage] 실시간 스크린샷 캡처 시작: x=${x}, y=${y}, width=${width}, height=${height}`);
+    
+    // 기존 CDP 함수 사용 (요소 전용, 전체 화면에는 영향 없음)
+    const screenshot = await captureElementScreenshotViaCDP(
+      currentCdpPort,
+      x,
+      y,
+      width,
+      height,
+      currentTargetId
+    );
+    
+    if (screenshot) {
+      console.log(`[verifyImage] ✅ 스크린샷 캡처 완료`);
+      return {
+        success: true,
+        imageData: screenshot // base64 이미지 데이터
+      };
+    } else {
+      return {
+        success: false,
+        error: '스크린샷 캡처 실패'
+      };
+    }
+  } catch (error) {
+    console.error('❌ verifyImage 스크린샷 캡처 오류:', error);
+    return {
+      success: false,
+      error: error.message || '스크린샷 캡처 중 오류가 발생했습니다'
+    };
   }
 });
 

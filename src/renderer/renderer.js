@@ -2075,10 +2075,18 @@ function displayTCDetail(tc) {
     (typeof step.screenshot === 'string' && step.screenshot.startsWith('data:')) ||
     step.screenshot === true  // 기존 플래그 형식 호환성
   );
+                // verifyImage 액션의 경우 snapshot_image_id 확인
+                const hasVerifyImage = action === 'verifyImage' && step.snapshot_image_id;
+                const shouldShowImage = hasScreenshot || hasVerifyImage;
+                
+                // 디버깅: verifyImage 액션 정보 로깅
+                if (action === 'verifyImage') {
+                  console.log(`[renderTCDetail] verifyImage 액션 발견: stepIndex=${idx}, snapshot_image_id=${step.snapshot_image_id}, hasVerifyImage=${hasVerifyImage}`);
+                }
                 
                 return `
                 <div class="step-item" data-step-index="${idx}">
-                  ${hasScreenshot ? `<img class="step-screenshot" data-tc-id="${tc.id}" data-step-index="${idx}" src="" alt="스크린샷" style="width: 50px; height: 50px; object-fit: cover; border-radius: 4px; margin-right: 8px; cursor: pointer;" />` : ''}
+                  ${shouldShowImage ? `<img class="step-screenshot" data-tc-id="${tc.id}" data-step-index="${idx}" data-snapshot-image-id="${hasVerifyImage && step.snapshot_image_id ? step.snapshot_image_id : ''}" src="" alt="스크린샷" style="width: 50px; height: 50px; object-fit: cover; border-radius: 4px; margin-right: 8px; cursor: pointer;" />` : ''}
                   <div class="step-content">
                     <strong>${idx + 1}. ${action}</strong>
                     <div>대상: ${target}</div>
@@ -2101,6 +2109,11 @@ function displayTCDetail(tc) {
         </div>
       </div>
     `;
+    
+    // 파싱된 steps를 currentTC에도 반영 (loadStepScreenshot에서 사용하기 위해)
+    if (currentTC && currentTC.id === tc.id) {
+      currentTC.steps = steps;
+    }
     
     // innerHTML 삽입 후 스크린샷 로드 및 이벤트 리스너 등록
     // (script 태그는 innerHTML로 삽입 시 실행되지 않으므로 별도로 처리)
@@ -2615,9 +2628,52 @@ function createKeywordRow(index, step) {
  */
 async function loadStepScreenshot(tcId, stepIndex, imgElement) {
   try {
+    console.log(`[loadStepScreenshot] 시작: tcId=${tcId}, stepIndex=${stepIndex}`);
+    
+    // data-snapshot-image-id 속성을 먼저 확인 (verifyImage의 경우)
+    // HTML에 직접 포함된 속성이므로 currentTC.steps 로드와 무관하게 동작
+    const snapshotImageId = imgElement.dataset.snapshotImageId;
+    console.log(`[loadStepScreenshot] snapshotImageId from dataset: "${snapshotImageId}"`);
+    
+    if (snapshotImageId && snapshotImageId !== '' && !isNaN(snapshotImageId) && window.electronAPI && window.electronAPI.getSnapshotImage) {
+      const parsedId = parseInt(snapshotImageId, 10);
+      if (!isNaN(parsedId) && parsedId > 0) {
+        console.log(`[loadStepScreenshot] getSnapshotImage 호출: id=${parsedId}`);
+        const imageData = await window.electronAPI.getSnapshotImage(parsedId);
+        console.log(`[loadStepScreenshot] getSnapshotImage 결과:`, imageData ? `데이터 있음 (길이: ${imageData ? imageData.length : 0})` : 'null');
+        if (imageData) {
+          imgElement.src = imageData;
+          imgElement.style.display = 'block';
+          console.log(`[loadStepScreenshot] ✅ 이미지 설정 완료 (snapshot_image_id 사용)`);
+          return;
+        }
+      } else {
+        console.log(`[loadStepScreenshot] ⚠️ snapshotImageId 파싱 실패: "${snapshotImageId}" -> ${parsedId}`);
+      }
+    }
+    
     // step 객체에서 스크린샷 참조 확인
     if (currentTC && currentTC.steps && currentTC.steps[stepIndex]) {
       const step = currentTC.steps[stepIndex];
+      console.log(`[loadStepScreenshot] step 확인: action=${step.action}, snapshot_image_id=${step.snapshot_image_id}`);
+      
+      // verifyImage 액션의 경우 snapshot_image_id로 이미지 로드 (중복 체크이지만 안전을 위해)
+      if (step.action === 'verifyImage' && step.snapshot_image_id) {
+        const stepSnapshotImageId = step.snapshot_image_id;
+        console.log(`[loadStepScreenshot] verifyImage 액션 발견, getSnapshotImage 호출: id=${stepSnapshotImageId}`);
+        if (window.electronAPI && window.electronAPI.getSnapshotImage) {
+          const imageData = await window.electronAPI.getSnapshotImage(stepSnapshotImageId);
+          console.log(`[loadStepScreenshot] getSnapshotImage 결과:`, imageData ? `데이터 있음 (길이: ${imageData.length})` : 'null');
+          if (imageData) {
+            imgElement.src = imageData;
+            imgElement.style.display = 'block';
+            console.log(`[loadStepScreenshot] ✅ 이미지 설정 완료 (step.snapshot_image_id 사용)`);
+            return;
+          }
+        }
+      }
+      
+      // 기존 스크린샷 로직
       if (step.screenshot) {
         // 참조 형식: "screenshot://tc_2_step_0"
         if (typeof step.screenshot === 'string' && step.screenshot.startsWith('screenshot://')) {
@@ -2656,9 +2712,10 @@ async function loadStepScreenshot(tcId, stepIndex, imgElement) {
       }
     }
     
+    console.log(`[loadStepScreenshot] ❌ 모든 방법 실패, 이미지 숨김`);
     imgElement.style.display = 'none';
   } catch (error) {
-    console.error('[Screenshot] 스크린샷 로드 실패:', error);
+    console.error('[loadStepScreenshot] ❌ 스크린샷 로드 실패:', error);
     if (imgElement) {
       imgElement.style.display = 'none';
     }
@@ -3258,12 +3315,26 @@ async function runSelectedTCs() {
     
     // 모든 TC의 스크립트 수집 (DB에서 코드 가져오기)
     const scriptsToRun = [];
+    console.log('[DEBUG] ========== 테스트 실행 스크립트 수집 시작 ==========');
+    console.log('[DEBUG] 선택된 TC IDs:', Array.from(selectedTCs));
+    
     for (const tcId of tcIds) {
       try {
+        console.log(`[DEBUG] TC ID ${tcId} 스크립트 조회 중...`);
         const scriptsResponse = await window.electronAPI.api.getScriptsByTestCase(tcId);
         
         if (scriptsResponse.success && scriptsResponse.data.length > 0) {
           const script = scriptsResponse.data.find(s => s.status === 'active') || scriptsResponse.data[0];
+          
+          // TC ID 검증: 전달한 tcId와 DB의 test_case_id가 일치해야 함
+          if (script.test_case_id && script.test_case_id !== tcId) {
+            console.error(`[ERROR] TC ID 불일치! 조회한 tcId: ${tcId}, 스크립트의 test_case_id: ${script.test_case_id}`);
+            console.error(`[ERROR] 스크립트 정보: id=${script.id}, name=${script.name}`);
+            console.error(`[ERROR] 이 스크립트는 건너뜁니다.`);
+            continue; // 이 스크립트는 건너뛰기
+          }
+          
+          console.log(`[DEBUG] TC ID ${tcId}: 스크립트 발견 - id=${script.id}, name=${script.name}, test_case_id=${script.test_case_id || 'N/A'}`);
           
           // Python + pytest/playwright/selenium만 실행
           if (script.language === 'python' && 
@@ -3273,6 +3344,8 @@ async function runSelectedTCs() {
                              script.language === 'typescript' ? 'ts' : 'js';
             const sanitizedName = script.name.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
             const filename = `test_tc${tcId}_${sanitizedName}.${extension}`;
+            
+            console.log(`[DEBUG] TC ID ${tcId}: 스크립트 추가 - filename=${filename}, tcId=${tcId}, script.test_case_id=${script.test_case_id || 'N/A'}`);
             
             // tcFileMap에 파일명과 TC 정보 매핑
             tcFileMap.set(filename, {
@@ -3289,12 +3362,20 @@ async function runSelectedTCs() {
               framework: script.framework,
               language: script.language
             });
+          } else {
+            console.log(`[DEBUG] TC ID ${tcId}: 스크립트 건너뜀 - language=${script.language}, framework=${script.framework}`);
           }
+        } else {
+          console.log(`[DEBUG] TC ID ${tcId}: 스크립트 없음 또는 조회 실패`);
         }
       } catch (error) {
-        console.error(`TC #${tcId} 스크립트 조회 실패:`, error);
+        console.error(`[ERROR] TC #${tcId} 스크립트 조회 실패:`, error);
       }
     }
+    
+    console.log(`[DEBUG] 수집된 스크립트 개수: ${scriptsToRun.length}`);
+    console.log('[DEBUG] 스크립트 목록:', scriptsToRun.map(s => ({ tcId: s.tcId, name: s.name })));
+    console.log('[DEBUG] ===================================================');
 
     if (scriptsToRun.length === 0) {
       alert('실행할 pytest 테스트 스크립트가 없습니다. 테스트 케이스에 Python + pytest/playwright/selenium 스크립트가 필요합니다.');

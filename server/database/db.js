@@ -170,6 +170,26 @@ async function createTables() {
       INDEX idx_objects_parent_id (parent_id),
       INDEX idx_objects_type (type),
       INDEX idx_objects_name (name)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
+    // 스냅샷 이미지 테이블 (verifyImage 액션용)
+    `CREATE TABLE IF NOT EXISTS snapshot_images (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      test_case_id INT NOT NULL,
+      step_index INT NOT NULL,
+      snapshot_name VARCHAR(255) NOT NULL,
+      image_data LONGBLOB NOT NULL,
+      selector TEXT,
+      element_x INT,
+      element_y INT,
+      element_width INT,
+      element_height INT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (test_case_id) REFERENCES test_cases(id) ON DELETE CASCADE,
+      INDEX idx_snapshot_images_test_case_id (test_case_id),
+      INDEX idx_snapshot_images_step_index (step_index),
+      INDEX idx_snapshot_images_name (snapshot_name)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
   ];
 

@@ -224,6 +224,23 @@ function createTables() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (test_case_id) REFERENCES test_cases(id) ON DELETE CASCADE,
       UNIQUE(test_case_id, step_index)
+    )`,
+
+    // 스냅샷 이미지 테이블 (verifyImage 액션용)
+    `CREATE TABLE IF NOT EXISTS snapshot_images (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      test_case_id INTEGER NOT NULL,
+      step_index INTEGER NOT NULL,
+      snapshot_name TEXT NOT NULL,
+      image_data BLOB NOT NULL,
+      selector TEXT,
+      element_x INTEGER,
+      element_y INTEGER,
+      element_width INTEGER,
+      element_height INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (test_case_id) REFERENCES test_cases(id) ON DELETE CASCADE
     )`
   ];
 
@@ -250,7 +267,10 @@ function createTables() {
       'CREATE INDEX IF NOT EXISTS idx_page_dom_snapshots_snapshot_date ON page_dom_snapshots(snapshot_date)',
       'CREATE INDEX IF NOT EXISTS idx_page_dom_snapshots_url_date ON page_dom_snapshots(page_url, snapshot_date)',
       'CREATE INDEX IF NOT EXISTS idx_step_screenshots_test_case_id ON test_case_steps_screenshots(test_case_id)',
-      'CREATE INDEX IF NOT EXISTS idx_step_screenshots_step_index ON test_case_steps_screenshots(test_case_id, step_index)'
+      'CREATE INDEX IF NOT EXISTS idx_step_screenshots_step_index ON test_case_steps_screenshots(test_case_id, step_index)',
+      'CREATE INDEX IF NOT EXISTS idx_snapshot_images_test_case_id ON snapshot_images(test_case_id)',
+      'CREATE INDEX IF NOT EXISTS idx_snapshot_images_step_index ON snapshot_images(step_index)',
+      'CREATE INDEX IF NOT EXISTS idx_snapshot_images_name ON snapshot_images(snapshot_name)'
     ];
 
     // 쿼리 실행
@@ -685,6 +705,27 @@ function deleteStepScreenshots(tcId) {
   }
 }
 
+/**
+ * 스냅샷 이미지 조회
+ * @param {number} snapshotImageId - 스냅샷 이미지 ID
+ * @returns {Object|null} 스냅샷 이미지 데이터 (snapshot_name, image_data 등) 또는 null
+ */
+function getSnapshotImage(snapshotImageId) {
+  try {
+    ensureInitialized();
+    
+    const result = get(
+      'SELECT id, test_case_id, step_index, snapshot_name, image_data, selector, element_x, element_y, element_width, element_height, created_at FROM snapshot_images WHERE id = ?',
+      [snapshotImageId]
+    );
+    
+    return result || null;
+  } catch (error) {
+    console.error('❌ 스냅샷 이미지 조회 실패:', error);
+    return null;
+  }
+}
+
 module.exports = {
   init,
   run,
@@ -699,5 +740,6 @@ module.exports = {
   cleanupOldDomSnapshots,
   saveStepScreenshot,
   getStepScreenshot,
-  deleteStepScreenshots
+  deleteStepScreenshots,
+  getSnapshotImage
 };

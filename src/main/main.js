@@ -4803,7 +4803,7 @@ function convertEventToStep(event, index = 0) {
 }
 
 /**
- * verifyImage 액션 처리: 요소 스크린샷 캡처 및 DB 저장
+ * verifyImage 액션 처리: 녹화 중 캡처된 이미지(elementImageData)를 DB에 저장
  * @param {Array} steps - 변환된 스텝 배열
  * @param {Array} events - 원본 이벤트 배열
  * @param {number} tcId - 테스트케이스 ID
@@ -4833,56 +4833,40 @@ async function processVerifyImageActions(steps, events, tcId) {
   // 각 verifyImage 액션 처리
   for (const { stepIndex, step, event } of verifyImageSteps) {
     try {
-      // clientRect 정보 확인
-      const clientRect = event?.clientRect || null;
-      
-      if (!clientRect || !clientRect.x || !clientRect.y || !clientRect.width || !clientRect.height) {
-        console.warn(`[verifyImage] Step ${stepIndex + 1}: clientRect 정보가 없습니다. 테스트 실행 시 처리됩니다.`);
-        // clientRect 정보가 없으면 나중에 테스트 실행 시 처리하도록 표시
+      // 녹화 중에 캡처한 이미지 데이터 확인 (elementImageData)
+      if (!event || !event.elementImageData) {
+        console.warn(`[verifyImage] Step ${stepIndex + 1}: elementImageData가 없습니다. 녹화 중 이미지가 캡처되지 않았습니다.`);
         step.snapshot_image_id = null;
         step.snapshot_pending = true;
         continue;
       }
       
-      // CDP 포트 확인 (녹화 중 브라우저가 아직 열려있는 경우)
-      if (!currentCdpPort) {
-        console.warn(`[verifyImage] Step ${stepIndex + 1}: CDP 연결이 없습니다. 테스트 실행 시 처리됩니다.`);
-        step.snapshot_image_id = null;
-        step.snapshot_pending = true;
-        continue;
-      }
-      
-      // 요소 스크린샷 캡처
-      console.log(`[verifyImage] Step ${stepIndex + 1}: 요소 스크린샷 캡처 시작...`);
-      const screenshot = await captureElementScreenshotViaCDP(
-        currentCdpPort,
-        clientRect.x,
-        clientRect.y,
-        clientRect.width,
-        clientRect.height,
-        currentTargetId
-      );
-      
-      if (!screenshot) {
-        console.warn(`[verifyImage] Step ${stepIndex + 1}: 스크린샷 캡처 실패. 테스트 실행 시 처리됩니다.`);
-        step.snapshot_image_id = null;
-        step.snapshot_pending = true;
-        continue;
-      }
+      console.log(`[verifyImage] Step ${stepIndex + 1}: 녹화 중 캡처한 이미지 데이터 사용`);
       
       // base64 데이터에서 이미지 데이터 추출
       let imageBuffer;
-      if (screenshot.startsWith('data:image')) {
-        const base64Data = screenshot.split(',')[1];
-        imageBuffer = Buffer.from(base64Data, 'base64');
+      if (typeof event.elementImageData === 'string') {
+        if (event.elementImageData.startsWith('data:image')) {
+          const base64Data = event.elementImageData.split(',')[1];
+          imageBuffer = Buffer.from(base64Data, 'base64');
+        } else {
+          // base64 문자열만 있는 경우
+          imageBuffer = Buffer.from(event.elementImageData, 'base64');
+        }
       } else {
-        imageBuffer = Buffer.from(screenshot, 'base64');
+        console.warn(`[verifyImage] Step ${stepIndex + 1}: elementImageData 형식을 알 수 없습니다. (타입: ${typeof event.elementImageData})`);
+        step.snapshot_image_id = null;
+        step.snapshot_pending = true;
+        continue;
       }
       
       // snapshot 이름 생성 (코드 생성 시와 동일한 형식)
       // 코드 생성 시: ev.snapshotName || ev.value || 'snapshot'
       // 따라서 step.value를 우선 사용하고, 없으면 'snapshot' 사용
       const snapshotName = step.value || 'snapshot';
+      
+      // clientRect 정보 (이미지 저장 시 사용)
+      const clientRect = event?.clientRect || {};
       
       // DB에 이미지 저장
       const selector = step.target || null;
@@ -4896,17 +4880,17 @@ async function processVerifyImageActions(steps, events, tcId) {
           snapshotName,
           imageBuffer,
           selector,
-          clientRect.x,
-          clientRect.y,
-          clientRect.width,
-          clientRect.height
+          clientRect.x || null,
+          clientRect.y || null,
+          clientRect.width || null,
+          clientRect.height || null
         ]
       );
       
       if (result && result.lastID) {
         step.snapshot_image_id = result.lastID;
         step.snapshot_pending = false;
-        console.log(`[verifyImage] Step ${stepIndex + 1}: 스크린샷 저장 완료 (ID: ${result.lastID})`);
+        console.log(`[verifyImage] Step ${stepIndex + 1}: 스크린샷 저장 완료 (ID: ${result.lastID}, 녹화 중 캡처 이미지 사용)`);
       } else {
         console.error(`[verifyImage] Step ${stepIndex + 1}: DB 저장 실패`);
         step.snapshot_image_id = null;
@@ -5494,12 +5478,16 @@ ipcMain.handle('delete-step-screenshots', async (event, tcId) => {
  */
 ipcMain.handle('get-snapshot-image', async (event, snapshotImageId) => {
   try {
+    console.log(`[get-snapshot-image] 요청: snapshotImageId=${snapshotImageId}`);
     if (!snapshotImageId) {
+      console.log(`[get-snapshot-image] ❌ snapshotImageId가 없음`);
       return null;
     }
     
     const imageData = DbService.getSnapshotImage(snapshotImageId);
+    console.log(`[get-snapshot-image] DB 조회 결과:`, imageData ? `데이터 있음 (image_data 타입: ${typeof imageData.image_data})` : 'null');
     if (!imageData || !imageData.image_data) {
+      console.log(`[get-snapshot-image] ❌ imageData 또는 image_data가 없음`);
       return null;
     }
     
@@ -5507,24 +5495,32 @@ ipcMain.handle('get-snapshot-image', async (event, snapshotImageId) => {
     let imageBuffer;
     if (Buffer.isBuffer(imageData.image_data)) {
       imageBuffer = imageData.image_data;
+      console.log(`[get-snapshot-image] Buffer 타입, 크기: ${imageBuffer.length} bytes`);
     } else if (imageData.image_data instanceof Uint8Array) {
       imageBuffer = Buffer.from(imageData.image_data);
+      console.log(`[get-snapshot-image] Uint8Array 타입, 크기: ${imageBuffer.length} bytes`);
     } else if (typeof imageData.image_data === 'string') {
       // 이미 base64 문자열인 경우
       if (imageData.image_data.startsWith('data:')) {
+        console.log(`[get-snapshot-image] ✅ 이미 data URL 형식, 반환`);
         return imageData.image_data;
       }
       // base64 문자열만 있는 경우 data URL 형식으로 변환
-      return `data:image/jpeg;base64,${imageData.image_data}`;
+      const result = `data:image/jpeg;base64,${imageData.image_data}`;
+      console.log(`[get-snapshot-image] ✅ base64 문자열을 data URL로 변환, 길이: ${result.length}`);
+      return result;
     } else {
+      console.log(`[get-snapshot-image] ❌ 알 수 없는 image_data 타입: ${typeof imageData.image_data}`);
       return null;
     }
     
     // Buffer를 base64 data URL로 변환
     const base64String = imageBuffer.toString('base64');
-    return `data:image/jpeg;base64,${base64String}`;
+    const result = `data:image/jpeg;base64,${base64String}`;
+    console.log(`[get-snapshot-image] ✅ Buffer를 data URL로 변환 완료, 길이: ${result.length}`);
+    return result;
   } catch (error) {
-    console.error('[Snapshot] 이미지 조회 실패:', error);
+    console.error('[get-snapshot-image] ❌ 이미지 조회 실패:', error);
     return null;
   }
 });
@@ -7656,8 +7652,83 @@ ipcMain.handle('save-event-step', async (event, { tcId, projectId, event: eventD
       existingSteps.push(newStep);
       const stepIndex = existingSteps.length - 1;
       
-      // 5. 상호작용 이벤트인 경우 스크린샷 캡처 및 저장 (하이브리드 접근)
-      if (isInteractionEvent) {
+      // 5. verifyImage 액션인 경우 elementImageData를 snapshot_images 테이블에 저장
+      // 주의: verifyImage는 snapshot_image_id를 사용하고, 일반 상호작용 이벤트는 screenshot 필드를 사용
+      if (action === 'verifyImage') {
+        console.log(`[Recording] verifyImage 액션 감지: TC ${tcId}, Step ${stepIndex}, elementImageData=${eventData.elementImageData ? '있음' : '없음'}`);
+        if (eventData.elementImageData) {
+          try {
+            console.log(`[Recording] verifyImage: elementImageData 타입=${typeof eventData.elementImageData}, 길이=${typeof eventData.elementImageData === 'string' ? eventData.elementImageData.length : 'N/A'}`);
+            // base64 데이터에서 이미지 데이터 추출
+            let imageBuffer;
+            if (typeof eventData.elementImageData === 'string') {
+              if (eventData.elementImageData.startsWith('data:image')) {
+                const base64Data = eventData.elementImageData.split(',')[1];
+                imageBuffer = Buffer.from(base64Data, 'base64');
+                console.log(`[Recording] verifyImage: data URL 형식, base64 길이=${base64Data.length}, buffer 길이=${imageBuffer.length}`);
+              } else {
+                imageBuffer = Buffer.from(eventData.elementImageData, 'base64');
+                console.log(`[Recording] verifyImage: base64 문자열, buffer 길이=${imageBuffer.length}`);
+              }
+            } else {
+              console.warn(`[Recording] verifyImage: elementImageData가 문자열이 아님, 타입=${typeof eventData.elementImageData}`);
+            }
+            
+            if (imageBuffer) {
+              const snapshotName = newStep.value || 'snapshot';
+              const clientRect = eventData?.clientRect || {};
+              const selector = newStep.target || null;
+              
+              console.log(`[Recording] verifyImage: snapshot_images 테이블에 저장 시도 - snapshotName=${snapshotName}, selector=${selector}`);
+              const result = DbService.run(
+                `INSERT INTO snapshot_images 
+                 (test_case_id, step_index, snapshot_name, image_data, selector, element_x, element_y, element_width, element_height)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                  tcId,
+                  stepIndex,
+                  snapshotName,
+                  imageBuffer,
+                  selector,
+                  clientRect.x || null,
+                  clientRect.y || null,
+                  clientRect.width || null,
+                  clientRect.height || null
+                ]
+              );
+              
+              if (result && result.lastID) {
+                // verifyImage는 snapshot_image_id를 사용 (일반 스크린샷과 구분)
+                newStep.snapshot_image_id = result.lastID;
+                existingSteps[stepIndex].snapshot_image_id = result.lastID;
+                // verifyImage는 screenshot 필드를 사용하지 않음 (명확한 구분)
+                console.log(`[Recording] ✅ verifyImage 스냅샷 이미지 저장 완료: TC ${tcId}, Step ${stepIndex}, snapshot_image_id=${result.lastID}`);
+              } else {
+                console.error(`[Recording] ❌ verifyImage DB 저장 실패: result=${result ? '있음' : 'null'}, lastID=${result?.lastID || '없음'}`);
+                // 저장 실패 시에도 step은 저장되지만 snapshot_image_id는 null
+                newStep.snapshot_image_id = null;
+                existingSteps[stepIndex].snapshot_image_id = null;
+              }
+            } else {
+              console.warn(`[Recording] ⚠️ verifyImage: imageBuffer 생성 실패`);
+              newStep.snapshot_image_id = null;
+              existingSteps[stepIndex].snapshot_image_id = null;
+            }
+          } catch (error) {
+            console.error(`[Recording] ❌ verifyImage 이미지 저장 실패:`, error);
+            newStep.snapshot_image_id = null;
+            existingSteps[stepIndex].snapshot_image_id = null;
+          }
+        } else {
+          console.warn(`[Recording] ⚠️ verifyImage: elementImageData가 없습니다. eventData 키들:`, Object.keys(eventData || {}));
+          newStep.snapshot_image_id = null;
+          existingSteps[stepIndex].snapshot_image_id = null;
+        }
+      }
+      
+      // 6. 상호작용 이벤트인 경우 스크린샷 캡처 및 저장 (하이브리드 접근)
+      // 주의: verifyImage는 스크린샷을 캡처하지 않음 (snapshot_image_id만 사용)
+      if (isInteractionEvent && action !== 'verifyImage') {
         try {
           // CDP 포트 찾기 (이벤트 데이터 > 전역 변수 > 기본값 순서)
           const cdpPort = eventData.cdpPort || eventData.page?.cdpPort || currentCdpPort || 9222;
@@ -7709,14 +7780,14 @@ ipcMain.handle('save-event-step', async (event, { tcId, projectId, event: eventD
         }
       }
       
-      // 6. 업데이트된 steps 저장
+      // 7. 업데이트된 steps 저장
       const stepsJson = JSON.stringify(existingSteps);
       const updateResult = DbService.run(
         'UPDATE test_cases SET steps = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
         [stepsJson, tcId]
       );
       
-      // 7. DB 저장 검증 (실제로 저장되었는지 확인)
+      // 8. DB 저장 검증 (실제로 저장되었는지 확인)
       if (updateResult) {
         const verifyTC = DbService.get('SELECT steps FROM test_cases WHERE id = ?', [tcId]);
         if (verifyTC && verifyTC.steps) {

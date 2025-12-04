@@ -3351,6 +3351,17 @@ function addVerifyAction(verifyType, path, value, elementInfo = null) {
     // verifyImage 액션인 경우 실시간 스크린샷 캡처
     if (verifyType === 'verifyImage' && clientRect) {
       console.log('[Recorder] verifyImage 액션 감지, 스크린샷 캡처 시작...');
+      
+      // 이벤트 추가 (이미지 없이 먼저 추가)
+      const normalized = normalizeEventRecord(eventRecord);
+      console.log('[Recorder] addVerifyAction: 정규화된 이벤트:', normalized);
+      allEvents.push(normalized);
+      console.log('[Recorder] addVerifyAction: allEvents에 추가됨, 총 이벤트 수:', allEvents.length);
+      updateCode({ preloadedEvents: allEvents });
+      syncTimelineFromEvents(allEvents, { selectLast: true });
+      console.log('[Recorder] addVerifyAction: 코드 및 타임라인 업데이트 완료');
+      
+      // 이미지 캡처 후 저장
       captureVerifyImageScreenshot(clientRect).then(imageData => {
         if (imageData) {
           // 이벤트에 이미지 데이터 추가
@@ -3363,11 +3374,33 @@ function addVerifyAction(verifyType, path, value, elementInfo = null) {
             // 타임라인 새로고침하여 이미지 표시
             syncTimelineFromEvents(allEvents, { selectLast: false });
             console.log('[Recorder] ✅ verifyImage 이미지 데이터 추가 완료');
+            
+            // 이미지가 추가된 후에 TC step으로 저장
+            console.log('[Recorder] addVerifyAction: saveEventAsStep 호출 시작 (이미지 포함)');
+            saveEventAsStep(lastEvent);
+            console.log('[Recorder] addVerifyAction: saveEventAsStep 호출 완료');
           }
+        } else {
+          // 이미지 캡처 실패해도 이벤트는 저장
+          console.log('[Recorder] addVerifyAction: saveEventAsStep 호출 시작 (이미지 없음)');
+          saveEventAsStep(normalized);
+          console.log('[Recorder] addVerifyAction: saveEventAsStep 호출 완료');
         }
       }).catch(error => {
         console.warn('[Recorder] verifyImage 스크린샷 캡처 실패:', error);
+        // 이미지 캡처 실패해도 이벤트는 저장
+        console.log('[Recorder] addVerifyAction: saveEventAsStep 호출 시작 (이미지 캡처 실패)');
+        saveEventAsStep(normalized);
+        console.log('[Recorder] addVerifyAction: saveEventAsStep 호출 완료');
       });
+      
+      // verifyImage인 경우 여기서 종료 (이미지 캡처 완료 후 저장)
+      const verifyActionsContainer = document.getElementById('verify-actions');
+      if (verifyActionsContainer) {
+        verifyActionsContainer.classList.add('hidden');
+      }
+      setElementStatus(`${verifyType} 액션을 추가했습니다.`, 'success');
+      return;
     }
   } else {
     // 타이틀/URL 검증 (요소 불필요)

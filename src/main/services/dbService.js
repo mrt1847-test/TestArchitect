@@ -400,6 +400,9 @@ function run(query, params = []) {
   try {
     ensureInitialized();
     
+    // INSERT 쿼리인지 확인
+    const isInsert = query.trim().toUpperCase().startsWith('INSERT');
+    
     // sql.js는 prepare를 사용하여 파라미터 바인딩
     const stmt = db.prepare(query);
     
@@ -408,21 +411,30 @@ function run(query, params = []) {
     }
     
     stmt.step();
+    
+    // INSERT 쿼리인 경우 last_insert_rowid()를 stmt.free() 전에 가져오기
+    // sql.js에서는 같은 연결에서 실행된 마지막 INSERT의 rowid를 반환
+    let lastID = null;
+    if (isInsert) {
+      const lastIdResult = db.exec('SELECT last_insert_rowid() as id');
+      if (lastIdResult.length > 0 && lastIdResult[0].values.length > 0) {
+        lastID = lastIdResult[0].values[0][0];
+      }
+    }
+    
     stmt.free();
     
     saveDatabase(); // 변경사항 즉시 저장
     
-    // last_insert_rowid와 changes 가져오기
-    const lastIdResult = db.exec('SELECT last_insert_rowid() as id');
+    // changes 가져오기
     const changesResult = db.exec('SELECT changes() as changes');
+    const changes = changesResult.length > 0 && changesResult[0].values.length > 0 
+      ? changesResult[0].values[0][0] 
+      : 0;
     
     return {
-      lastID: lastIdResult.length > 0 && lastIdResult[0].values.length > 0 
-        ? lastIdResult[0].values[0][0] 
-        : null,
-      changes: changesResult.length > 0 && changesResult[0].values.length > 0 
-        ? changesResult[0].values[0][0] 
-        : 0
+      lastID: lastID,
+      changes: changes
     };
   } catch (error) {
     console.error('❌ 쿼리 실행 실패:', error);

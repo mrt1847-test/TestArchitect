@@ -2075,18 +2075,20 @@ function displayTCDetail(tc) {
     (typeof step.screenshot === 'string' && step.screenshot.startsWith('data:')) ||
     step.screenshot === true  // 기존 플래그 형식 호환성
   );
-                // verifyImage 액션의 경우 snapshot_image_id 확인
-                const hasVerifyImage = action === 'verifyImage' && step.snapshot_image_id;
-                const shouldShowImage = hasScreenshot || hasVerifyImage;
+                // 이미지 표시 로직: verifyImage는 snapshot_image_id 사용, 일반 이벤트는 screenshot 사용
+                const isVerifyImage = action === 'verifyImage';
+                const hasVerifyImageSnapshot = isVerifyImage && step.snapshot_image_id;
+                const hasElementScreenshot = !isVerifyImage && hasScreenshot;
+                const shouldShowImage = hasElementScreenshot || isVerifyImage; // verifyImage는 항상 이미지 태그 표시 (나중에 snapshot_image_id 추가될 수 있음)
                 
                 // 디버깅: verifyImage 액션 정보 로깅
                 if (action === 'verifyImage') {
-                  console.log(`[renderTCDetail] verifyImage 액션 발견: stepIndex=${idx}, snapshot_image_id=${step.snapshot_image_id}, hasVerifyImage=${hasVerifyImage}`);
+                  console.log(`[renderTCDetail] verifyImage 액션 발견: stepIndex=${idx}, snapshot_image_id=${step.snapshot_image_id}, hasVerifyImageSnapshot=${hasVerifyImageSnapshot}, shouldShowImage=${shouldShowImage}`);
                 }
                 
                 return `
                 <div class="step-item" data-step-index="${idx}">
-                  ${shouldShowImage ? `<img class="step-screenshot" data-tc-id="${tc.id}" data-step-index="${idx}" data-snapshot-image-id="${hasVerifyImage && step.snapshot_image_id ? step.snapshot_image_id : ''}" src="" alt="스크린샷" style="width: 50px; height: 50px; object-fit: cover; border-radius: 4px; margin-right: 8px; cursor: pointer;" />` : ''}
+                  ${shouldShowImage ? `<img class="step-screenshot" data-tc-id="${tc.id}" data-step-index="${idx}" data-snapshot-image-id="${hasVerifyImageSnapshot ? step.snapshot_image_id : ''}" src="" alt="${isVerifyImage ? '스냅샷 이미지' : '스크린샷'}" style="width: 50px; height: 50px; object-fit: cover; border-radius: 4px; margin-right: 8px; cursor: pointer;" />` : ''}
                   <div class="step-content">
                     <strong>${idx + 1}. ${action}</strong>
                     <div>대상: ${target}</div>
@@ -2652,28 +2654,35 @@ async function loadStepScreenshot(tcId, stepIndex, imgElement) {
       }
     }
     
-    // step 객체에서 스크린샷 참조 확인
+    // step 객체에서 이미지 참조 확인
+    // 주의: verifyImage는 snapshot_image_id 사용, 일반 이벤트는 screenshot 사용
     if (currentTC && currentTC.steps && currentTC.steps[stepIndex]) {
       const step = currentTC.steps[stepIndex];
-      console.log(`[loadStepScreenshot] step 확인: action=${step.action}, snapshot_image_id=${step.snapshot_image_id}`);
+      console.log(`[loadStepScreenshot] step 확인: action=${step.action}, snapshot_image_id=${step.snapshot_image_id}, screenshot=${step.screenshot ? '있음' : '없음'}`);
       
-      // verifyImage 액션의 경우 snapshot_image_id로 이미지 로드 (중복 체크이지만 안전을 위해)
-      if (step.action === 'verifyImage' && step.snapshot_image_id) {
-        const stepSnapshotImageId = step.snapshot_image_id;
-        console.log(`[loadStepScreenshot] verifyImage 액션 발견, getSnapshotImage 호출: id=${stepSnapshotImageId}`);
-        if (window.electronAPI && window.electronAPI.getSnapshotImage) {
-          const imageData = await window.electronAPI.getSnapshotImage(stepSnapshotImageId);
-          console.log(`[loadStepScreenshot] getSnapshotImage 결과:`, imageData ? `데이터 있음 (길이: ${imageData.length})` : 'null');
-          if (imageData) {
-            imgElement.src = imageData;
-            imgElement.style.display = 'block';
-            console.log(`[loadStepScreenshot] ✅ 이미지 설정 완료 (step.snapshot_image_id 사용)`);
-            return;
+      // verifyImage 액션의 경우 snapshot_image_id로 스냅샷 이미지 로드 (요소 이미지와 구분)
+      if (step.action === 'verifyImage') {
+        if (step.snapshot_image_id) {
+          const stepSnapshotImageId = step.snapshot_image_id;
+          console.log(`[loadStepScreenshot] verifyImage 액션 발견, getSnapshotImage 호출: id=${stepSnapshotImageId}`);
+          if (window.electronAPI && window.electronAPI.getSnapshotImage) {
+            const imageData = await window.electronAPI.getSnapshotImage(stepSnapshotImageId);
+            console.log(`[loadStepScreenshot] getSnapshotImage 결과:`, imageData ? `데이터 있음 (길이: ${imageData.length})` : 'null');
+            if (imageData) {
+              imgElement.src = imageData;
+              imgElement.style.display = 'block';
+              console.log(`[loadStepScreenshot] ✅ 스냅샷 이미지 설정 완료 (snapshot_image_id 사용)`);
+              return;
+            }
           }
+        } else {
+          console.log(`[loadStepScreenshot] ⚠️ verifyImage 액션이지만 snapshot_image_id가 없습니다. stepIndex=${stepIndex}`);
         }
+        // verifyImage는 screenshot 필드를 사용하지 않음 (명확한 구분)
+        return;
       }
       
-      // 기존 스크린샷 로직
+      // 일반 이벤트의 경우 screenshot 필드로 요소 스크린샷 로드
       if (step.screenshot) {
         // 참조 형식: "screenshot://tc_2_step_0"
         if (typeof step.screenshot === 'string' && step.screenshot.startsWith('screenshot://')) {

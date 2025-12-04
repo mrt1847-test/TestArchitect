@@ -10,7 +10,7 @@ npm run build-python
 
 이 명령어는 자동으로:
 1. Python 가상환경 생성
-2. 필요한 패키지 설치 (pytest, playwright, selenium 등)
+2. 필요한 패키지 설치 (pytest, playwright, selenium, pytest-playwright-visual-snapshot 등)
 3. Playwright 브라우저 설치
 
 ## 수동 빌드

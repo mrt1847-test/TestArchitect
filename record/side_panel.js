@@ -2347,10 +2347,12 @@ function getActionIcon(action) {
     'wait': '⏱',
     'waitForElement': '⏳',
     'verifyText': '✓',
+    'verifyTextContains': '✓',
     'verifyElementPresent': '✓',
     'verifyElementNotPresent': '✗',
     'verifyTitle': '📄',
-    'verifyUrl': '🔗'
+    'verifyUrl': '🔗',
+    'verifyImage': '🖼'
   };
   return iconMap[action] || '•';
 }
@@ -2372,10 +2374,12 @@ function formatActionLabel(action) {
     'wait': 'Wait',
     'waitForElement': 'Wait for element',
     'verifyText': 'Verify text',
+    'verifyTextContains': 'Verify text contains',
     'verifyElementPresent': 'Verify element present',
     'verifyElementNotPresent': 'Verify element not present',
     'verifyTitle': 'Verify title',
-    'verifyUrl': 'Verify URL'
+    'verifyUrl': 'Verify URL',
+    'verifyImage': 'Verify image'
   };
   return labelMap[action] || action;
 }
@@ -2644,10 +2648,12 @@ function appendTimelineItem(ev, index) {
   
   const assertionTypes = [
     { type: 'verifyText', label: '텍스트 검증' },
+    { type: 'verifyTextContains', label: '텍스트 부분일치 검증' },
     { type: 'verifyElementPresent', label: '요소 존재 검증' },
     { type: 'verifyElementNotPresent', label: '요소 부재 검증' },
     { type: 'verifyTitle', label: '타이틀 검증' },
-    { type: 'verifyUrl', label: 'URL 검증' }
+    { type: 'verifyUrl', label: 'URL 검증' },
+    { type: 'verifyImage', label: '이미지 비교' }
   ];
   
   assertionTypes.forEach(({ type, label }) => {
@@ -2769,9 +2775,25 @@ function handleGlobalAssertion(assertionType) {
  */
 function handleStepAssertion(stepIndex, assertionType, stepEvent) {
   // assertion 타입에 따라 처리
-  if (assertionType === 'verifyTitle' || assertionType === 'verifyUrl') {
-    // 타이틀/URL 검증은 요소 선택 불필요 - 바로 추가
+  if (assertionType === 'verifyTitle') {
+    // 타이틀 검증은 요소 선택 불필요 - 바로 추가
     addAssertionAfterStep(stepIndex, assertionType, null, null);
+    return;
+  }
+  
+  if (assertionType === 'verifyUrl') {
+    // URL 검증: matchMode 선택 필요
+    withActiveTab((tab) => {
+      const currentUrl = tab?.url || '';
+      const inputValue = prompt('검증할 URL을 입력하세요:', currentUrl);
+      if (inputValue === null) return; // 취소
+      
+      // matchMode 선택 (완전일치/포함)
+      const matchMode = confirm('완전일치 검증을 사용하시겠습니까?\n\n확인: 완전일치\n취소: 포함 검증');
+      const matchModeValue = matchMode ? 'exact' : 'contains';
+      
+      addAssertionAfterStep(stepIndex, assertionType, null, inputValue || currentUrl, matchModeValue);
+    });
     return;
   }
   
@@ -2783,9 +2805,10 @@ function handleStepAssertion(stepIndex, assertionType, stepEvent) {
     const primarySelector = stepEvent.primarySelector || (selectors[0] && selectors[0].selector);
     
     let value = null;
-    if (assertionType === 'verifyText') {
+    if (assertionType === 'verifyText' || assertionType === 'verifyTextContains') {
       // 텍스트 검증은 현재 요소의 텍스트를 가져와야 함
-      const textValue = prompt('검증할 텍스트를 입력하세요 (비워두면 현재 요소의 텍스트 사용):');
+      const label = assertionType === 'verifyTextContains' ? '텍스트(부분일치)' : '텍스트';
+      const textValue = prompt(`검증할 ${label}을 입력하세요 (비워두면 현재 요소의 텍스트 사용):`);
       if (textValue === null) return; // 취소
       value = textValue || null;
     }
@@ -2832,8 +2855,9 @@ function handleStepAssertion(stepIndex, assertionType, stepEvent) {
  * @param {string} assertionType - assertion 타입
  * @param {Array} path - 요소 선택 경로 (있는 경우)
  * @param {string} value - 검증 값 (있는 경우)
+ * @param {string} matchMode - 매칭 모드 (verifyUrl의 경우 'exact' | 'contains')
  */
-function addAssertionAfterStep(stepIndex, assertionType, path, value) {
+function addAssertionAfterStep(stepIndex, assertionType, path, value, matchMode = null) {
   withActiveTab((tab) => {
     const timestamp = Date.now();
     const currentUrl = tab?.url || '';
@@ -2892,7 +2916,8 @@ function addAssertionAfterStep(stepIndex, assertionType, path, value) {
         primarySelectorType: targetEntry.type,
         primarySelectorText: targetEntry.textValue,
         primarySelectorXPath: targetEntry.xpathValue,
-        primarySelectorMatchMode: targetEntry.matchMode
+        primarySelectorMatchMode: targetEntry.matchMode,
+        matchMode: matchMode || null
       };
     } else {
       // 타이틀/URL 검증 (요소 불필요)
@@ -2928,7 +2953,8 @@ function addAssertionAfterStep(stepIndex, assertionType, path, value) {
           attributeName: null
         },
         primarySelector: null,
-        primarySelectorType: null
+        primarySelectorType: null,
+        matchMode: matchMode || null
       };
     }
     
@@ -4626,9 +4652,25 @@ function exportKeywordBasedTC(testCaseName, callback) {
  * Verify 액션 추가
  */
 function handleVerifyAction(verifyType) {
-  if (verifyType === 'verifyTitle' || verifyType === 'verifyUrl') {
-    // 타이틀/URL 검증은 요소 선택 불필요
+  if (verifyType === 'verifyTitle') {
+    // 타이틀 검증은 요소 선택 불필요
     addVerifyAction(verifyType, null, null);
+    return;
+  }
+  
+  if (verifyType === 'verifyUrl') {
+    // URL 검증: matchMode 선택 필요
+    withActiveTab((tab) => {
+      const currentUrl = tab?.url || '';
+      const inputValue = prompt('검증할 URL을 입력하세요:', currentUrl);
+      if (inputValue === null) return; // 취소
+      
+      // matchMode 선택 (완전일치/포함)
+      const matchMode = confirm('완전일치 검증을 사용하시겠습니까?\n\n확인: 완전일치\n취소: 포함 검증');
+      const matchModeValue = matchMode ? 'exact' : 'contains';
+      
+      addVerifyAction(verifyType, null, inputValue || currentUrl, null, matchModeValue);
+    });
     return;
   }
   
@@ -4779,8 +4821,13 @@ function handleInteractionAction(interactionType) {
 
 /**
  * Verify 액션을 이벤트로 추가
+ * @param {string} verifyType - 검증 타입
+ * @param {Array} path - 요소 선택 경로
+ * @param {string} value - 검증 값
+ * @param {Object} elementInfo - 요소 정보 (선택사항)
+ * @param {string} matchMode - 매칭 모드 (verifyUrl의 경우 'exact' | 'contains')
  */
-function addVerifyAction(verifyType, path, value) {
+function addVerifyAction(verifyType, path, value, elementInfo = null, matchMode = null) {
   withActiveTab((tab) => {
     const timestamp = Date.now();
     const currentUrl = tab?.url || '';
@@ -4839,7 +4886,8 @@ function addVerifyAction(verifyType, path, value) {
         primarySelectorType: targetEntry.type,
         primarySelectorText: targetEntry.textValue,
         primarySelectorXPath: targetEntry.xpathValue,
-        primarySelectorMatchMode: targetEntry.matchMode
+        primarySelectorMatchMode: targetEntry.matchMode,
+        matchMode: matchMode || null
       };
     } else {
       // 타이틀/URL 검증 (요소 불필요)
@@ -4875,7 +4923,8 @@ function addVerifyAction(verifyType, path, value) {
           attributeName: null
         },
         primarySelector: null,
-        primarySelectorType: null
+        primarySelectorType: null,
+        matchMode: matchMode || null
       };
     }
     
@@ -5307,12 +5356,13 @@ function applySelectionAction(actionType, options = {}) {
     const pending = selectionState.pendingAction;
     if (pending.startsWith('verify')) {
       let value = null;
-      if (pending === 'verifyText') {
+      if (pending === 'verifyText' || pending === 'verifyTextContains') {
         const lastPathItem = path[path.length - 1];
+        const label = pending === 'verifyTextContains' ? '텍스트(부분일치)' : '텍스트';
         if (lastPathItem && lastPathItem.textValue) {
           value = lastPathItem.textValue;
         } else {
-          const textValue = prompt('검증할 텍스트를 입력하세요:');
+          const textValue = prompt(`검증할 ${label}을 입력하세요:`);
           if (textValue === null) {
             selectionState.pendingAction = null;
             return;
@@ -5368,8 +5418,9 @@ function applySelectionAction(actionType, options = {}) {
       const pending = selectionState.pendingAction;
       if (pending.startsWith('verify')) {
         let value = null;
-        if (pending === 'verifyText') {
+        if (pending === 'verifyText' || pending === 'verifyTextContains') {
           const lastPathItem = path[path.length - 1];
+          const label = pending === 'verifyTextContains' ? '텍스트(부분일치)' : '텍스트';
           if (lastPathItem && lastPathItem.textValue) {
             value = lastPathItem.textValue;
           } else {
@@ -6234,9 +6285,9 @@ function buildPlaywrightFrameLocatorLines(ctx, languageLower, alias, indent, bas
   const selector = buildIframeCssSelector(ctx);
   const pythonLike = languageLower === 'python' || languageLower === 'python-class';
   if (pythonLike) {
-    return [`${alias} = ${baseVar}.frame_locator("${escapeForDoubleQuotes(selector)}")`];
+    return [`${indent}${alias} = ${baseVar}.frame_locator("${escapeForDoubleQuotes(selector)}")`];
   }
-  return [`const ${alias} = ${baseVar}.frameLocator('${selector}');`];
+  return [`${indent}const ${alias} = ${baseVar}.frameLocator('${selector}');`];
 }
 
 function buildSeleniumFrameSwitchPython(ctx, driverVar = 'driver') {
@@ -6473,7 +6524,12 @@ function buildPlaywrightPythonAction(ev, selectorInfo, base = 'page') {
       return `assert ${base}.title() == "${value}"`;
     }
     if (ev.action === 'verifyUrl') {
-      return `assert ${base}.url == "${value}"`;
+      const matchMode = ev.matchMode || 'exact'; // 기본값은 'exact'
+      if (matchMode === 'contains') {
+        return `assert "${value}" in ${base}.url`;
+      } else {
+        return `assert ${base}.url == "${value}"`;
+      }
     }
   }
   if (!ev || !selectorInfo || !selectorInfo.selector) return null;
@@ -6518,6 +6574,10 @@ function buildPlaywrightPythonAction(ev, selectorInfo, base = 'page') {
     const expectedText = escapeForPythonString(value || '');
     return `assert ${getLocator()}.inner_text() == "${expectedText}"`;
   }
+  if (ev.action === 'verifyTextContains') {
+    const expectedText = escapeForPythonString(value || '');
+    return `assert "${expectedText}" in ${getLocator()}.inner_text()`;
+  }
   if (ev.action === 'verifyElementPresent') {
     return `assert ${getLocator()}.is_visible()`;
   }
@@ -6530,7 +6590,17 @@ function buildPlaywrightPythonAction(ev, selectorInfo, base = 'page') {
   }
   if (ev.action === 'verifyUrl') {
     const expectedUrl = escapeForPythonString(value || '');
-    return `assert ${base}.url == "${expectedUrl}"`;
+    const matchMode = ev.matchMode || 'exact'; // 기본값은 'exact'
+    if (matchMode === 'contains') {
+      return `assert "${expectedUrl}" in ${base}.url`;
+    } else {
+      return `assert ${base}.url == "${expectedUrl}"`;
+    }
+  }
+  if (ev.action === 'verifyImage') {
+    // 이미지 비교 (pytest-playwright-visual-snapshot 사용)
+    // conftest.assert_snapshot_func()을 통해 사용
+    return `conftest.assert_snapshot_func(${getLocator()})`;
   }
   return null;
 }
@@ -6543,7 +6613,12 @@ function buildPlaywrightJSAction(ev, selectorInfo, base = 'page') {
       return `expect(await ${base}.title()).toBe("${value}");`;
     }
     if (ev.action === 'verifyUrl') {
-      return `expect(${base}.url()).toBe("${value}");`;
+      const matchMode = ev.matchMode || 'exact'; // 기본값은 'exact'
+      if (matchMode === 'contains') {
+        return `expect(${base}.url()).toContain("${value}");`;
+      } else {
+        return `expect(${base}.url()).toBe("${value}");`;
+      }
     }
   }
   if (!ev || !selectorInfo || !selectorInfo.selector) return null;
@@ -6600,7 +6675,16 @@ function buildPlaywrightJSAction(ev, selectorInfo, base = 'page') {
   }
   if (ev.action === 'verifyUrl') {
     const expectedUrl = escapeForJSString(value || '');
-    return `expect(${base}.url()).toBe("${expectedUrl}");`;
+    const matchMode = ev.matchMode || 'exact'; // 기본값은 'exact'
+    if (matchMode === 'contains') {
+      return `expect(${base}.url()).toContain("${expectedUrl}");`;
+    } else {
+      return `expect(${base}.url()).toBe("${expectedUrl}");`;
+    }
+  }
+  if (ev.action === 'verifyImage') {
+    // 이미지 비교 (Playwright JavaScript의 snapshot 기능 사용)
+    return `expect(await ${getLocator()}.screenshot()).toMatchSnapshot();`;
   }
   return null;
 }
@@ -6613,7 +6697,12 @@ function buildSeleniumPythonAction(ev, selectorInfo, driverVar = 'driver') {
       return `assert ${driverVar}.title == "${value}"`;
     }
     if (ev.action === 'verifyUrl') {
-      return `assert ${driverVar}.current_url == "${value}"`;
+      const matchMode = ev.matchMode || 'exact'; // 기본값은 'exact'
+      if (matchMode === 'contains') {
+        return `assert "${value}" in ${driverVar}.current_url`;
+      } else {
+        return `assert ${driverVar}.current_url == "${value}"`;
+      }
     }
   }
   if (!ev || !selectorInfo || !selectorInfo.selector) return null;
@@ -6676,6 +6765,10 @@ function buildSeleniumPythonAction(ev, selectorInfo, driverVar = 'driver') {
     const expectedText = escapeForPythonString(value || '');
     return `assert ${element}.text == "${expectedText}"`;
   }
+  if (ev.action === 'verifyTextContains') {
+    const expectedText = escapeForPythonString(value || '');
+    return `assert "${expectedText}" in ${element}.text`;
+  }
   if (ev.action === 'verifyElementPresent') {
     return `assert ${element}.is_displayed()`;
   }
@@ -6688,7 +6781,15 @@ function buildSeleniumPythonAction(ev, selectorInfo, driverVar = 'driver') {
   }
   if (ev.action === 'verifyUrl') {
     const expectedUrl = escapeForPythonString(value || '');
-    return `assert ${driverVar}.current_url == "${expectedUrl}"`;
+    const matchMode = ev.matchMode || 'exact'; // 기본값은 'exact'
+    if (matchMode === 'contains') {
+      return `assert "${expectedUrl}" in ${driverVar}.current_url`;
+    } else {
+      return `assert ${driverVar}.current_url == "${expectedUrl}"`;
+    }
+  }
+  if (ev.action === 'verifyImage') {
+    return `# 이미지 비교를 위해 PIL/Pillow 라이브러리 필요\nfrom PIL import Image\nimport io\ncurrent_screenshot = ${element}.screenshot_as_png\n# 기준 이미지와 비교하는 로직 구현 필요`;
   }
   return null;
 }
@@ -6701,7 +6802,12 @@ function buildSeleniumJSAction(ev, selectorInfo) {
       return `  expect(await driver.getTitle()).toBe("${value}");`;
     }
     if (ev.action === 'verifyUrl') {
-      return `  expect(await driver.getCurrentUrl()).toBe("${value}");`;
+      const matchMode = ev.matchMode || 'exact'; // 기본값은 'exact'
+      if (matchMode === 'contains') {
+        return `  expect(await driver.getCurrentUrl()).toContain("${value}");`;
+      } else {
+        return `  expect(await driver.getCurrentUrl()).toBe("${value}");`;
+      }
     }
   }
   if (!ev || !selectorInfo || !selectorInfo.selector) return null;
@@ -6764,6 +6870,10 @@ function buildSeleniumJSAction(ev, selectorInfo) {
     const expectedText = escapeForJSString(value || '');
     return `  expect(await ${element}.getText()).toBe("${expectedText}");`;
   }
+  if (ev.action === 'verifyTextContains') {
+    const expectedText = escapeForJSString(value || '');
+    return `  expect(await ${element}.getText()).toContain("${expectedText}");`;
+  }
   if (ev.action === 'verifyElementPresent') {
     return `  expect(await ${element}.isDisplayed()).toBe(true);`;
   }
@@ -6776,7 +6886,15 @@ function buildSeleniumJSAction(ev, selectorInfo) {
   }
   if (ev.action === 'verifyUrl') {
     const expectedUrl = escapeForJSString(value || '');
-    return `  expect(await driver.getCurrentUrl()).toBe("${expectedUrl}");`;
+    const matchMode = ev.matchMode || 'exact'; // 기본값은 'exact'
+    if (matchMode === 'contains') {
+      return `  expect(await driver.getCurrentUrl()).toContain("${expectedUrl}");`;
+    } else {
+      return `  expect(await driver.getCurrentUrl()).toBe("${expectedUrl}");`;
+    }
+  }
+  if (ev.action === 'verifyImage') {
+    return `  // 이미지 비교를 위해 이미지 비교 라이브러리 필요\n  const screenshot = await ${element}.takeScreenshot();\n  // 기준 이미지와 비교하는 로직 구현 필요`;
   }
   return null;
 }
@@ -6831,11 +6949,15 @@ function generateCode(events, manualList, framework, language) {
   
   if (frameworkLower === 'playwright') {
     if (languageLower === 'python') {
-    lines.push("from playwright.sync_api import sync_playwright");
+      // pytest 형식으로 생성
+      lines.push("import pytest");
+      lines.push("import conftest");
       lines.push("");
-    lines.push("with sync_playwright() as p:");
-    lines.push("  browser = p.chromium.launch(headless=False)");
-    lines.push("  page = browser.new_page()");
+      
+      // 항상 page fixture만 사용 (assert_snapshot은 conftest.assert_snapshot_func()로 사용)
+      lines.push("def test_generated(page):");
+      lines.push("    \"\"\"Generated test case\"\"\"");
+      
       let currentFrameContext = null;
       let frameLocatorIndex = 0;
       let currentBase = 'page';
@@ -6847,8 +6969,8 @@ function generateCode(events, manualList, framework, language) {
             if (targetFrame) {
               frameLocatorIndex += 1;
               const alias = `frame_locator_${frameLocatorIndex}`;
-              const setupLines = buildPlaywrightFrameLocatorLines(targetFrame, languageLower, alias, '  ', 'page');
-              setupLines.forEach(line => lines.push(`  ${line}`));
+              const setupLines = buildPlaywrightFrameLocatorLines(targetFrame, languageLower, alias, '    ', 'page');
+              setupLines.forEach(line => lines.push(line));
               currentBase = alias;
               currentFrameContext = targetFrame;
             } else {
@@ -6858,13 +6980,17 @@ function generateCode(events, manualList, framework, language) {
           }
           const actionLine = buildPlaywrightPythonAction(event, selectorInfo, currentBase);
           if (actionLine) {
-            lines.push(`  ${actionLine}`);
+            // 배열인 경우 각 줄에 들여쓰기 적용 (함수 내부는 4칸)
+            if (Array.isArray(actionLine)) {
+              actionLine.forEach(line => lines.push(`    ${line}`));
+            } else {
+              lines.push(`    ${actionLine}`);
+            }
           }
         } else if (entry.kind === 'manual') {
-          emitManualActionLines(lines, entry.action, frameworkLower, languageLower, '  ');
+          emitManualActionLines(lines, entry.action, frameworkLower, languageLower, '    ');
         }
       });
-    lines.push("  browser.close()");
     } else if (languageLower === 'python-class') {
       lines.push("from playwright.sync_api import sync_playwright");
       lines.push("");

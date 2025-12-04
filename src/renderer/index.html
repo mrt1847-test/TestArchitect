@@ -157,6 +157,24 @@
                     <div class="selected-count">
                         <span id="selected-count">0</span>개 선택됨
                     </div>
+                    
+                    <!-- 환경 선택 UI -->
+                    <div class="test-env-selector" style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center;">
+                        <label style="font-size: 12px; color: #888; white-space: nowrap;">환경:</label>
+                        <select id="test-browser-select" class="test-env-select" style="flex: 1; padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px; background: white;">
+                            <option value="chromium">크롬 (Chromium)</option>
+                            <option value="chrome">크롬 (Chrome)</option>
+                            <option value="firefox">Firefox</option>
+                            <option value="webkit">WebKit</option>
+                            <option value="edge">Edge</option>
+                            <option value="mobile-chrome">모바일 크롬</option>
+                        </select>
+                        <select id="test-driver-select" class="test-env-select" style="flex: 1; padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px; background: white;">
+                            <option value="playwright">Playwright</option>
+                            <option value="selenium">Selenium</option>
+                        </select>
+                    </div>
+                    
                     <button id="run-selected-btn" class="btn btn-primary btn-block" disabled>
                         <span class="btn-icon">▶️</span>
                         선택한 TC 실행

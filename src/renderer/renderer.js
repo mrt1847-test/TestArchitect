@@ -3239,6 +3239,13 @@ async function runSelectedTCs() {
     return;
   }
 
+  // 환경 선택 값 읽기
+  const browserSelect = document.getElementById('test-browser-select');
+  const driverSelect = document.getElementById('test-driver-select');
+  const selectedBrowser = browserSelect ? browserSelect.value : 'chromium';
+  const selectedDriver = driverSelect ? driverSelect.value : 'playwright';
+  const isMobile = selectedBrowser === 'mobile-chrome';
+
   runSelectedBtn.disabled = true;
   runSelectedBtn.innerHTML = '<span class="btn-icon">⏳</span> 실행 중...';
 
@@ -3299,7 +3306,10 @@ async function runSelectedTCs() {
       parallel: scriptsToRun.length > 1,  // 파일이 2개 이상이면 병렬 실행
       workers: 'auto',                 // 자동 워커 수
       htmlReport: true,                // HTML 리포트 생성
-      captureScreenshots: true         // 스크린샷 캡처
+      captureScreenshots: true,        // 스크린샷 캡처
+      browser: isMobile ? 'chromium' : selectedBrowser,  // 모바일은 내부적으로 chromium 사용
+      driver: selectedDriver,         // 선택된 드라이버 (playwright 또는 selenium)
+      mobile: isMobile                 // 모바일 모드 플래그
     };
 
     // 스크립트 코드를 전달하여 임시 파일 생성 후 실행

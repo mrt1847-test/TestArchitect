@@ -926,10 +926,12 @@ function getActionIcon(action) {
     'wait': '⏱',
     'waitForElement': '⏳',
     'verifyText': '✓',
+    'verifyTextContains': '✓',
     'verifyElementPresent': '✓',
     'verifyElementNotPresent': '✗',
     'verifyTitle': '📄',
-    'verifyUrl': '🔗'
+    'verifyUrl': '🔗',
+    'verifyImage': '🖼'
   };
   return iconMap[action] || '•';
 }
@@ -951,10 +953,12 @@ function formatActionLabel(action) {
     'wait': 'Wait',
     'waitForElement': 'Wait for element',
     'verifyText': 'Verify text',
+    'verifyTextContains': 'Verify text contains',
     'verifyElementPresent': 'Verify element present',
     'verifyElementNotPresent': 'Verify element not present',
     'verifyTitle': 'Verify title',
-    'verifyUrl': 'Verify URL'
+    'verifyUrl': 'Verify URL',
+    'verifyImage': 'Verify image'
   };
   return labelMap[action] || action;
 }
@@ -1183,10 +1187,12 @@ function appendTimelineItem(ev, index) {
   
   const assertionTypes = [
     { type: 'verifyText', label: '텍스트 검증' },
+    { type: 'verifyTextContains', label: '텍스트 부분일치 검증' },
     { type: 'verifyElementPresent', label: '요소 존재 검증' },
     { type: 'verifyElementNotPresent', label: '요소 부재 검증' },
     { type: 'verifyTitle', label: '타이틀 검증' },
-    { type: 'verifyUrl', label: 'URL 검증' }
+    { type: 'verifyUrl', label: 'URL 검증' },
+    { type: 'verifyImage', label: '이미지 비교' }
   ];
   
   assertionTypes.forEach(({ type, label }) => {
@@ -4909,16 +4915,26 @@ function setupEventListeners() {
  */
 function handleStepAssertion(stepIndex, assertionType, stepEvent) {
   switch (assertionType) {
-    case 'verifyTitle':
-    case 'verifyUrl': {
-      // 타이틀/URL 검증: 다이얼로그로 값 입력 받기
-      const currentValue = assertionType === 'verifyTitle' 
-        ? document.title 
-        : window.location.href;
-      const label = assertionType === 'verifyTitle' ? '타이틀' : 'URL';
-      const inputValue = prompt(`검증할 ${label}을 입력하세요:`, currentValue);
+    case 'verifyTitle': {
+      // 타이틀 검증: 다이얼로그로 값 입력 받기
+      const currentValue = document.title;
+      const inputValue = prompt('검증할 타이틀을 입력하세요:', currentValue);
       if (inputValue === null) return; // 취소
       addAssertionAfterStep(stepIndex, assertionType, null, inputValue || currentValue);
+      break;
+    }
+    
+    case 'verifyUrl': {
+      // URL 검증: 다이얼로그로 값 입력 받기 및 matchMode 선택
+      const currentValue = window.location.href;
+      const inputValue = prompt('검증할 URL을 입력하세요:', currentValue);
+      if (inputValue === null) return; // 취소
+      
+      // matchMode 선택 (완전일치/포함)
+      const matchMode = confirm('완전일치 검증을 사용하시겠습니까?\n\n확인: 완전일치\n취소: 포함 검증');
+      const matchModeValue = matchMode ? 'exact' : 'contains';
+      
+      addAssertionAfterStep(stepIndex, assertionType, null, inputValue || currentValue, matchModeValue);
       break;
     }
     
@@ -4941,6 +4957,53 @@ function handleStepAssertion(stepIndex, assertionType, stepEvent) {
         const textValue = prompt('검증할 텍스트를 입력하세요:', elementText);
         if (textValue === null) return; // 취소
         addAssertionAfterStep(stepIndex, assertionType, path, textValue || elementText);
+      } else {
+        // 요소 선택 모드로 전환
+        activateElementSelectionForAssertion(stepIndex, assertionType);
+      }
+      break;
+    }
+    
+    case 'verifyTextContains': {
+      // 텍스트 부분일치 검증: 요소 선택 필요
+      if (stepEvent && stepEvent.selectorCandidates && stepEvent.selectorCandidates.length > 0) {
+        // 기반 스텝의 셀렉터 재사용
+        const selectors = stepEvent.selectorCandidates;
+        const path = selectors.map(sel => ({
+          selector: sel.selector || sel,
+          type: sel.type,
+          textValue: sel.textValue,
+          xpathValue: sel.xpathValue,
+          matchMode: sel.matchMode,
+          iframeContext: stepEvent.iframeContext
+        }));
+        
+        // 텍스트 입력 다이얼로그
+        const elementText = stepEvent.target?.text || stepEvent.value || '';
+        const textValue = prompt('검증할 텍스트(부분일치)를 입력하세요:', elementText);
+        if (textValue === null) return; // 취소
+        addAssertionAfterStep(stepIndex, assertionType, path, textValue || elementText);
+      } else {
+        // 요소 선택 모드로 전환
+        activateElementSelectionForAssertion(stepIndex, assertionType);
+      }
+      break;
+    }
+    
+    case 'verifyImage': {
+      // 이미지 비교: 요소 선택 필요
+      if (stepEvent && stepEvent.selectorCandidates && stepEvent.selectorCandidates.length > 0) {
+        // 기반 스텝의 셀렉터 재사용
+        const selectors = stepEvent.selectorCandidates;
+        const path = selectors.map(sel => ({
+          selector: sel.selector || sel,
+          type: sel.type,
+          textValue: sel.textValue,
+          xpathValue: sel.xpathValue,
+          matchMode: sel.matchMode,
+          iframeContext: stepEvent.iframeContext
+        }));
+        addAssertionAfterStep(stepIndex, assertionType, path, null);
       } else {
         // 요소 선택 모드로 전환
         activateElementSelectionForAssertion(stepIndex, assertionType);
@@ -4978,12 +5041,12 @@ function handleStepAssertion(stepIndex, assertionType, stepEvent) {
 function activateElementSelectionForAssertion(stepIndex, assertionType) {
   startSimpleElementSelection((path, elementInfo, pendingAction, pendingStepIndex) => {
     let value = null;
-    if (pendingAction === 'verifyText') {
+    if (pendingAction === 'verifyText' || pendingAction === 'verifyTextContains') {
       // 요소의 텍스트를 자동으로 사용 (prompt 없이)
       value = elementInfo.text || path[0]?.textValue || '';
-      console.log('[Recorder] verifyText: 요소 텍스트 자동 사용:', value);
-    } else if (pendingAction === 'verifyElementPresent' || pendingAction === 'verifyElementNotPresent') {
-      // 요소 존재/부재 검증은 value 불필요
+      console.log(`[Recorder] ${pendingAction}: 요소 텍스트 자동 사용:`, value);
+    } else if (pendingAction === 'verifyElementPresent' || pendingAction === 'verifyElementNotPresent' || pendingAction === 'verifyImage') {
+      // 요소 존재/부재/이미지 검증은 value 불필요
       value = null;
     }
     
@@ -5006,8 +5069,9 @@ function activateElementSelectionForAssertion(stepIndex, assertionType) {
  * @param {string} assertionType - assertion 타입
  * @param {Array} path - 요소 선택 경로 (있는 경우)
  * @param {string} value - 검증 값 (있는 경우)
+ * @param {string} matchMode - 매칭 모드 (verifyUrl의 경우 'exact' | 'contains')
  */
-function addAssertionAfterStep(stepIndex, assertionType, path, value) {
+function addAssertionAfterStep(stepIndex, assertionType, path, value, matchMode = null) {
   const timestamp = Date.now();
   const currentUrl = window.location.href || '';
   const currentTitle = document.title || '';
@@ -5065,7 +5129,8 @@ function addAssertionAfterStep(stepIndex, assertionType, path, value) {
       primarySelectorType: targetEntry.type,
       primarySelectorText: targetEntry.textValue,
       primarySelectorXPath: targetEntry.xpathValue,
-      primarySelectorMatchMode: targetEntry.matchMode
+      primarySelectorMatchMode: targetEntry.matchMode,
+      matchMode: matchMode || null
     };
   } else {
     // 타이틀/URL 검증 (요소 불필요)
@@ -5101,7 +5166,8 @@ function addAssertionAfterStep(stepIndex, assertionType, path, value) {
         attributeName: null
       },
       primarySelector: null,
-      primarySelectorType: null
+      primarySelectorType: null,
+      matchMode: matchMode || null
     };
   }
   
@@ -5125,9 +5191,25 @@ function addAssertionAfterStep(stepIndex, assertionType, path, value) {
 function handleGlobalAssertion(assertionType) {
   if (!assertionType) return;
   
-  // verifyTitle, verifyUrl은 요소 선택 불필요
-  if (assertionType === 'verifyTitle' || assertionType === 'verifyUrl') {
+  // verifyTitle은 요소 선택 불필요
+  if (assertionType === 'verifyTitle') {
     addVerifyAction(assertionType, null, null);
+    return;
+  }
+  
+  // verifyUrl은 matchMode 선택 필요
+  if (assertionType === 'verifyUrl') {
+    withActiveTab((tab) => {
+      const currentUrl = tab?.url || '';
+      const inputValue = prompt('검증할 URL을 입력하세요:', currentUrl);
+      if (inputValue === null) return; // 취소
+      
+      // matchMode 선택 (완전일치/포함)
+      const matchMode = confirm('완전일치 검증을 사용하시겠습니까?\n\n확인: 완전일치\n취소: 포함 검증');
+      const matchModeValue = matchMode ? 'exact' : 'contains';
+      
+      addVerifyAction(assertionType, null, inputValue || currentUrl, null, matchModeValue);
+    });
     return;
   }
   
@@ -5141,10 +5223,10 @@ function handleGlobalAssertion(assertionType) {
     });
     
     let value = null;
-    if (pendingAction === 'verifyText') {
+    if (pendingAction === 'verifyText' || pendingAction === 'verifyTextContains') {
       // 요소의 텍스트를 자동으로 사용 (prompt 없이)
       value = elementInfo.text || path[0]?.textValue || '';
-      console.log('[Recorder] verifyText: 요소 텍스트 자동 사용:', value);
+      console.log(`[Recorder] ${pendingAction}: 요소 텍스트 자동 사용:`, value);
     }
     
     // pendingStepIndex가 있으면 addAssertionAfterStep 사용, 없으면 addVerifyAction 사용

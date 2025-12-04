@@ -13,6 +13,7 @@ pytest-cov>=4.1.0            # Code coverage
 pytest-xdist>=3.3.0          # Parallel test execution
 pytest-rerunfailures>=12.0   # Retry failed tests
 pytest-timeout>=2.2.0        # Test timeout management
+pytest-playwright-visual-snapshot>=0.1.0  # Visual snapshot testing for Playwright
 
 # Web automation frameworks
 playwright>=1.40.0           # Playwright (latest version)

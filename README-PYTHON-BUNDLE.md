@@ -9,6 +9,7 @@
 ### 2. Python 패키지 (자동 포함)
 - ✅ **pytest** - 테스트 프레임워크
 - ✅ **pytest-json-report** - JSON 리포트 생성
+- ✅ **pytest-playwright-visual-snapshot** - Playwright 시각적 스냅샷 테스트
 - ✅ **playwright** - Playwright 패키지
 - ✅ **selenium** - Selenium WebDriver
 - ✅ **webdriver-manager** - Selenium 드라이버 자동 관리

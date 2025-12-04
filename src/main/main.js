@@ -5271,6 +5271,8 @@ ipcMain.handle('run-python-scripts', async (event, scripts, args = [], options =
     );
     
     // 3-1. conftest.py 복사 (pytest 설정 및 fixture를 위해 필요)
+    // 임시 디렉토리에서 실행할 때 conftest.py를 찾을 수 있도록 복사
+    // --rootdir를 temp 디렉토리로 설정하여 상위 디렉토리의 conftest.py 중복 로드 방지
     const isPackaged = app.isPackaged;
     const scriptsDir = config.paths.scripts;
     const conftestPath = path.join(scriptsDir, 'conftest.py');

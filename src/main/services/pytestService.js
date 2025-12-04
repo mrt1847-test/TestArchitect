@@ -89,7 +89,10 @@ class PytestService {
           : null;
 
         // Pytest 명령어 구성 (런타임 정보 사용)
-        const command = this._buildCommand(testPaths, reportFile, htmlReportFile, args, execOptions, runtime);
+        const command = this._buildCommand(testPaths, reportFile, htmlReportFile, args, execOptions, runtime, execCwd);
+        
+        // 디버깅: 실행 명령어 로깅
+        console.log('[DEBUG] pytest 실행 명령어:', command);
 
         // Playwright 환경 변수 설정
         const playwrightEnv = PythonRuntime.getPlaywrightEnv(runtime);
@@ -250,9 +253,10 @@ class PytestService {
    * @param {string[]} args - 추가 인자 배열
    * @param {Object} options - 실행 옵션
    * @param {PythonRuntimeInfo} runtime - Python 런타임 정보
+   * @param {string} execCwd - 실행 디렉토리
    * @returns {string} 실행 명령어
    */
-  static _buildCommand(testPaths, reportFile, htmlReportFile, args = [], options = {}, runtime) {
+  static _buildCommand(testPaths, reportFile, htmlReportFile, args = [], options = {}, runtime, execCwd = null) {
     // 여러 파일을 배열로 처리
     const paths = Array.isArray(testPaths) ? testPaths : [testPaths];
     const escapedPaths = paths.map(p => `"${p}"`);
@@ -270,9 +274,29 @@ class PytestService {
       '--tb=short'
     ];
     
+    // rootdir 설정: conftest.py가 temp 디렉토리에 복사되어 있으므로
+    // temp 디렉토리를 rootdir로 설정하여 상위 디렉토리의 conftest.py 중복 로드 방지
+    if (execCwd) {
+      // execCwd를 그대로 rootdir로 설정 (temp 디렉토리)
+      baseOptions.push('--rootdir', `"${execCwd}"`);
+    }
+    
     // headless 옵션 추가 (기본값: false, 브라우저 표시)
     const headlessValue = options.headless !== undefined ? options.headless : false;
-    baseOptions.push(`--headless=${headlessValue ? 'true' : 'false'}`);
+    baseOptions.push('--headless', headlessValue ? 'true' : 'false');
+
+    // 브라우저 옵션 추가
+    const browser = options.browser || 'chromium';
+    baseOptions.push('--browser', browser);
+
+    // 드라이버 옵션 추가
+    const driver = options.driver || 'playwright';
+    baseOptions.push('--driver', driver);
+
+    // 모바일 모드 옵션 추가
+    if (options.mobile) {
+      baseOptions.push('--mobile', 'true');
+    }
 
     // HTML 리포트 옵션 추가
     if (options.htmlReport && htmlReportFile) {

@@ -44,6 +44,13 @@ def pytest_addoption(parser):
         default=os.getenv("TEST_BASE_URL", "http://localhost:8000"),
         help="테스트 기본 URL"
     )
+    parser.addoption(
+        "--mobile",
+        action="store",
+        default=os.getenv("TEST_MOBILE", "false"),
+        choices=["true", "false"],
+        help="모바일 디바이스 에뮬레이션 여부 (true, false)"
+    )
 
 
 @pytest.fixture(scope="session")
@@ -55,7 +62,8 @@ def test_config(pytestconfig):
         "base_url": pytestconfig.getoption("--base-url"),
         "browser": pytestconfig.getoption("--browser"),
         "headless": pytestconfig.getoption("--headless") == "true",
-        "driver": pytestconfig.getoption("--driver")
+        "driver": pytestconfig.getoption("--driver"),
+        "mobile": pytestconfig.getoption("--mobile") == "true"
     }
 
 
@@ -115,12 +123,28 @@ def browser_playwright(browser_type, test_config):
 
 
 @pytest.fixture(scope="function")
-def page_playwright(browser_playwright, request):
+def page_playwright(browser_playwright, request, test_config):
     """Playwright 페이지 생성 (스크린샷 자동 캡처 포함)"""
     from playwright.sync_api import Page
     import os
     
-    page = browser_playwright.new_page()
+    # 모바일 모드 확인
+    is_mobile = test_config.get("mobile", False)
+    
+    if is_mobile:
+        # 모바일 디바이스 에뮬레이션 (iPhone 12 Pro)
+        mobile_device = {
+            'user_agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1',
+            'viewport': {'width': 390, 'height': 844},
+            'device_scale_factor': 3,
+            'is_mobile': True,
+            'has_touch': True
+        }
+        context = browser_playwright.new_context(**mobile_device)
+    else:
+        context = browser_playwright.new_context()
+    
+    page = context.new_page()
     
     yield page
     
@@ -140,6 +164,7 @@ def page_playwright(browser_playwright, request):
             print(f"스크린샷 캡처 실패: {e}")
     
     page.close()
+    context.close()
 
 
 # ============================================================================
@@ -247,21 +272,42 @@ def driver_selenium(selenium_driver_options, test_config):
 # ============================================================================
 
 @pytest.fixture(scope="function")
-def page(test_config, page_playwright, driver_selenium):
+def page(test_config, request):
     """자동으로 선택된 드라이버의 페이지/드라이버 반환"""
+    # test_config["driver"]에 따라 필요한 fixture만 동적으로 가져오기
     if test_config["driver"] == "playwright":
-        return page_playwright
+        return request.getfixturevalue("page_playwright")
     else:
-        return driver_selenium
+        return request.getfixturevalue("driver_selenium")
 
 
 @pytest.fixture(scope="function")
-def driver(test_config, page_playwright, driver_selenium):
+def driver(test_config, request):
     """자동으로 선택된 드라이버 반환 (page와 동일하지만 명확성을 위해 별도 제공)"""
+    # test_config["driver"]에 따라 필요한 fixture만 동적으로 가져오기
     if test_config["driver"] == "playwright":
-        return page_playwright
+        return request.getfixturevalue("page_playwright")
     else:
-        return driver_selenium
+        return request.getfixturevalue("driver_selenium")
+
+
+# ============================================================================
+# Visual Snapshot Testing
+# ============================================================================
+
+def assert_snapshot_func(target, name=None, **kwargs):
+    """pytest-playwright-visual-snapshot의 assert_snapshot을 일반 함수로 사용"""
+    try:
+        from playwright_visual_snapshot import assert_snapshot as _assert_snapshot
+        return _assert_snapshot(target, name=name, **kwargs)
+    except ImportError:
+        raise ImportError("pytest-playwright-visual-snapshot이 설치되지 않았습니다. 'pip install pytest-playwright-visual-snapshot' 실행하세요.")
+
+
+@pytest.fixture(scope="function")
+def assert_snapshot(request):
+    """pytest-playwright-visual-snapshot의 assert_snapshot fixture (호환성을 위해 유지)"""
+    return assert_snapshot_func
 
 
 @pytest.hookimpl(tryfirst=True, hookwrapper=True)

@@ -330,12 +330,18 @@ function buildPlaywrightPythonAction(ev, selectorInfo, base = 'page') {
       // URL 정규화 적용
       const normalizedUrl = normalizeUrl(ev.value || '');
       const value = escapeForPythonString(normalizedUrl);
-      // 페이지 이동 완료를 기다린 후 검증
-      // 두 줄을 배열로 반환하여 각 줄에 들여쓰기가 적용되도록 함
-      return [
-        `${base}.wait_for_url(lambda url: normalize_url(url) == "${value}", timeout=10000)`,
-        `assert normalize_url(${base}.url) == "${value}"`
-      ];
+      const matchMode = ev.matchMode || 'exact'; // 기본값은 'exact'
+      
+      if (matchMode === 'contains') {
+        // 포함 검증
+        return `assert "${value}" in normalize_url(${base}.url)`;
+      } else {
+        // 완전일치 검증 (기존 동작)
+        return [
+          `${base}.wait_for_url(lambda url: normalize_url(url) == "${value}", timeout=10000)`,
+          `assert normalize_url(${base}.url) == "${value}"`
+        ];
+      }
     }
   }
   if (!ev || !selectorInfo || !selectorInfo.selector) return null;
@@ -383,6 +389,10 @@ function buildPlaywrightPythonAction(ev, selectorInfo, base = 'page') {
     const expectedText = escapeForPythonString(value || '');
     return `assert ${getLocator()}.inner_text() == "${expectedText}"`;
   }
+  if (ev.action === 'verifyTextContains') {
+    const expectedText = escapeForPythonString(value || '');
+    return `assert "${expectedText}" in ${getLocator()}.inner_text()`;
+  }
   if (ev.action === 'verifyElementPresent') {
     return `assert ${getLocator()}.is_visible()`;
   }
@@ -397,12 +407,23 @@ function buildPlaywrightPythonAction(ev, selectorInfo, base = 'page') {
     // URL 정규화 적용
     const normalizedUrl = normalizeUrl(value || '');
     const expectedUrl = escapeForPythonString(normalizedUrl);
-    // 페이지 이동 완료를 기다린 후 검증
-    // 두 줄을 배열로 반환하여 각 줄에 들여쓰기가 적용되도록 함
-    return [
-      `${base}.wait_for_url(lambda url: normalize_url(url) == "${expectedUrl}", timeout=10000)`,
-      `assert normalize_url(${base}.url) == "${expectedUrl}"`
-    ];
+    const matchMode = ev.matchMode || 'exact'; // 기본값은 'exact'
+    
+    if (matchMode === 'contains') {
+      // 포함 검증
+      return `assert "${expectedUrl}" in normalize_url(${base}.url)`;
+    } else {
+      // 완전일치 검증 (기존 동작)
+      return [
+        `${base}.wait_for_url(lambda url: normalize_url(url) == "${expectedUrl}", timeout=10000)`,
+        `assert normalize_url(${base}.url) == "${expectedUrl}"`
+      ];
+    }
+  }
+  if (ev.action === 'verifyImage') {
+    // 이미지 비교 (pytest-playwright-visual-snapshot 사용)
+    // conftest.assert_snapshot_func()을 통해 사용
+    return `conftest.assert_snapshot_func(${getLocator()})`;
   }
   return null;
 }
@@ -421,8 +442,15 @@ function buildPlaywrightJSAction(ev, selectorInfo, base = 'page') {
       // URL 정규화 적용
       const normalizedUrl = normalizeUrl(ev.value || '');
       const normalizedValue = escapeForJSString(normalizedUrl);
-      // 페이지 이동 완료를 기다린 후 검증
-      return `await ${base}.waitForURL(url => normalizeUrl(url) === "${normalizedValue}", { timeout: 10000 });\n  expect(normalizeUrl(${base}.url())).toBe("${normalizedValue}");`;
+      const matchMode = ev.matchMode || 'exact'; // 기본값은 'exact'
+      
+      if (matchMode === 'contains') {
+        // 포함 검증
+        return `expect(normalizeUrl(${base}.url())).toContain("${normalizedValue}");`;
+      } else {
+        // 완전일치 검증 (기존 동작)
+        return `await ${base}.waitForURL(url => normalizeUrl(url) === "${normalizedValue}", { timeout: 10000 });\n  expect(normalizeUrl(${base}.url())).toBe("${normalizedValue}");`;
+      }
     }
   }
   if (!ev || !selectorInfo || !selectorInfo.selector) return null;
@@ -470,6 +498,10 @@ function buildPlaywrightJSAction(ev, selectorInfo, base = 'page') {
     const expectedText = escapeForJSString(value || '');
     return `expect(await ${getLocator()}.innerText()).toBe("${expectedText}");`;
   }
+  if (ev.action === 'verifyTextContains') {
+    const expectedText = escapeForJSString(value || '');
+    return `expect(await ${getLocator()}.innerText()).toContain("${expectedText}");`;
+  }
   if (ev.action === 'verifyElementPresent') {
     return `expect(await ${getLocator()}.isVisible()).toBe(true);`;
   }
@@ -484,8 +516,19 @@ function buildPlaywrightJSAction(ev, selectorInfo, base = 'page') {
     // URL 정규화 적용
     const normalizedUrl = normalizeUrl(value || '');
     const expectedUrl = escapeForJSString(normalizedUrl);
-    // 페이지 이동 완료를 기다린 후 검증
-    return `await ${base}.waitForURL(url => normalizeUrl(url) === "${expectedUrl}", { timeout: 10000 });\n  expect(normalizeUrl(${base}.url())).toBe("${expectedUrl}");`;
+    const matchMode = ev.matchMode || 'exact'; // 기본값은 'exact'
+    
+    if (matchMode === 'contains') {
+      // 포함 검증
+      return `expect(normalizeUrl(${base}.url())).toContain("${expectedUrl}");`;
+    } else {
+      // 완전일치 검증 (기존 동작)
+      return `await ${base}.waitForURL(url => normalizeUrl(url) === "${expectedUrl}", { timeout: 10000 });\n  expect(normalizeUrl(${base}.url())).toBe("${expectedUrl}");`;
+    }
+  }
+  if (ev.action === 'verifyImage') {
+    // 이미지 비교 (Playwright의 snapshot 기능 사용)
+    return `expect(await ${getLocator()}.screenshot()).toMatchSnapshot();`;
   }
   return null;
 }
@@ -504,12 +547,18 @@ function buildSeleniumPythonAction(ev, selectorInfo, driverVar = 'driver') {
       // URL 정규화 적용
       const normalizedUrl = normalizeUrl(ev.value || '');
       const normalizedValue = escapeForPythonString(normalizedUrl);
-      // 페이지 이동 완료를 기다린 후 검증
-      // 두 줄을 배열로 반환하여 각 줄에 들여쓰기가 적용되도록 함
-      return [
-        `WebDriverWait(${driverVar}, 10).until(lambda d: normalize_url(d.current_url) == "${normalizedValue}")`,
-        `assert normalize_url(${driverVar}.current_url) == "${normalizedValue}"`
-      ];
+      const matchMode = ev.matchMode || 'exact'; // 기본값은 'exact'
+      
+      if (matchMode === 'contains') {
+        // 포함 검증
+        return `assert "${normalizedValue}" in normalize_url(${driverVar}.current_url)`;
+      } else {
+        // 완전일치 검증 (기존 동작)
+        return [
+          `WebDriverWait(${driverVar}, 10).until(lambda d: normalize_url(d.current_url) == "${normalizedValue}")`,
+          `assert normalize_url(${driverVar}.current_url) == "${normalizedValue}"`
+        ];
+      }
     }
   }
   if (!ev || !selectorInfo || !selectorInfo.selector) return null;
@@ -575,6 +624,10 @@ function buildSeleniumPythonAction(ev, selectorInfo, driverVar = 'driver') {
     const expectedText = escapeForPythonString(value || '');
     return `assert ${element}.text == "${expectedText}"`;
   }
+  if (ev.action === 'verifyTextContains') {
+    const expectedText = escapeForPythonString(value || '');
+    return `assert "${expectedText}" in ${element}.text`;
+  }
   if (ev.action === 'verifyElementPresent') {
     return `assert ${element}.is_displayed()`;
   }
@@ -589,12 +642,22 @@ function buildSeleniumPythonAction(ev, selectorInfo, driverVar = 'driver') {
     // URL 정규화 적용
     const normalizedUrl = normalizeUrl(value || '');
     const expectedUrl = escapeForPythonString(normalizedUrl);
-    // 페이지 이동 완료를 기다린 후 검증
-    // 두 줄을 배열로 반환하여 각 줄에 들여쓰기가 적용되도록 함
-    return [
-      `WebDriverWait(${driverVar}, 10).until(lambda d: normalize_url(d.current_url) == "${expectedUrl}")`,
-      `assert normalize_url(${driverVar}.current_url) == "${expectedUrl}"`
-    ];
+    const matchMode = ev.matchMode || 'exact'; // 기본값은 'exact'
+    
+    if (matchMode === 'contains') {
+      // 포함 검증
+      return `assert "${expectedUrl}" in normalize_url(${driverVar}.current_url)`;
+    } else {
+      // 완전일치 검증 (기존 동작)
+      return [
+        `WebDriverWait(${driverVar}, 10).until(lambda d: normalize_url(d.current_url) == "${expectedUrl}")`,
+        `assert normalize_url(${driverVar}.current_url) == "${expectedUrl}"`
+      ];
+    }
+  }
+  if (ev.action === 'verifyImage') {
+    // 이미지 비교 (PIL/Pillow 사용)
+    return `# 이미지 비교를 위해 PIL/Pillow 라이브러리 필요\nfrom PIL import Image\nimport io\ncurrent_screenshot = ${element}.screenshot_as_png\n# 기준 이미지와 비교하는 로직 구현 필요`;
   }
   return null;
 }
@@ -661,6 +724,42 @@ function buildSeleniumJSAction(ev, selectorInfo) {
   if (ev.action === 'navigate') {
     return `await driver.get("${escapeForJSString(ev.value || ev.url || '')}");`;
   }
+  // Assertion actions
+  if (ev.action === 'verifyText') {
+    const expectedText = escapeForJSString(value || '');
+    return `expect(await ${element}.getText()).toBe("${expectedText}");`;
+  }
+  if (ev.action === 'verifyTextContains') {
+    const expectedText = escapeForJSString(value || '');
+    return `expect(await ${element}.getText()).toContain("${expectedText}");`;
+  }
+  if (ev.action === 'verifyElementPresent') {
+    return `expect(await ${element}.isDisplayed()).toBe(true);`;
+  }
+  if (ev.action === 'verifyElementNotPresent') {
+    return `expect(await ${element}.isDisplayed()).toBe(false);`;
+  }
+  if (ev.action === 'verifyTitle') {
+    const expectedTitle = escapeForJSString(value || '');
+    return `expect(await driver.getTitle()).toBe("${expectedTitle}");`;
+  }
+  if (ev.action === 'verifyUrl') {
+    const normalizedUrl = normalizeUrl(value || '');
+    const expectedUrl = escapeForJSString(normalizedUrl);
+    const matchMode = ev.matchMode || 'exact'; // 기본값은 'exact'
+    
+    if (matchMode === 'contains') {
+      // 포함 검증
+      return `expect(normalizeUrl(await driver.getCurrentUrl())).toContain("${expectedUrl}");`;
+    } else {
+      // 완전일치 검증
+      return `expect(normalizeUrl(await driver.getCurrentUrl())).toBe("${expectedUrl}");`;
+    }
+  }
+  if (ev.action === 'verifyImage') {
+    // 이미지 비교 (JavaScript에서는 이미지 비교 라이브러리 필요)
+    return `// 이미지 비교를 위해 이미지 비교 라이브러리 필요\nconst screenshot = await ${element}.takeScreenshot();\n// 기준 이미지와 비교하는 로직 구현 필요`;
+  }
   return null;
 }
 
@@ -674,21 +773,21 @@ function buildPlaywrightFrameLocatorLines(ctx, languageLower, alias, indent, bas
   
   if (ctx.name) {
     if (pythonLike) {
-      lines.push(`${alias} = ${baseVar}.frame_locator('iframe[name="${ctx.name}"]')`);
+      lines.push(`${indent}${alias} = ${baseVar}.frame_locator('iframe[name="${ctx.name}"]')`);
     } else {
-      lines.push(`const ${alias} = ${baseVar}.frameLocator('iframe[name="${ctx.name}"]');`);
+      lines.push(`${indent}const ${alias} = ${baseVar}.frameLocator('iframe[name="${ctx.name}"]');`);
     }
   } else if (ctx.id) {
     if (pythonLike) {
-      lines.push(`${alias} = ${baseVar}.frame_locator('iframe#${ctx.id}')`);
+      lines.push(`${indent}${alias} = ${baseVar}.frame_locator('iframe#${ctx.id}')`);
     } else {
-      lines.push(`const ${alias} = ${baseVar}.frameLocator('iframe#${ctx.id}');`);
+      lines.push(`${indent}const ${alias} = ${baseVar}.frameLocator('iframe#${ctx.id}');`);
     }
   } else if (ctx.src) {
     if (pythonLike) {
-      lines.push(`${alias} = ${baseVar}.frame_locator('iframe[src="${ctx.src}"]')`);
+      lines.push(`${indent}${alias} = ${baseVar}.frame_locator('iframe[src="${ctx.src}"]')`);
     } else {
-      lines.push(`const ${alias} = ${baseVar}.frameLocator('iframe[src="${ctx.src}"]');`);
+      lines.push(`${indent}const ${alias} = ${baseVar}.frameLocator('iframe[src="${ctx.src}"]');`);
     }
   }
   
@@ -737,7 +836,9 @@ export function generateCode(events, manualList, framework, language) {
   
   if (frameworkLower === 'playwright') {
     if (languageLower === 'python') {
-      lines.push("from playwright.sync_api import sync_playwright");
+      // pytest 형식으로 생성
+      lines.push("import pytest");
+      lines.push("import conftest");
       lines.push("from urllib.parse import urlparse");
       lines.push("");
       lines.push("def normalize_url(url):");
@@ -752,9 +853,11 @@ export function generateCode(events, manualList, framework, language) {
       lines.push("        query_index = url.find('?')");
       lines.push("        return url[:query_index] if query_index != -1 else url");
       lines.push("");
-      lines.push("with sync_playwright() as p:");
-      lines.push("  browser = p.chromium.launch(headless=False)");
-      lines.push("  page = browser.new_page()");
+      
+      // 항상 page fixture만 사용 (assert_snapshot은 conftest.assert_snapshot_func()로 사용)
+      lines.push("def test_generated(page):");
+      lines.push("    \"\"\"Generated test case\"\"\"");
+      
       let currentFrameContext = null;
       let frameLocatorIndex = 0;
       let currentBase = 'page';
@@ -766,8 +869,8 @@ export function generateCode(events, manualList, framework, language) {
             if (targetFrame) {
               frameLocatorIndex += 1;
               const alias = `frame_locator_${frameLocatorIndex}`;
-              const setupLines = buildPlaywrightFrameLocatorLines(targetFrame, languageLower, alias, '  ', 'page');
-              setupLines.forEach(line => lines.push(`  ${line}`));
+              const setupLines = buildPlaywrightFrameLocatorLines(targetFrame, languageLower, alias, '    ', 'page');
+              setupLines.forEach(line => lines.push(line));
               currentBase = alias;
               currentFrameContext = targetFrame;
             } else {
@@ -777,18 +880,17 @@ export function generateCode(events, manualList, framework, language) {
           }
           const actionLine = buildPlaywrightPythonAction(event, selectorInfo, currentBase);
           if (actionLine) {
-            // 배열인 경우 각 줄에 들여쓰기 적용
+            // 배열인 경우 각 줄에 들여쓰기 적용 (함수 내부는 4칸)
             if (Array.isArray(actionLine)) {
-              actionLine.forEach(line => lines.push(`  ${line}`));
+              actionLine.forEach(line => lines.push(`    ${line}`));
             } else {
-              lines.push(`  ${actionLine}`);
+              lines.push(`    ${actionLine}`);
             }
           }
         } else if (entry.kind === 'manual') {
-          emitManualActionLines(lines, entry.action, frameworkLower, languageLower, '  ');
+          emitManualActionLines(lines, entry.action, frameworkLower, languageLower, '    ');
         }
       });
-      lines.push("  browser.close()");
     } else if (languageLower === 'python-class') {
       lines.push("from playwright.sync_api import sync_playwright");
       lines.push("");
@@ -810,7 +912,7 @@ export function generateCode(events, manualList, framework, language) {
               frameLocatorIndex += 1;
               const alias = `self.frame_locator_${frameLocatorIndex}`;
               const setupLines = buildPlaywrightFrameLocatorLines(targetFrame, languageLower, alias, '    ', 'self.page');
-              setupLines.forEach((line) => lines.push(`    ${line}`));
+              setupLines.forEach((line) => lines.push(line));
               currentBase = alias;
               currentFrameContext = targetFrame;
             } else {
@@ -878,7 +980,7 @@ export function generateCode(events, manualList, framework, language) {
               frameLocatorIndex += 1;
               const alias = `frameLocator${frameLocatorIndex}`;
               const setupLines = buildPlaywrightFrameLocatorLines(targetFrame, languageLower, alias, '  ', 'page');
-              setupLines.forEach(line => lines.push(`  ${line}`));
+              setupLines.forEach(line => lines.push(line));
               currentBase = alias;
               currentFrameContext = targetFrame;
             } else {
@@ -914,7 +1016,7 @@ export function generateCode(events, manualList, framework, language) {
               frameLocatorIndex += 1;
               const alias = `frameLocator${frameLocatorIndex}`;
               const setupLines = buildPlaywrightFrameLocatorLines(targetFrame, languageLower, alias, '  ', 'page');
-              setupLines.forEach(line => lines.push(`  ${line}`));
+              setupLines.forEach(line => lines.push(line));
               currentBase = alias;
               currentFrameContext = targetFrame;
             } else {

@@ -27,25 +27,122 @@ export function normalizeURL(url) {
 }
 
 /**
- * DOM 구조 캡처
- * 현재 페이지의 전체 DOM 구조를 문자열로 반환
- * @returns {string} DOM 구조 문자열
+ * HTML 최소화 (힐링 품질 유지하면서 용량 절감)
+ * script, style, 주석 제거하지만 DOM 구조는 유지
+ * @param {string} html - 원본 HTML
+ * @returns {string} 최소화된 HTML
+ */
+export function minimizeHTML(html) {
+  if (!html || typeof html !== 'string') {
+    return html || '';
+  }
+  
+  try {
+    // 임시 DOM 생성
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    
+    // script 태그 제거
+    const scripts = doc.querySelectorAll('script');
+    scripts.forEach(script => script.remove());
+    
+    // style 태그 제거 (인라인 style 속성은 유지)
+    const styles = doc.querySelectorAll('style');
+    styles.forEach(style => style.remove());
+    
+    // 주석 제거
+    const commentXPath = doc.evaluate(
+      '//comment()',
+      doc,
+      null,
+      XPathResult.UNORDERED_NODE_ITERATOR_TYPE,
+      null
+    );
+    const comments = [];
+    let commentNode;
+    while (commentNode = commentXPath.iterateNext()) {
+      comments.push(commentNode);
+    }
+    comments.forEach(comment => comment.remove());
+    
+    // 빈 텍스트 노드 정리 (공백만 있는 노드) - XPath 사용
+    const textXPath = doc.evaluate(
+      '//text()',
+      doc,
+      null,
+      XPathResult.UNORDERED_NODE_ITERATOR_TYPE,
+      null
+    );
+    const emptyTextNodes = [];
+    let textNode;
+    while (textNode = textXPath.iterateNext()) {
+      if (textNode.textContent && textNode.textContent.trim() === '') {
+        emptyTextNodes.push(textNode);
+      }
+    }
+    emptyTextNodes.forEach(node => {
+      if (node.parentNode) {
+        node.parentNode.removeChild(node);
+      }
+    });
+    
+    // 불필요한 속성 제거 (프레임워크 관련 속성, 하지만 힐링에 필요한 것은 유지)
+    const allElements = doc.querySelectorAll('*');
+    allElements.forEach(elem => {
+      // data-react-*, data-vue-* 같은 프레임워크 속성 제거
+      // 하지만 data-testid, data-id 같은 힐링에 필요한 것은 유지
+      const attrsToRemove = [];
+      for (const attr of elem.attributes) {
+        const attrName = attr.name;
+        if (
+          attrName.startsWith('data-react-') ||
+          attrName.startsWith('data-vue-') ||
+          attrName.startsWith('data-ng-') ||
+          attrName.startsWith('_ng') ||
+          attrName === 'data-reactroot' ||
+          attrName.startsWith('__')
+        ) {
+          attrsToRemove.push(attrName);
+        }
+      }
+      attrsToRemove.forEach(attr => elem.removeAttribute(attr));
+    });
+    
+    // HTML 문자열 반환
+    return doc.documentElement.outerHTML;
+  } catch (error) {
+    console.warn('[DOM Snapshot] HTML 최소화 실패, 원본 반환:', error);
+    // 최소화 실패 시 간단한 정규식 기반 제거
+    return html
+      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+      .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+      .replace(/<!--[\s\S]*?-->/g, '');
+  }
+}
+
+/**
+ * DOM 구조 캡처 (최소화된 HTML)
+ * @returns {string} 최소화된 DOM 구조 문자열
  */
 export function captureDOM() {
   try {
+    let html = '';
+    
     // document.documentElement.outerHTML을 사용하여 전체 HTML 구조 캡처
     if (document && document.documentElement) {
-      return document.documentElement.outerHTML;
+      html = document.documentElement.outerHTML;
+    } else if (document && document.body) {
+      // 대체 방법: document.body가 있는 경우
+      html = document.body.outerHTML;
     }
     
-    // 대체 방법: document.body가 있는 경우
-    if (document && document.body) {
-      return document.body.outerHTML;
+    if (!html) {
+      console.warn('[DOM Snapshot] DOM 구조를 캡처할 수 없습니다.');
+      return '';
     }
     
-    // 최후의 수단: 빈 문자열 반환
-    console.warn('[DOM Snapshot] DOM 구조를 캡처할 수 없습니다.');
-    return '';
+    // HTML 최소화
+    return minimizeHTML(html);
   } catch (error) {
     console.error('[DOM Snapshot] DOM 캡처 오류:', error);
     return '';
@@ -89,4 +186,3 @@ export function getCurrentPeriod(date = new Date()) {
     isInPeriod: true // 항상 저장 가능한 기간 내
   };
 }
-

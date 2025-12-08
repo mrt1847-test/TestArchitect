@@ -250,17 +250,35 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   /**
-   * DOM 스냅샷 저장
-   * @param {string} pageUrl - 정규화된 페이지 URL
-   * @param {string} domStructure - DOM 구조 문자열
-   * @param {Date|string} snapshotDate - 스냅샷 날짜
+   * DOM 스냅샷 저장 (새로운 API 형식)
+   * @param {Object} snapshotData - 스냅샷 데이터
+   * @param {string} snapshotData.url - 원본 URL
+   * @param {string} snapshotData.domData - DOM 데이터 (HTML)
+   * @param {string} snapshotData.pageTitle - 페이지 제목 (선택사항)
+   * @param {Object} snapshotData.metadata - 메타데이터 (선택사항)
    * @returns {Promise<Object>} 저장 결과
    */
-  saveDomSnapshot: (pageUrl, domStructure, snapshotDate) => {
-    const dateStr = snapshotDate instanceof Date 
-      ? snapshotDate.toISOString() 
-      : snapshotDate;
-    return ipcRenderer.invoke('save-dom-snapshot', pageUrl, domStructure, dateStr);
+  saveDomSnapshot: (snapshotData) => {
+    return ipcRenderer.invoke('save-dom-snapshot', snapshotData);
+  },
+  
+  /**
+   * DOM 스냅샷 조회 (최신)
+   * @param {string} normalizedUrl - 정규화된 URL
+   * @returns {Promise<Object|null>} 최신 스냅샷 또는 null
+   */
+  getLatestDomSnapshot: (normalizedUrl) => {
+    return ipcRenderer.invoke('get-latest-dom-snapshot', normalizedUrl);
+  },
+  
+  /**
+   * DOM 스냅샷 히스토리 조회
+   * @param {string} normalizedUrl - 정규화된 URL
+   * @param {number} limit - 조회 개수 제한
+   * @returns {Promise<Array>} 스냅샷 히스토리
+   */
+  getDomSnapshotHistory: (normalizedUrl, limit = 10) => {
+    return ipcRenderer.invoke('get-dom-snapshot-history', normalizedUrl, limit);
   },
 
   /**
@@ -278,6 +296,40 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ? endDate.toISOString() 
       : endDate;
     return ipcRenderer.invoke('check-dom-snapshot', pageUrl, startStr, endStr);
+  },
+
+  /**
+   * DOM 스냅샷 저장 (새로운 API 형식)
+   * @param {Object} snapshotData - 스냅샷 데이터
+   * @param {string} snapshotData.url - 원본 URL
+   * @param {string} snapshotData.domData - DOM 데이터 (HTML)
+   * @param {string} snapshotData.pageTitle - 페이지 제목 (선택사항)
+   * @param {Object} snapshotData.metadata - 메타데이터 (선택사항)
+   * @returns {Promise<Object>} 저장 결과
+   */
+  saveDomSnapshot: (snapshotData) => {
+    return ipcRenderer.invoke('save-dom-snapshot', snapshotData);
+  },
+
+  /**
+   * DOM 스냅샷 확인
+   * @param {string} normalizedUrl - 정규화된 URL
+   * @param {string} startDate - 시작 날짜 (선택사항)
+   * @param {string} endDate - 종료 날짜 (선택사항)
+   * @returns {Promise<boolean>} 존재 여부
+   */
+  checkDomSnapshot: (normalizedUrl, startDate, endDate) => {
+    return ipcRenderer.invoke('check-dom-snapshot', normalizedUrl, startDate, endDate);
+  },
+
+  /**
+   * DOM 스냅샷 히스토리 조회
+   * @param {string} normalizedUrl - 정규화된 URL
+   * @param {number} limit - 조회 개수 제한
+   * @returns {Promise<Array>} 스냅샷 히스토리
+   */
+  getDomSnapshotHistory: (normalizedUrl, limit) => {
+    return ipcRenderer.invoke('get-dom-snapshot-history', normalizedUrl, limit);
   },
 
   /**
@@ -308,6 +360,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
    */
   deleteStepScreenshots: (tcId) => {
     return ipcRenderer.invoke('delete-step-screenshots', tcId);
+  },
+
+  /**
+   * Recorder 설정 조회
+   * @returns {Promise<Object>} 설정 객체
+   */
+  getRecorderSettings: () => {
+    return ipcRenderer.invoke('get-recorder-settings');
+  },
+
+  /**
+   * Recorder 설정 저장
+   * @param {Object} settings - 설정 객체 (panelHeights, layout 등)
+   * @returns {Promise<Object>} 저장 결과
+   */
+  setRecorderSettings: (settings) => {
+    return ipcRenderer.invoke('set-recorder-settings', settings);
   }
 
   // ============================================================================

@@ -52,9 +52,9 @@
     overflow-x: hidden;
     display: flex;
     flex-direction: column;
-    gap: 11.2px; /* 16px * 0.7 */
+    gap: 14.4px; /* 16px * 0.9 */
     align-items: stretch;
-    padding: 8.4px; /* 12px * 0.7 */
+    padding: 10.8px; /* 12px * 0.9 */
     min-height: 0;
     -webkit-overflow-scrolling: touch; /* iOS 스크롤 개선 */
   }
@@ -69,35 +69,35 @@
   .recorder-header {
     background: var(--vscode-sidebar) !important;
     border: 1px solid var(--vscode-border) !important;
-    border-radius: 5.6px; /* 8px * 0.7 */
-    padding: 8.4px 11.2px; /* 12px 16px * 0.7 */
-    margin-bottom: 8.4px; /* 12px * 0.7 */
+    border-radius: 7.2px; /* 8px * 0.9 */
+    padding: 10.8px 14.4px; /* 12px 16px * 0.9 */
+    margin-bottom: 10.8px; /* 12px * 0.9 */
   }
 
   .recorder-header-main {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    gap: 8.4px; /* 12px * 0.7 */
+    gap: 10.8px; /* 12px * 0.9 */
   }
 
   .recorder-controls {
     display: flex;
-    gap: 5.6px; /* 8px * 0.7 */
+    gap: 7.2px; /* 8px * 0.9 */
     align-items: center;
   }
 
   .recorder-btn {
     display: inline-flex;
     align-items: center;
-    gap: 5.6px; /* 8px * 0.7 */
-    padding: 7px 12.6px; /* 10px 18px * 0.7 */
-    border-radius: 4.2px; /* 6px * 0.7 */
+    gap: 7.2px; /* 8px * 0.9 */
+    padding: 9px 16.2px; /* 10px 18px * 0.9 */
+    border-radius: 5.4px; /* 6px * 0.9 */
     border: 1px solid var(--vscode-input-border);
     background: var(--vscode-input-bg);
     color: var(--vscode-text);
     cursor: pointer;
-    font-size: 9.8px; /* 14px * 0.7 */
+    font-size: 12.6px; /* 14px * 0.9 */
     font-weight: 500;
     transition: all 0.2s ease;
     white-space: nowrap;
@@ -125,7 +125,7 @@
   }
 
   .recorder-btn-icon {
-    font-size: 7px; /* 10px * 0.7 */
+    font-size: 9px; /* 10px * 0.9 */
     line-height: 1;
   }
 
@@ -133,15 +133,15 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 22.4px; /* 32px * 0.7 */
-    height: 22.4px; /* 32px * 0.7 */
+    width: 28.8px; /* 32px * 0.9 */
+    height: 28.8px; /* 32px * 0.9 */
     padding: 0;
-    border-radius: 4.2px; /* 6px * 0.7 */
+    border-radius: 5.4px; /* 6px * 0.9 */
     border: 1px solid var(--vscode-input-border);
     background: var(--vscode-input-bg);
     color: var(--vscode-text);
     cursor: pointer;
-    font-size: 11.2px; /* 16px * 0.7 */
+    font-size: 14.4px; /* 16px * 0.9 */
     transition: all 0.2s ease;
   }
 
@@ -154,9 +154,9 @@
   .settings-panel {
     background: var(--vscode-sidebar);
     border-top: 1px solid var(--vscode-border);
-    padding: 14px; /* 20px * 0.7 */
-    margin-top: 8.4px; /* 12px * 0.7 */
-    border-radius: 0 0 5.6px 5.6px; /* 8px * 0.7 */
+    padding: 18px; /* 20px * 0.9 */
+    margin-top: 10.8px; /* 12px * 0.9 */
+    border-radius: 0 0 7.2px 7.2px; /* 8px * 0.9 */
     max-height: 60vh; /* 최대 높이 제한 */
     overflow-y: auto; /* 스크롤 추가 */
     overflow-x: hidden;
@@ -169,19 +169,19 @@
   .settings-content {
     display: flex;
     flex-direction: column;
-    gap: 16.8px; /* 24px * 0.7 */
+    gap: 21.6px; /* 24px * 0.9 */
   }
 
   .settings-section h5 {
-    margin: 0 0 8.4px 0; /* 12px * 0.7 */
-    font-size: 9.1px; /* 13px * 0.7 */
+    margin: 0 0 10.8px 0; /* 12px * 0.9 */
+    font-size: 11.7px; /* 13px * 0.9 */
     font-weight: 600;
     color: var(--vscode-text);
   }
 
   .settings-row {
     display: flex;
-    gap: 11.2px; /* 16px * 0.7 */
+    gap: 14.4px; /* 16px * 0.9 */
     flex-wrap: wrap;
     align-items: flex-end;
   }
@@ -189,25 +189,25 @@
   .settings-field {
     display: flex;
     flex-direction: column;
-    gap: 5.6px; /* 8px * 0.7 */
+    gap: 7.2px; /* 8px * 0.9 */
     flex: 1 1 200px;
     min-width: 150px;
   }
 
   .settings-label {
-    font-size: 8.4px; /* 12px * 0.7 */
+    font-size: 10.8px; /* 12px * 0.9 */
     font-weight: 500;
     color: var(--vscode-text-secondary);
   }
 
   .settings-field input,
   .settings-field select {
-    padding: 7px 9.8px; /* 10px 14px * 0.7 */
-    border-radius: 4.2px; /* 6px * 0.7 */
+    padding: 9px 12.6px; /* 10px 14px * 0.9 */
+    border-radius: 5.4px; /* 6px * 0.9 */
     border: 1px solid var(--vscode-input-border);
     background: var(--vscode-input-bg);
     color: var(--vscode-text);
-    font-size: 9.8px; /* 14px * 0.7 */
+    font-size: 12.6px; /* 14px * 0.9 */
     transition: border-color 0.2s ease;
   }
 
@@ -221,52 +221,60 @@
   /* Steps Panel */
   #steps-panel {
     background: var(--vscode-sidebar);
-    border-radius: 5.6px; /* 8px * 0.7 */
+    border-radius: 7.2px; /* 8px * 0.9 */
     border: 1px solid var(--vscode-border);
     display: flex;
     flex-direction: column;
-    overflow: hidden;
-    margin-bottom: 11.2px; /* 16px * 0.7 */
+    overflow-y: auto; /* 세로 스크롤 허용 */
+    overflow-x: hidden;
+    margin-bottom: 14.4px; /* 16px * 0.9 */
     flex: 0 0 auto; /* 고정 크기, 줄어들지 않도록 */
-    min-height: 300px; /* 최소 높이 증가 */
-    max-height: 60vh; /* 최대 높이 */
-    height: 300px; /* 고정 높이 설정 */
+    min-height: 400px; /* 최소 높이 증가 */
+    max-height: 70vh; /* 최대 높이 */
+    height: 400px; /* 고정 높이 설정 */
+    position: relative; /* 리사이즈 핸들 위치 지정을 위해 */
+  }
+
+  #code-area,
+  #step-details-panel,
+  #replay-log {
+    position: relative; /* 리사이즈 핸들 위치 지정을 위해 */
   }
 
   .steps-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 9.8px 12.6px; /* 14px 18px * 0.7 */
+    padding: 12.6px 16.2px; /* 14px 18px * 0.9 */
     border-bottom: 1px solid var(--vscode-border);
     background: var(--vscode-title-bar);
   }
 
   .steps-header h4 {
     margin: 0;
-    font-size: 9.8px; /* 14px * 0.7 */
+    font-size: 12.6px; /* 14px * 0.9 */
     font-weight: 600;
     color: var(--vscode-text);
   }
 
   .steps-header-actions {
     display: flex;
-    gap: 5.6px; /* 8px * 0.7 */
+    gap: 7.2px; /* 8px * 0.9 */
   }
 
   .step-action-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 19.6px; /* 28px * 0.7 */
-    height: 19.6px; /* 28px * 0.7 */
+    width: 25.2px; /* 28px * 0.9 */
+    height: 25.2px; /* 28px * 0.9 */
     padding: 0;
-    border-radius: 2.8px; /* 4px * 0.7 */
+    border-radius: 3.6px; /* 4px * 0.9 */
     border: 1px solid var(--vscode-input-border);
     background: var(--vscode-input-bg);
     color: var(--vscode-text);
     cursor: pointer;
-    font-size: 9.8px; /* 14px * 0.7 */
+    font-size: 12.6px; /* 14px * 0.9 */
     transition: all 0.2s ease;
   }
 
@@ -284,18 +292,18 @@
     flex: 1;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 8.4px; /* 12px * 0.7 */
+    padding: 10.8px; /* 12px * 0.9 */
     min-height: 0; /* flex: 1과 함께 사용하여 스크롤 가능하도록 */
     display: flex;
     flex-direction: column;
-    gap: 5.6px; /* 8px * 0.7 */
+    gap: 7.2px; /* 8px * 0.9 */
   }
 
   .steps-empty {
-    padding: 28px 14px; /* 40px 20px * 0.7 */
+    padding: 36px 18px; /* 40px 20px * 0.9 */
     text-align: center;
     color: var(--vscode-text-secondary);
-    font-size: 9.1px; /* 13px * 0.7 */
+    font-size: 11.7px; /* 13px * 0.9 */
   }
 
   .steps-empty.hidden {
@@ -313,14 +321,14 @@
     flex-direction: column;
     align-items: stretch;
     gap: 0;
-    padding: 5.88px 9.8px; /* 8.4px * 0.7 = 5.88px (높이 70%) */
-    border-radius: 4.2px; /* 6px * 0.7 */
+    padding: 8px 14px; /* 10px * 0.8 = 8px (높이 20% 감소) */
+    border-radius: 5.4px; /* 6px * 0.9 */
     border: 1px solid var(--vscode-border);
     background: var(--vscode-input-bg);
     cursor: pointer;
     transition: all 0.2s ease;
     position: relative;
-    min-height: 33.6px; /* 8.4px * 4 = 33.6px (최소 높이 4배) */
+    min-height: 35.2px; /* 44px * 0.8 = 35.2px (높이 20% 감소) */
     flex-shrink: 0; /* 이벤트가 많아져도 줄어들지 않도록 */
   }
 
@@ -338,21 +346,21 @@
   .recorder-step-main {
     display: flex;
     align-items: center;
-    gap: 6px; /* 간격 줄임 */
+    gap: 8px; /* 간격 확대 */
     width: 100%;
-    min-height: 28px; /* 최소 높이 보장 */
+    min-height: 25.6px; /* 32px * 0.8 = 25.6px (높이 20% 감소) */
   }
 
   .recorder-step-number {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 16.8px; /* 24px * 0.7 */
-    height: 16.8px; /* 24px * 0.7 */
-    border-radius: 2.8px; /* 4px * 0.7 */
+    width: 21.6px; /* 24px * 0.9 */
+    height: 21.6px; /* 24px * 0.9 */
+    border-radius: 3.6px; /* 4px * 0.9 */
     background: var(--vscode-title-bar);
     color: var(--vscode-text-secondary);
-    font-size: 7.7px; /* 11px * 0.7 */
+    font-size: 9.9px; /* 11px * 0.9 */
     font-weight: 600;
     flex-shrink: 0;
   }
@@ -366,10 +374,10 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 14px; /* 20px * 0.7 */
-    height: 14px; /* 20px * 0.7 */
+    width: 18px; /* 20px * 0.9 */
+    height: 18px; /* 20px * 0.9 */
     flex-shrink: 0;
-    font-size: 9.8px; /* 14px * 0.7 */
+    font-size: 12.6px; /* 14px * 0.9 */
   }
 
   .recorder-step-content {
@@ -377,21 +385,21 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 2px; /* 간격 줄임 */
+    gap: 4px; /* 간격 확대 */
     justify-content: center; /* 세로 중앙 정렬 */
   }
 
   .recorder-step-action {
     display: flex;
     align-items: center;
-    gap: 5.6px; /* 8px * 0.7 */
-    font-size: 12px; /* 이벤트가 많아져도 읽을 수 있도록 적절한 크기 */
+    gap: 7.2px; /* 8px * 0.9 */
+    font-size: 14px; /* 더 큰 폰트 크기 */
     font-weight: 500;
     color: var(--vscode-text);
   }
 
   .recorder-step-target {
-    font-size: 11px; /* 적절한 크기로 조정 */
+    font-size: 12px; /* 더 큰 폰트 크기 */
     color: var(--vscode-text-secondary);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -400,7 +408,7 @@
   }
 
   .recorder-step-selector {
-    font-size: 10px; /* 적절한 크기로 조정 */
+    font-size: 11px; /* 더 큰 폰트 크기 */
     color: var(--vscode-text-secondary);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -425,14 +433,14 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 16.8px; /* 24px * 0.7 */
-    height: 16.8px; /* 24px * 0.7 */
+    width: 21.6px; /* 24px * 0.9 */
+    height: 21.6px; /* 24px * 0.9 */
     padding: 0;
-    border-radius: 2.8px; /* 4px * 0.7 */
+    border-radius: 3.6px; /* 4px * 0.9 */
     border: none;
     background: transparent;
     cursor: pointer;
-    font-size: 7px; /* 10px * 0.7 */
+    font-size: 9px; /* 10px * 0.9 */
     transition: all 0.2s ease;
     color: var(--vscode-text-secondary);
     flex-shrink: 0;
@@ -448,31 +456,117 @@
     max-height: 0;
     overflow: hidden;
     transition: max-height 0.3s ease;
-    padding: 0 8.4px; /* 12px * 0.7 */
-    background: var(--vscode-title-bar);
+    padding: 0 10.8px; /* 12px * 0.9 */
+    background: #ffffff; /* 밝은 배경 */
     border-top: 1px solid var(--vscode-border);
-    margin-top: 5.6px; /* 8px * 0.7 */
+    margin-top: 7.2px; /* 8px * 0.9 */
   }
 
   .recorder-step.expanded .recorder-step-details {
     max-height: 5000px; /* 충분히 큰 값으로 설정하여 모든 내용이 보이도록 */
-    padding: 8.4px; /* 12px * 0.7 */
-    border-radius: 2.8px; /* 4px * 0.7 */
+    padding: 10.8px; /* 12px * 0.9 */
+    border-radius: 3.6px; /* 4px * 0.9 */
     overflow-y: auto; /* 내용이 많을 경우 스크롤 가능 */
+    background: #ffffff; /* 밝은 배경 */
+  }
+
+  /* Step Detail Row */
+  .step-detail-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 7.2px; /* 8px * 0.9 */
+    padding: 9px 12.6px; /* 10px 14px * 0.9 */
+    margin-bottom: 7.2px; /* 8px * 0.9 */
+    font-size: 10.8px; /* 12px * 0.9 */
+    background: #ffffff; /* 하얀 배경 */
+    border: 1px solid #e0e0e0; /* 테두리 */
+    border-radius: 4px; /* 둥근 모서리 */
+    border-bottom: 1px solid #e0e0e0; /* 하단 테두리 */
+  }
+
+  .step-detail-row:last-child {
+    margin-bottom: 0;
+  }
+
+  .step-detail-label {
+    font-weight: 600;
+    color: #666666; /* 하얀 배경에 맞는 어두운 색상 */
+    min-width: 70px; /* 라벨 최소 너비 */
+    flex-shrink: 0;
+  }
+
+  .step-detail-value {
+    color: #333333; /* 하얀 배경에 맞는 어두운 색상 */
+    flex: 1;
+    word-break: break-word;
+    font-family: "Courier New", monospace;
+  }
+
+  /* Step Detail Selectors */
+  .step-detail-selectors {
+    display: flex;
+    flex-direction: column;
+    gap: 5.4px; /* 6px * 0.9 */
+    margin-top: 3.6px; /* 4px * 0.9 */
+  }
+
+  .step-detail-selector-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 7.2px; /* 8px * 0.9 */
+    padding: 7.2px 9px; /* 8px 10px * 0.9 */
+    margin-bottom: 5.4px; /* 6px * 0.9 */
+    background: #ffffff; /* 하얀 배경 */
+    border: 1px solid #e0e0e0; /* 테두리 */
+    border-radius: 4px; /* 둥근 모서리 */
+    font-size: 9.9px; /* 11px * 0.9 */
+  }
+
+  .step-detail-selector-item:last-child {
+    margin-bottom: 0;
+  }
+
+  .step-detail-selector-label {
+    font-weight: 600;
+    color: #666666; /* 하얀 배경에 맞는 어두운 색상 */
+    min-width: 60px;
+    flex-shrink: 0;
+  }
+
+  .step-detail-selector-value {
+    color: #333333; /* 하얀 배경에 맞는 어두운 색상 */
+    flex: 1;
+    word-break: break-word;
+    font-family: "Courier New", monospace;
+  }
+
+  .step-detail-image {
+    margin-top: 5.4px; /* 6px * 0.9 */
+    max-width: 360px; /* 400px * 0.9 */
+    max-height: 270px; /* 300px * 0.9 */
+    border: 1px solid var(--vscode-border);
+    border-radius: 3.6px; /* 4px * 0.9 */
+    overflow: hidden;
+  }
+
+  .step-detail-image img {
+    width: 100%;
+    height: auto;
+    display: block;
   }
 
   /* Step Details Panel */
   .step-details-panel {
     background: var(--vscode-sidebar);
-    border-radius: 5.6px; /* 8px * 0.7 */
+    border-radius: 7.2px; /* 8px * 0.9 */
     border: 1px solid var(--vscode-border);
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    margin-bottom: 8.4px; /* 12px * 0.7 */
+    margin-bottom: 10.8px; /* 12px * 0.9 */
     flex: 0 0 auto; /* 고정 크기, 줄어들지 않도록 */
-    min-height: 200px; /* 접지 않았을 때 최소 높이 보장 */
-    max-height: 40vh;
+    min-height: 300px; /* 접지 않았을 때 최소 높이 보장 */
+    max-height: 50vh;
   }
 
   .step-details-panel.hidden {
@@ -484,14 +578,14 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 8.4px 11.2px; /* 12px 16px * 0.7 */
+    padding: 10.8px 14.4px; /* 12px 16px * 0.9 */
     border-bottom: 1px solid var(--vscode-border);
     background: var(--vscode-title-bar);
   }
 
   .step-details-header h4 {
     margin: 0;
-    font-size: 10.5px; /* 15px * 0.7 */
+    font-size: 13.5px; /* 15px * 0.9 */
     font-weight: 600;
     color: var(--vscode-text);
   }
@@ -500,14 +594,14 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 16.8px; /* 24px * 0.7 */
-    height: 16.8px; /* 24px * 0.7 */
+    width: 21.6px; /* 24px * 0.9 */
+    height: 21.6px; /* 24px * 0.9 */
     padding: 0;
-    border-radius: 2.8px; /* 4px * 0.7 */
+    border-radius: 3.6px; /* 4px * 0.9 */
     border: none;
     background: transparent;
     cursor: pointer;
-    font-size: 11.2px; /* 16px * 0.7 */
+    font-size: 14.4px; /* 16px * 0.9 */
     color: var(--vscode-text-secondary);
     transition: all 0.2s ease;
   }
@@ -518,31 +612,56 @@
   }
 
   #step-details-content {
-    padding: 12.6px; /* 18px * 0.7 */
+    padding: 16.2px; /* 18px * 0.9 */
     overflow-y: auto;
-    max-height: 400px;
+    max-height: 500px;
     flex: 1;
     min-height: 0; /* flex 컨테이너에서 스크롤이 작동하도록 */
-    font-size: 8.4px; /* 12px * 0.7 - Step Details 영역 기본 폰트 크기 */
+    font-size: 10.8px; /* 12px * 0.9 - Step Details 영역 기본 폰트 크기 */
+  }
+
+  /* Try Wrap Panel */
+  #try-wrap-panel {
+    padding: 10.8px 16.2px; /* 12px 18px * 0.9 */
+    border-bottom: 1px solid var(--vscode-border);
+    margin-bottom: 10.8px; /* 12px * 0.9 */
+  }
+
+  #try-wrap-panel label {
+    display: flex;
+    align-items: center;
+    gap: 7.2px; /* 8px * 0.9 */
+    cursor: pointer;
+    font-size: 10.8px; /* 12px * 0.9 */
+    color: var(--vscode-text);
+  }
+
+  #try-wrap-panel input[type="checkbox"] {
+    cursor: pointer;
+    width: 14.4px; /* 16px * 0.9 */
+    height: 14.4px; /* 16px * 0.9 */
+    accent-color: var(--vscode-primary);
   }
 
   /* Code Area */
   .code-area {
     background: #2d2d2d !important; /* 어두운 회색 - 강제 적용 */
-    border-radius: 5.6px; /* 8px * 0.7 */
+    border-radius: 7.2px; /* 8px * 0.9 */
     border: 1px solid var(--vscode-border);
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    margin-bottom: 8.4px; /* 12px * 0.7 */
+    margin-bottom: 10.8px; /* 12px * 0.9 */
     flex: 0 0 auto; /* 고정 크기, 줄어들지 않도록 */
-    min-height: 200px; /* 접지 않았을 때 최소 높이 보장 */
-    transition: max-height 0.3s ease;
+    min-height: 300px; /* 접지 않았을 때 최소 높이 보장 */
+    transition: all 0.3s ease;
   }
   
-  /* 접혔을 때는 최소 높이 제거 */
+  /* 접혔을 때는 높이를 헤더만큼으로 축소 */
   .code-area.collapsed {
-    min-height: 0;
+    flex: 0 0 auto;
+    min-height: 0 !important;
+    overflow: hidden; /* 넘치는 내용 숨김 */
   }
 
   .code-area.collapsed .code-area-header {
@@ -550,7 +669,10 @@
   }
 
   .code-area.collapsed .code-area-content {
-    display: none; /* 내용만 숨김 */
+    display: none !important; /* 내용 완전히 숨김 */
+    max-height: 0;
+    overflow: hidden;
+    flex: 0 0 0; /* flex 컨테이너에서 공간 차지 안함 */
   }
 
   .code-area-header {
@@ -561,6 +683,7 @@
     border-bottom: 1px solid var(--vscode-border);
     background: #1e1e1e; /* 다크 패턴 적용 */
     min-height: 28px;
+    flex-shrink: 0; /* 헤더는 항상 표시 */
     cursor: pointer; /* 헤더 클릭 가능하도록 */
     user-select: none; /* 텍스트 선택 방지 */
   }
@@ -606,14 +729,14 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 16.8px; /* 24px * 0.7 */
-    height: 16.8px; /* 24px * 0.7 */
+    width: 21.6px; /* 24px * 0.9 */
+    height: 21.6px; /* 24px * 0.9 */
     padding: 0;
-    border-radius: 2.8px; /* 4px * 0.7 */
+    border-radius: 3.6px; /* 4px * 0.9 */
     border: none;
     background: transparent;
     cursor: pointer;
-    font-size: 8.4px; /* 12px * 0.7 */
+    font-size: 10.8px; /* 12px * 0.9 */
     color: var(--vscode-text-secondary);
     transition: all 0.2s ease;
   }
@@ -659,7 +782,7 @@
     background: #1e1e1e !important; /* 다크 패턴 적용 */
     flex: 1 1 auto;
     display: flex;
-    min-height: 150px; /* 코드 에디터 최소 높이 보장 */
+    min-height: 200px; /* 코드 에디터 최소 높이 보장 */
   }
 
   #code-output {
@@ -746,28 +869,39 @@
   /* Replay Log */
   .replay-log {
     background: var(--vscode-sidebar);
-    border-radius: 5.6px; /* 8px * 0.7 */
+    border-radius: 7.2px; /* 8px * 0.9 */
     border: 1px solid var(--vscode-border);
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    margin-bottom: 8.4px; /* 12px * 0.7 */
+    margin-bottom: 10.8px; /* 12px * 0.9 */
     flex: 0 0 auto; /* 고정 크기, 줄어들지 않도록 */
-    min-height: 150px; /* 접지 않았을 때 최소 높이 보장 */
+    min-height: 180px; /* 접지 않았을 때 최소 높이 보장 */
+    transition: height 0.3s ease, min-height 0.3s ease, max-height 0.3s ease;
   }
   
-  /* 접혔을 때는 최소 높이 제거 */
+  /* 접혔을 때는 높이를 헤더만큼으로 축소 */
   .replay-log.collapsed {
-    min-height: 0;
+    flex: 0 0 auto;
+    min-height: 0 !important;
+    overflow: hidden; /* 넘치는 내용 숨김 */
+  }
+
+  .replay-log.collapsed .replay-log-content {
+    display: none !important; /* 내용 완전히 숨김 */
+    max-height: 0;
+    overflow: hidden;
+    flex: 0 0 0; /* flex 컨테이너에서 공간 차지 안함 */
   }
 
   .replay-log-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 9.8px 12.6px; /* 14px 18px * 0.7 */
+    padding: 12.6px 16.2px; /* 14px 18px * 0.9 */
     border-bottom: 1px solid var(--vscode-border);
     background: var(--vscode-title-bar);
+    flex-shrink: 0; /* 헤더는 항상 표시 */
     cursor: pointer;
     user-select: none; /* 텍스트 선택 방지 */
   }
@@ -782,14 +916,14 @@
 
   .replay-log-header h4 {
     margin: 0;
-    font-size: 10.5px; /* 15px * 0.7 */
+    font-size: 13.5px; /* 15px * 0.9 */
     font-weight: 600;
     color: var(--vscode-text);
   }
 
   .replay-log-content {
-    padding: 9.8px 12.6px; /* 14px 18px * 0.7 */
-    max-height: 300px;
+    padding: 12.6px 16.2px; /* 14px 18px * 0.9 */
+    max-height: 350px;
     overflow-y: auto;
     flex: 1;
     min-height: 0; /* flex 컨테이너에서 스크롤이 작동하도록 */
@@ -799,14 +933,14 @@
     background: var(--vscode-input-bg);
     border-color: var(--vscode-border);
     color: var(--vscode-text);
-    border-radius: 2.8px; /* 4px * 0.7 */
-    padding: 5.6px; /* 8px * 0.7 */
-    font-size: 8.4px; /* 12px * 0.7 */
+    border-radius: 3.6px; /* 4px * 0.9 */
+    padding: 7.2px; /* 8px * 0.9 */
+    font-size: 10.8px; /* 12px * 0.9 */
   }
 
   .log-entry {
     color: var(--vscode-text);
-    padding: 2.8px 0; /* 4px * 0.7 */
+    padding: 3.6px 0; /* 4px * 0.9 */
   }
 
   .log-entry.log-info {
@@ -834,8 +968,8 @@
   }
 
   #selector-panel h4 {
-    margin: 0 0 5.6px 0; /* 8px * 0.7 */
-    font-size: 10.5px; /* 15px * 0.7 */
+    margin: 0 0 7.2px 0; /* 8px * 0.9 */
+    font-size: 13.5px; /* 15px * 0.9 */
     font-weight: 600;
     color: var(--vscode-text);
   }
@@ -1059,17 +1193,17 @@
     background: var(--vscode-input-bg);
     border-color: var(--vscode-border);
     color: var(--vscode-text);
-    padding: 4.2px; /* 6px * 0.7 */
+    padding: 5.4px; /* 6px * 0.9 */
     border-bottom: 1px solid var(--vscode-border);
     display: flex;
     flex-direction: column;
-    gap: 2.8px; /* 4px * 0.7 */
+    gap: 3.6px; /* 4px * 0.9 */
   }
 
   .selector-item .selector-main {
     display: flex;
     align-items: center;
-    gap: 4.2px; /* 6px * 0.7 */
+    gap: 5.4px; /* 6px * 0.9 */
     flex-wrap: wrap;
   }
 
@@ -1077,17 +1211,17 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 1.4px 4.2px; /* 2px 6px * 0.7 */
-    border-radius: 2.8px; /* 4px * 0.7 */
+    padding: 1.8px 5.4px; /* 2px 6px * 0.9 */
+    border-radius: 3.6px; /* 4px * 0.9 */
     background: rgba(0, 122, 204, 0.2);
     color: var(--vscode-primary);
-    font-size: 7px; /* 10px * 0.7 */
+    font-size: 9px; /* 10px * 0.9 */
     font-weight: 600;
   }
 
   .selector-item .selector-main .sel {
     font-family: "Courier New", monospace;
-    font-size: 8.4px; /* 12px * 0.7 */
+    font-size: 10.8px; /* 12px * 0.9 */
     color: var(--vscode-text);
     flex: 1 1 auto;
     min-width: 0;
@@ -1096,17 +1230,17 @@
 
   .selector-item .selector-main .score {
     margin-left: auto;
-    font-size: 7.7px; /* 11px * 0.7 */
+    font-size: 9.9px; /* 11px * 0.9 */
     color: var(--vscode-text-secondary);
   }
 
   .selector-empty {
-    padding: 8.4px; /* 12px * 0.7 */
+    padding: 10.8px; /* 12px * 0.9 */
     color: var(--vscode-text-secondary);
-    font-size: 8.4px; /* 12px * 0.7 */
+    font-size: 10.8px; /* 12px * 0.9 */
     text-align: center;
     border: 1px dashed var(--vscode-border);
-    border-radius: 5.6px; /* 8px * 0.7 */
+    border-radius: 7.2px; /* 8px * 0.9 */
     background: var(--vscode-input-bg);
   }
 
@@ -1114,10 +1248,10 @@
     background: rgba(248, 113, 113, 0.15);
     border-color: #f48771;
     color: #f48771;
-    padding: 5.6px; /* 8px * 0.7 */
-    border-radius: 4.2px; /* 6px * 0.7 */
-    margin-bottom: 5.6px; /* 8px * 0.7 */
-    font-size: 8.4px; /* 12px * 0.7 */
+    padding: 7.2px; /* 8px * 0.9 */
+    border-radius: 5.4px; /* 6px * 0.9 */
+    margin-bottom: 7.2px; /* 8px * 0.9 */
+    font-size: 10.8px; /* 12px * 0.9 */
   }
 
   #iframe-banner.hidden {
@@ -1205,7 +1339,7 @@
   }
 
   .element-title {
-    font-size: 8.4px; /* 12px * 0.7 */
+    font-size: 10.8px; /* 12px * 0.9 */
     font-weight: 600;
     color: var(--vscode-text-secondary);
   }
@@ -1225,13 +1359,13 @@
   }
 
   .element-action-buttons button {
-    padding: 4.2px 7px; /* 6px 10px * 0.7 */
-    border-radius: 2.8px; /* 4px * 0.7 */
+    padding: 5.4px 9px; /* 6px 10px * 0.9 */
+    border-radius: 3.6px; /* 4px * 0.9 */
     border: 1px solid var(--vscode-input-border);
     background: var(--vscode-input-bg);
     color: var(--vscode-text);
     cursor: pointer;
-    font-size: 8.4px; /* 12px * 0.7 */
+    font-size: 10.8px; /* 12px * 0.9 */
     transition: all 0.2s ease;
   }
 
@@ -1243,28 +1377,28 @@
   #element-attribute-panel input,
   #wait-time-input {
     flex: 1;
-    padding: 4.2px 5.6px; /* 6px 8px * 0.7 */
+    padding: 5.4px 7.2px; /* 6px 8px * 0.9 */
     border: 1px solid var(--vscode-input-border);
-    border-radius: 2.8px; /* 4px * 0.7 */
-    font-size: 8.4px; /* 12px * 0.7 */
+    border-radius: 3.6px; /* 4px * 0.9 */
+    font-size: 10.8px; /* 12px * 0.9 */
     background: var(--vscode-input-bg);
     color: var(--vscode-text);
   }
 
   .element-attr-row {
     display: flex;
-    gap: 4.2px; /* 6px * 0.7 */
+    gap: 5.4px; /* 6px * 0.9 */
   }
 
   #element-attr-apply,
   #wait-time-apply {
-    padding: 4.2px 8.4px; /* 6px 12px * 0.7 */
-    border-radius: 2.8px; /* 4px * 0.7 */
+    padding: 5.4px 10.8px; /* 6px 12px * 0.9 */
+    border-radius: 3.6px; /* 4px * 0.9 */
     border: 1px solid var(--vscode-primary);
     background: var(--vscode-primary);
     color: white;
     cursor: pointer;
-    font-size: 8.4px; /* 12px * 0.7 */
+    font-size: 10.8px; /* 12px * 0.9 */
   }
 
   #element-attr-apply:hover,
@@ -1276,22 +1410,22 @@
     margin: 0;
     background: var(--vscode-bg);
     color: var(--vscode-text);
-    padding: 7px; /* 10px * 0.7 */
-    border-radius: 4.2px; /* 6px * 0.7 */
-    font-size: 8.4px; /* 12px * 0.7 */
-    max-height: 112px; /* 160px * 0.7 */
+    padding: 9px; /* 10px * 0.9 */
+    border-radius: 5.4px; /* 6px * 0.9 */
+    font-size: 10.8px; /* 12px * 0.9 */
+    max-height: 144px; /* 160px * 0.9 */
     overflow: auto;
     border: 1px solid var(--vscode-border);
   }
 
   #element-status {
     display: none;
-    font-size: 8.4px; /* 12px * 0.7 */
+    font-size: 10.8px; /* 12px * 0.9 */
     color: var(--vscode-text);
     background: var(--vscode-input-bg);
     border: 1px dashed var(--vscode-border);
-    border-radius: 4.2px; /* 6px * 0.7 */
-    padding: 4.2px 5.6px; /* 6px 8px * 0.7 */
+    border-radius: 5.4px; /* 6px * 0.9 */
+    padding: 5.4px 7.2px; /* 6px 8px * 0.9 */
   }
 
   #element-status[data-tone="error"] {
@@ -1314,8 +1448,8 @@
 
   /* Step Assertion Section */
   .step-assertion-section {
-    margin-top: 8.4px; /* 12px * 0.7 */
-    padding-top: 8.4px; /* 12px * 0.7 */
+    margin-top: 10.8px; /* 12px * 0.9 */
+    padding-top: 10.8px; /* 12px * 0.9 */
     border-top: 1px solid var(--vscode-border);
   }
 
@@ -1341,11 +1475,11 @@
   .step-assertion-menu {
     display: flex;
     flex-direction: column;
-    gap: 5.6px; /* 8px * 0.7 */
-    margin-top: 5.6px; /* 8px * 0.7 */
-    padding: 8.4px; /* 12px * 0.7 */
+    gap: 7.2px; /* 8px * 0.9 */
+    margin-top: 7.2px; /* 8px * 0.9 */
+    padding: 10.8px; /* 12px * 0.9 */
     background: var(--vscode-title-bar);
-    border-radius: 4.2px; /* 6px * 0.7 */
+    border-radius: 5.4px; /* 6px * 0.9 */
     border: 1px solid var(--vscode-border);
   }
 
@@ -1354,30 +1488,30 @@
   }
 
   .step-assertion-menu .assertion-menu-header {
-    font-size: 8.4px; /* 12px * 0.7 */
+    font-size: 10.8px; /* 12px * 0.9 */
     font-weight: 600;
     color: var(--vscode-text);
-    margin-bottom: 2.8px; /* 4px * 0.7 */
+    margin-bottom: 3.6px; /* 4px * 0.9 */
   }
 
   .step-assertion-menu .assertion-menu-buttons {
     display: flex;
     flex-wrap: wrap;
-    gap: 4.2px; /* 6px * 0.7 */
+    gap: 5.4px; /* 6px * 0.9 */
   }
 
   .step-assertion-menu .assertion-menu-btn {
-    padding: 5.6px 8.4px; /* 8px 12px * 0.7 */
-    border-radius: 4.2px; /* 6px * 0.7 */
+    padding: 7.2px 10.8px; /* 8px 12px * 0.9 */
+    border-radius: 5.4px; /* 6px * 0.9 */
     border: 1px solid var(--vscode-input-border);
     background: var(--vscode-input-bg);
     color: var(--vscode-text);
-    font-size: 8.4px; /* 12px * 0.7 */
+    font-size: 10.8px; /* 12px * 0.9 */
     font-weight: 500;
     cursor: pointer;
     transition: all 0.2s ease;
     flex: 1 1 auto;
-    min-width: 84px; /* 120px * 0.7 */
+    min-width: 108px; /* 120px * 0.9 */
   }
 
   .step-assertion-menu .assertion-menu-btn:hover {
@@ -1387,6 +1521,97 @@
 
   .step-assertion-menu .assertion-menu-btn:active {
     background: var(--vscode-selection);
+  }
+
+  /* Panel Resize Handle */
+  .panel-resize-handle {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 6px; /* 클릭 영역을 조금 더 크게 */
+    background: transparent;
+    cursor: ns-resize;
+    margin: 0;
+    padding: 0;
+    z-index: 1000; /* 더 높은 z-index */
+    transition: background 0.2s ease;
+    pointer-events: auto; /* 클릭 가능하도록 명시 */
+  }
+
+  .panel-resize-handle:hover {
+    background: var(--vscode-primary);
+  }
+
+  .panel-resize-handle::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 40px;
+    height: 2px;
+    background: var(--vscode-border);
+    border-radius: 2px;
+  }
+
+  .panel-resize-handle:hover::before {
+    background: var(--vscode-primary);
+  }
+
+  /* 반응형 레이아웃 */
+  /* 모바일 (최대 767px) */
+  @media (max-width: 767px) {
+    #main {
+      padding: 8px;
+      gap: 8px;
+    }
+
+    #steps-panel,
+    .code-area,
+    .step-details-panel,
+    .replay-log {
+      min-height: 200px !important;
+      height: auto !important;
+      max-height: 50vh;
+    }
+
+    .recorder-header {
+      padding: 8px 10px;
+    }
+
+    .recorder-btn {
+      padding: 6px 12px;
+      font-size: 11px;
+    }
+
+    .steps-header,
+    .code-area-header,
+    .step-details-header,
+    .replay-log-header {
+      padding: 8px 10px;
+    }
+  }
+
+  /* 태블릿 (768px - 1023px) */
+  @media (min-width: 768px) and (max-width: 1023px) {
+    #main {
+      padding: 10px;
+      gap: 12px;
+    }
+
+    #steps-panel,
+    .code-area,
+    .step-details-panel,
+    .replay-log {
+      min-height: 250px !important;
+      max-height: 60vh;
+    }
+  }
+
+  /* 데스크톱 (1024px 이상) */
+  @media (min-width: 1024px) {
+    /* 현재 스타일 유지 */
   }
 </style>
 </head>
@@ -1541,6 +1766,10 @@
             <span>+</span>
             <span>Add wait</span>
           </button>
+          <button id="global-add-conditional-action-btn" class="global-add-assertion-btn" style="flex: 1;">
+            <span>+</span>
+            <span>조건부 액션 추가</span>
+          </button>
         </div>
         <div id="global-assertion-menu" class="global-assertion-menu hidden">
           <div class="assertion-menu-header">Assertion 타입 선택</div>
@@ -1568,7 +1797,18 @@
             <button id="wait-time-apply" style="padding: 6px 12px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 3px; cursor: pointer;">적용</button>
           </div>
         </div>
+        <div id="global-conditional-action-menu" class="global-assertion-menu hidden">
+          <div class="assertion-menu-header" id="conditional-action-header">액션 타입 선택</div>
+          <div class="assertion-menu-buttons" id="conditional-action-buttons">
+            <!-- 단계별 선택 버튼들이 여기에 동적으로 추가됨 -->
+          </div>
+          <div class="conditional-action-navigation" id="conditional-action-navigation" style="display: flex; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--vscode-border);">
+            <button id="conditional-action-back-btn" class="assertion-menu-btn" style="flex: 1;">이전</button>
+            <button id="conditional-action-cancel-btn" class="assertion-menu-btn" style="flex: 1; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground);">취소</button>
+          </div>
+        </div>
       </div>
+      <div class="panel-resize-handle" data-panel="steps-panel" title="드래그하여 크기 조절"></div>
     </div>
     
     <!-- Step Details Panel -->
@@ -1579,6 +1819,12 @@
       </div>
       <div id="step-details-content">
         <div id="iframe-banner" class="hidden">⚠️ 이 요소는 iframe 내부에 있습니다. 자동 전환 필요</div>
+        <div id="try-wrap-panel">
+          <label>
+            <input type="checkbox" id="wrap-in-try-checkbox">
+            <span>코드 생성 시 try 문으로 감싸기</span>
+          </label>
+        </div>
         <div id="selector-panel">
           <h4>추천 셀렉터</h4>
           <div id="selector-list"></div>
@@ -1651,6 +1897,7 @@
           </div>
         </div>
       </div>
+      <div class="panel-resize-handle" data-panel="step-details-panel" title="드래그하여 크기 조절"></div>
     </div>
     
     <!-- Code Area -->
@@ -1676,6 +1923,7 @@
         <div id="code-review-summary" class="code-review-summary hidden"></div>
         <div id="code-review-diff" class="code-review-diff hidden"></div>
       </div>
+      <div class="panel-resize-handle" data-panel="code-area" title="드래그하여 크기 조절"></div>
     </div>
     
     <!-- Replay Log -->
@@ -1687,6 +1935,7 @@
       <div id="replay-log-content" class="replay-log-content">
         <div id="log-entries"></div>
       </div>
+      <div class="panel-resize-handle" data-panel="replay-log" title="드래그하여 크기 조절"></div>
     </div>
   </div>
 

@@ -131,82 +131,240 @@ export function buildUniqueCssPath(element, contextElement = null) {
 }
 
 /**
- * 전체 XPath 생성
+ * XPath 생성 (Chrome Recorder 방식)
+ * Shadow DOM을 지원하고 최적화된 XPath를 생성합니다.
+ * 
+ * @param node - XPath를 생성할 노드
+ * @param optimized - 최적화 여부 (custom attributes 우선 사용)
+ * @param attributes - 우선 사용할 custom attributes 배열
+ * @returns XPath 문자열 또는 undefined
  */
-export function buildFullXPath(el) {
-  if (!el || el.nodeType !== 1) return null;
-  if (el.id) {
-    const cleanedId = escapeAttributeValue(el.id);
-    if (cleanedId) {
-      return `//*[@id="${cleanedId}"]`;
+export function computeXPath(node, optimized = true, attributes = []) {
+  if (!node) return undefined;
+  
+  // Document 노드는 '/' 반환
+  if (node.nodeType === 9) { // DOCUMENT_NODE
+    return '/';
+  }
+
+  const selectors = [];
+  const buffer = [];
+  let contextNode = node;
+  const doc = typeof document !== 'undefined' ? document : null;
+  
+  // Custom attributes 기본값 (Chrome Recorder와 동일)
+  const defaultAttributes = [
+    'data-testid',
+    'data-test',
+    'data-qa',
+    'data-cy',
+    'data-test-id',
+    'data-qa-id',
+    'data-testing',
+  ];
+  const customAttributes = attributes.length > 0 ? attributes : defaultAttributes;
+
+  while (contextNode && contextNode !== doc) {
+    const part = getXPathSelectorPart(contextNode, optimized, customAttributes);
+    if (!part) {
+      return undefined;
+    }
+    buffer.unshift(part);
+    
+    // optimized part면 root node로 이동, 아니면 parent로 이동
+    if (part.optimized) {
+      contextNode = contextNode.getRootNode();
+    } else {
+      contextNode = contextNode.parentNode;
+    }
+    
+    // ShadowRoot 경계 처리
+    if (contextNode && contextNode instanceof ShadowRoot) {
+      const selectorStr = (buffer[0].optimized ? '' : '/') + buffer.map(p => p.toString()).join('/');
+      selectors.unshift(selectorStr);
+      buffer.splice(0, buffer.length);
+      contextNode = contextNode.host;
     }
   }
-  const parts = [];
-  let current = el;
-  while (current && current.nodeType === 1 && current !== (typeof document !== 'undefined' ? document.documentElement : null)) {
-    const tagName = current.tagName.toLowerCase();
-    let index = 1;
-    let sibling = current.previousSibling;
-    while (sibling) {
-      if (sibling.nodeType === 1 && sibling.tagName === current.tagName) {
-        index += 1;
-      }
-      sibling = sibling.previousSibling;
-    }
-    parts.unshift(`${tagName}[${index}]`);
-    current = current.parentNode;
+
+  if (buffer.length) {
+    const selectorStr = (buffer[0].optimized ? '' : '/') + buffer.map(p => p.toString()).join('/');
+    selectors.unshift(selectorStr);
   }
-  if (parts.length === 0) return null;
-  return `//${parts.join("/")}`;
+
+  // ShadowRoot가 여러 개면 XPath 평가가 작동하지 않으므로 undefined 반환
+  if (!selectors.length || selectors.length > 1) {
+    return undefined;
+  }
+
+  return selectors[0];
 }
 
 /**
- * XPath 세그먼트 생성
+ * 전체 XPath 생성 (하위 호환성 유지)
+ * @deprecated computeXPath를 사용하세요
  */
-function buildXPathSegment(el) {
-  if (!el || el.nodeType !== 1) return "";
-  const tag = el.tagName.toLowerCase();
-  if (el.id) {
-    return `${tag}[@id=${escapeXPathLiteral(el.id)}]`;
+export function buildFullXPath(el) {
+  if (!el || el.nodeType !== 1) return null;
+  const xpath = computeXPath(el, false);
+  if (!xpath) return null;
+  // Chrome Recorder 방식은 이미 //로 시작하거나 /로 시작하므로 그대로 반환
+  return xpath.startsWith('//') ? xpath : `//${xpath}`;
+}
+
+/**
+ * XPath SelectorPart 클래스 (Chrome Recorder 방식)
+ */
+class SelectorPart {
+  constructor(value, optimized) {
+    this.value = value;
+    this.optimized = optimized || false;
   }
-  const classList = Array.from(el.classList || []).filter(Boolean);
-  if (classList.length) {
-    const cls = classList[0];
-    const containsExpr = `contains(concat(' ', normalize-space(@class), ' '), ${escapeXPathLiteral(" " + cls + " ")})`;
-    return `${tag}[${containsExpr}]`;
+
+  toString() {
+    return this.value;
   }
-  const attrPriority = ["data-testid", "data-test", "data-qa", "data-cy", "data-id", "aria-label", "role", "name", "type"];
-  for (const attr of attrPriority) {
-    const val = el.getAttribute && el.getAttribute(attr);
-    if (val) {
-      return `${tag}[@${attr}=${escapeXPathLiteral(val)}]`;
+}
+
+/**
+ * XPath 인덱스 계산 (Chrome Recorder 방식)
+ * 형제 노드 중에서 같은 타입의 노드들 사이의 인덱스를 계산
+ */
+function getXPathIndexInParent(node) {
+  /**
+   * @returns -1 in case of error, 0 if no siblings matching the same expression,
+   * XPath index among the same expression-matching sibling nodes otherwise.
+   */
+  function areNodesSimilar(left, right) {
+    if (left === right) {
+      return true;
+    }
+
+    if (left instanceof Element && right instanceof Element) {
+      return left.localName === right.localName;
+    }
+
+    if (left.nodeType === right.nodeType) {
+      return true;
+    }
+
+    // XPath treats CDATA as text nodes.
+    // CDATA_SECTION_NODE = 4, TEXT_NODE = 3
+    const leftType = left.nodeType === 4 ? 3 : left.nodeType;
+    const rightType = right.nodeType === 4 ? 3 : right.nodeType;
+    return leftType === rightType;
+  }
+
+  const children = node.parentNode ? node.parentNode.children : null;
+  if (!children) {
+    return 0;
+  }
+  let hasSameNamedElements;
+  for (let i = 0; i < children.length; ++i) {
+    if (areNodesSimilar(node, children[i]) && children[i] !== node) {
+      hasSameNamedElements = true;
+      break;
     }
   }
-  const nameAttr = el.getAttribute && el.getAttribute("name");
-  if (nameAttr) {
-    return `${tag}[@name=${escapeXPathLiteral(nameAttr)}]`;
+  if (!hasSameNamedElements) {
+    return 0;
   }
-  let index = 1;
-  let sibling = el.previousElementSibling;
-  while (sibling) {
-    if (sibling.tagName === el.tagName) {
-      index += 1;
+  let ownIndex = 1;  // XPath indices start with 1.
+  for (let i = 0; i < children.length; ++i) {
+    if (areNodesSimilar(node, children[i])) {
+      if (children[i] === node) {
+        return ownIndex;
+      }
+      ++ownIndex;
     }
-    sibling = sibling.previousElementSibling;
   }
-  return `${tag}[${index}]`;
+
+  throw new Error(
+      'This is impossible; a child must be the child of the parent',
+  );
+}
+
+/**
+ * XPath 세그먼트 생성 (Chrome Recorder 방식)
+ */
+function getXPathSelectorPart(node, optimized, attributes = []) {
+  let value;
+  switch (node.nodeType) {
+    case 1: // ELEMENT_NODE
+      if (!(node instanceof Element)) {
+        return;
+      }
+      if (optimized) {
+        for (const attribute of attributes) {
+          value = node.getAttribute(attribute) ?? '';
+          if (value) {
+            return new SelectorPart(`//*[@${attribute}=${escapeXPathLiteral(value)}]`, true);
+          }
+        }
+      }
+      if (node.id) {
+        return new SelectorPart(`//*[@id=${escapeXPathLiteral(node.id)}]`, true);
+      }
+      value = node.localName || node.tagName?.toLowerCase() || '';
+      break;
+    case 2: // ATTRIBUTE_NODE
+      value = '@' + node.nodeName;
+      break;
+    case 3: // TEXT_NODE
+    case 4: // CDATA_SECTION_NODE
+      value = 'text()';
+      break;
+    case 7: // PROCESSING_INSTRUCTION_NODE
+      value = 'processing-instruction()';
+      break;
+    case 8: // COMMENT_NODE
+      value = 'comment()';
+      break;
+    case 9: // DOCUMENT_NODE
+      value = '';
+      break;
+    default:
+      value = '';
+      break;
+  }
+
+  const index = getXPathIndexInParent(node);
+  if (index > 0) {
+    value += `[${index}]`;
+  }
+
+  return new SelectorPart(value, node.nodeType === 9);
 }
 
 /**
  * 셀렉터 타입 추론
  */
 export function inferSelectorType(selector) {
-  if (!selector || typeof selector !== "string") return null;
+  if (!selector || typeof selector !== "string") return "css";
   const trimmed = selector.trim();
+  
+  // XPath 타입 확인
   if (trimmed.startsWith("xpath=")) return "xpath";
-  if (trimmed.startsWith("//") || trimmed.startsWith("(")) return "xpath";
+  if (trimmed.startsWith("//") || trimmed.startsWith("(") || trimmed.startsWith("/")) return "xpath";
+  
+  // 텍스트 타입 확인
   if (trimmed.startsWith("text=")) return "text";
-  if (trimmed.startsWith("#") || trimmed.startsWith(".") || trimmed.startsWith("[")) return "css";
+  
+  // ID 셀렉터 확인
+  if (trimmed.startsWith("#")) return "id";
+  
+  // 클래스 셀렉터 확인 (점으로 시작하고 공백/특수문자 없음)
+  if (trimmed.startsWith(".") && !trimmed.includes(" ")) return "class";
+  
+  // 속성 셀렉터 확인
+  if (trimmed.includes("[") && trimmed.includes("]")) return "attribute";
+  
+  // 단순 태그명 확인 (알파벳만, 공백 없음)
+  if (/^[a-z][a-z0-9-]*$/i.test(trimmed) && !trimmed.includes(" ") && !trimmed.includes(">")) {
+    return "tag";
+  }
+  
+  // 기본값: CSS 셀렉터 (복합 셀렉터 포함)
   return "css";
 }
 
@@ -386,7 +544,7 @@ export function validateSelector(selector, type = null) {
 
 // 상수 정의
 const CLASS_COMBINATION_LIMIT = 3;
-const MAX_CLASS_COMBINATIONS = 24;
+const MAX_CLASS_COMBINATIONS = 12; // 24 -> 12로 줄여 불필요한 후보 생성 방지
 const DEFAULT_TEXT_SCORE = 65;
 const DEFAULT_TAG_SCORE = 20;
 
@@ -495,62 +653,24 @@ function generateClassSelectors(element) {
 }
 
 /**
- * Robust XPath 세그먼트 생성 (속성 기반)
- */
-function buildRobustXPathSegment(el) {
-  if (!el || el.nodeType !== 1) return null;
-  const tag = el.tagName.toLowerCase();
-  if (el.id) {
-    return { segment: `//*[@id=${escapeXPathLiteral(el.id)}]`, stop: true };
-  }
-  const attrPriority = ["data-testid", "data-test", "data-qa", "data-cy", "data-id", "aria-label", "role", "name", "type"];
-  for (const attr of attrPriority) {
-    const val = el.getAttribute && el.getAttribute(attr);
-    if (val) {
-      return { segment: `${tag}[@${attr}=${escapeXPathLiteral(val)}]`, stop: false };
-    }
-  }
-  const classList = Array.from(el.classList || []).filter(Boolean);
-  if (classList.length) {
-    const cls = classList[0];
-    const containsExpr = `contains(concat(' ', normalize-space(@class), ' '), ${escapeXPathLiteral(" " + cls + " ")})`;
-    return { segment: `${tag}[${containsExpr}]`, stop: false };
-  }
-  let index = 1;
-  let sibling = el.previousElementSibling;
-  while (sibling) {
-    if (sibling.tagName === el.tagName) {
-      index += 1;
-    }
-    sibling = sibling.previousElementSibling;
-  }
-  return { segment: `${tag}[${index}]`, stop: false };
-}
-
-/**
- * Robust XPath 생성 (속성 기반)
+ * Robust XPath 생성 (속성 기반, 최적화됨)
+ * Chrome Recorder의 computeXPath를 사용하여 최적화된 XPath 생성
  */
 function buildRobustXPath(el) {
   if (!el || el.nodeType !== 1) return null;
-  const segments = [];
-  let current = el;
-  while (current && current.nodeType === 1) {
-    const info = buildRobustXPathSegment(current);
-    if (!info || !info.segment) return null;
-    segments.unshift(info.segment);
-    if (info.stop) break;
-    current = current.parentElement;
-  }
-  if (segments.length === 0) return null;
-  let xpath = segments[0];
-  if (xpath.startsWith("//*[@")) {
-    if (segments.length > 1) {
-      xpath += `/${segments.slice(1).join("/")}`;
-    }
-  } else {
-    xpath = `//${segments.join("/")}`;
-  }
-  return xpath;
+  const customAttributes = [
+    'data-testid',
+    'data-test',
+    'data-qa',
+    'data-cy',
+    'data-test-id',
+    'data-qa-id',
+    'data-testing',
+  ];
+  const xpath = computeXPath(el, true, customAttributes);
+  if (!xpath) return null;
+  // Chrome Recorder 방식은 이미 //로 시작하거나 /로 시작하므로 그대로 반환
+  return xpath.startsWith('//') ? xpath : `//${xpath}`;
 }
 
 /**
@@ -630,7 +750,8 @@ export function getSelectorCandidates(element) {
   if (rawText) {
     // 첫 번째 줄만 사용 (여러 줄인 경우)
     const firstLine = rawText.split("\n").map((t) => t.trim()).filter(Boolean)[0];
-    if (firstLine && firstLine.length > 0 && firstLine.length <= 60) {
+    // 텍스트 길이 제한 완화: 60자 -> 100자
+    if (firstLine && firstLine.length > 0 && firstLine.length <= 100) {
       const escapedText = escapeAttributeValue(firstLine);
       const textSelector = `text="${escapedText}"`;
       
@@ -657,10 +778,24 @@ export function getSelectorCandidates(element) {
         }
       }
       
+      // 텍스트 셀렉터 점수 계산 개선: 일치 개수에 따른 세밀한 점수 차등
+      let textScore;
+      if (textMatchCount === 1) {
+        textScore = 80; // 유일 일치
+      } else if (textMatchCount === 2) {
+        textScore = 65; // 2개 일치
+      } else if (textMatchCount > 2 && textMatchCount <= 5) {
+        textScore = 50; // 3-5개 일치
+      } else if (textMatchCount > 5) {
+        textScore = 30; // 5개 이상 일치 (낮은 우선순위)
+      } else {
+        textScore = 40; // 일치 개수를 알 수 없는 경우
+      }
+      
       candidates.push({
         selector: textSelector,
         type: 'text',
-        score: textMatchCount === 1 ? 80 : 50,
+        score: textScore,
         reason: reasonParts.join(" • "),
         textValue: firstLine,
         matchMode: "exact",
@@ -670,20 +805,30 @@ export function getSelectorCandidates(element) {
     }
   }
   
-  // 5. Robust XPath (속성 기반)
+  // 5. Robust XPath (속성 기반, 최적화됨 - Chrome Recorder 방식)
   try {
-    const robustXPath = buildRobustXPath(element);
-    if (robustXPath) {
+    const customAttributes = [
+      'data-testid',
+      'data-test',
+      'data-qa',
+      'data-cy',
+      'data-test-id',
+      'data-qa-id',
+      'data-testing',
+    ];
+    const optimizedXPath = computeXPath(element, true, customAttributes);
+    if (optimizedXPath) {
+      const xpathValue = optimizedXPath.startsWith('//') ? optimizedXPath : `//${optimizedXPath}`;
       candidates.push({
         type: "xpath",
-        selector: `xpath=${robustXPath}`,
-        score: 58,
-        reason: "속성 기반 XPath",
-        xpathValue: robustXPath
+        selector: `xpath=${xpathValue}`,
+        score: 75,
+        reason: "최적화된 XPath (속성 기반)",
+        xpathValue: xpathValue
       });
     }
   } catch (e) {
-    console.error('[SelectorUtils] buildRobustXPath 오류:', e);
+    console.error('[SelectorUtils] computeXPath (optimized) 오류:', e);
   }
   
   // 6. CSS 경로
@@ -697,16 +842,21 @@ export function getSelectorCandidates(element) {
     });
   }
   
-  // 7. Full XPath
-  const xpath = buildFullXPath(element);
-  if (xpath) {
-    candidates.push({
-      selector: `xpath=${xpath}`,
-      type: 'xpath-full',
-      score: 42,
-      reason: 'Full XPath (절대 경로)',
-      xpathValue: xpath
-    });
+  // 7. Full XPath (비최적화 버전 - 하위 호환성)
+  try {
+    const fullXPath = computeXPath(element, false);
+    if (fullXPath) {
+      const xpathValue = fullXPath.startsWith('//') ? fullXPath : `//${fullXPath}`;
+      candidates.push({
+        selector: `xpath=${xpathValue}`,
+        type: 'xpath-full',
+        score: 42,
+        reason: 'Full XPath (절대 경로)',
+        xpathValue: xpathValue
+      });
+    }
+  } catch (e) {
+    console.error('[SelectorUtils] computeXPath (full) 오류:', e);
   }
   
   // 8. 첫 번째 nth-of-type 셀렉터
@@ -1092,14 +1242,26 @@ function applyGlobalMatchCheck(candidate, parsed, options, ctx) {
     candidate.rawMatchCount = globalCount;
     candidate.rawUnique = globalCount === 1;
   }
+  
+  // 유일성 검증 실패 시 명확한 피드백 제공
   if (globalCount === 0 && options.allowZero !== true) {
+    ctx.reasonParts = ctx.reasonParts.filter((part) => !/유일 일치|개 요소와 일치/.test(part));
+    ctx.reasonParts.push("일치하는 요소 없음 (셀렉터 오류 가능성)");
     return false;
   }
-  ctx.reasonParts = ctx.reasonParts.filter((part) => !/유일 일치|개 요소와 일치/.test(part));
+  
+  ctx.reasonParts = ctx.reasonParts.filter((part) => !/유일 일치|개 요소와 일치|일치하는 요소 없음/.test(part));
   if (globalCount === 1) {
     ctx.reasonParts.push("유일 일치");
   } else if (globalCount > 1) {
-    ctx.reasonParts.push(globalCount === 2 ? "2개 요소와 일치 (추가 조합)" : `${globalCount}개 요소와 일치`);
+    // 일치 개수에 따른 명확한 설명 제공
+    if (globalCount === 2) {
+      ctx.reasonParts.push("2개 요소와 일치 (추가 조합 필요)");
+    } else if (globalCount <= 5) {
+      ctx.reasonParts.push(`${globalCount}개 요소와 일치 (유일하지 않음)`);
+    } else {
+      ctx.reasonParts.push(`${globalCount}개 이상 일치 (다른 셀렉터 권장)`);
+    }
   }
   return true;
 }
@@ -1235,13 +1397,21 @@ function finalizeUniqueness(candidate, options, ctx) {
   candidate.matchCount = verificationCount;
   candidate.unique = verificationCount === 1;
   candidate.uniqueInContext = verificationCount === 1;
-  ctx.reasonParts = ctx.reasonParts.filter((part) => !/유일 일치|개 요소와 일치/.test(part));
+  
+  // 기존 이유에서 일치 관련 설명 제거
+  ctx.reasonParts = ctx.reasonParts.filter((part) => !/유일 일치|개 요소와 일치|일치하는 요소 없음/.test(part));
+  
+  // 유일성 검증 결과에 따른 명확한 피드백 제공
   if (verificationCount === 1) {
     ctx.reasonParts.push("유일 일치");
+  } else if (verificationCount === 0) {
+    ctx.reasonParts.push("일치하는 요소 없음 - 셀렉터 수정 필요");
   } else if (verificationCount === 2) {
-    ctx.reasonParts.push("2개 요소와 일치 (추가 조합)");
-  } else if (verificationCount > 2) {
-    ctx.reasonParts.push(`${verificationCount}개 요소와 일치`);
+    ctx.reasonParts.push("2개 요소와 일치 (추가 조합 필요)");
+  } else if (verificationCount > 2 && verificationCount <= 5) {
+    ctx.reasonParts.push(`${verificationCount}개 요소와 일치 (유일하지 않음)`);
+  } else {
+    ctx.reasonParts.push(`${verificationCount}개 이상 일치 (다른 셀렉터 권장)`);
   }
 }
 

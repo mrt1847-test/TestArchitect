@@ -13,6 +13,7 @@ console.log('window.electronAPI:', typeof window.electronAPI);
 let generateCodeFromSteps, getKeywordSuggestions, KEYWORDS;
 let validateSteps, normalizeSteps;
 let ObjectRepository, SelectorUtils;
+let healingHistory; // 힐링 히스토리 유틸리티
 
 // 초기화 함수를 안전하게 실행 (먼저 정의)
 async function startApp() {
@@ -93,6 +94,16 @@ async function loadModules() {
     console.error('❌ objectRepository.js 로드 실패:', error);
     ObjectRepository = { getObjectSuggestions: async () => [] };
     SelectorUtils = {};
+  }
+
+  // 힐링 히스토리 유틸리티 동적 로드
+  try {
+    const healingModule = await import('./utils/healingHistory.js');
+    healingHistory = healingModule;
+    console.log('✅ healingHistory.js 로드 성공');
+  } catch (error) {
+    console.error('❌ healingHistory.js 로드 실패:', error);
+    healingHistory = null;
   }
 
   console.log('=== RENDERER.JS 모듈 로드 완료 ===');
@@ -3690,6 +3701,38 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+/**
+ * 테스트 결과에 힐링 정보 표시 (비동기)
+ */
+async function showHealingInfoForResult(scriptId, resultElement) {
+  if (!scriptId || !resultElement) return;
+  
+  try {
+    // 힐링 히스토리 유틸리티 동적 로드
+    if (!healingHistory) {
+      const healingModule = await import('./utils/healingHistory.js');
+      healingHistory = healingModule;
+    }
+    
+    const healingContainer = resultElement.querySelector('.result-healing-info');
+    if (!healingContainer) return;
+    
+    // 힐링 히스토리 조회
+    const history = await healingHistory.getHealingHistory({
+      test_script_id: scriptId,
+      limit: 3
+    });
+    
+    if (history.length === 0) return;
+    
+    // 힐링 정보 표시
+    healingContainer.style.display = 'block';
+    healingHistory.renderHealingHistoryList(history, healingContainer);
+  } catch (error) {
+    console.error('[Renderer] 힐링 정보 표시 오류:', error);
+  }
+}
+
 function displayResults(results) {
   if (!resultsList) {
     console.warn('resultsList 요소를 찾을 수 없습니다.');
@@ -3763,7 +3806,13 @@ function displayResults(results) {
             <pre>${JSON.stringify(item.result.data, null, 2)}</pre>
           </div>
         ` : ''}
+        <div class="result-healing-info" data-script-id="${item.scriptId || ''}" style="display: none;"></div>
       `;
+      
+      // 실패한 테스트에 대해 힐링 히스토리 표시 (비동기)
+      if (!item.result.success && item.scriptId) {
+        showHealingInfoForResult(item.scriptId, resultDiv);
+      }
     }
 
     resultsList.appendChild(resultDiv);

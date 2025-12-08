@@ -47,7 +47,6 @@ const os = require('os');
 const fs = require('fs');
 const net = require('net');
 const WebSocket = require('ws');
-const sharp = require('sharp');
 const config = require('./config/config');
 const PytestService = require('./services/pytestService');
 const ScriptManager = require('./services/scriptManager');
@@ -95,6 +94,48 @@ let recordingWebSocketServer = null;
 
 /** @type {Set<WebSocket>} 연결된 Extension 클라이언트 */
 const extensionClients = new Set();
+
+/**
+ * Electron Store 인스턴스 (사용자 설정 저장)
+ */
+let store = null;
+let Store = null;
+
+/**
+ * Store 초기화 (동적 import 사용)
+ */
+async function initStore() {
+  if (!store) {
+    try {
+      // ES Module을 동적 import로 로드
+      if (!Store) {
+        const storeModule = await import('electron-store');
+        Store = storeModule.default || storeModule;
+      }
+      
+      store = new Store({
+        name: 'recorder-settings',
+        defaults: {
+          panelHeights: {
+            'steps-panel': 400,
+            'code-area': 300,
+            'step-details-panel': 300,
+            'replay-log': 180
+          },
+          layout: {
+            responsiveMode: 'auto'
+          }
+        }
+      });
+      console.log('[Store] Recorder 설정 Store 초기화 완료');
+    } catch (error) {
+      console.error('[Store] Store 초기화 실패:', error);
+      // Store 초기화 실패 시 null 반환
+      return null;
+    }
+  }
+  return store;
+}
 
 /**
  * 녹화 데이터 수신용 HTTP 서버 시작
@@ -5260,6 +5301,9 @@ app.whenReady().then(async () => {
   // 메뉴 바 표시 (기본 Electron 메뉴)
   // Menu.setApplicationMenu(null); // 주석 처리하여 메뉴 표시
   
+  // Store 초기화 (비동기)
+  await initStore();
+  
   // 프로덕션 모드 경로 초기화 (createWindow 전에 실행)
   config.initializePaths(app);
   // 스크립트 디렉토리 초기화
@@ -5416,10 +5460,27 @@ ipcMain.handle('toggle-devtools', () => {
  * @param {string} snapshotDate - 스냅샷 날짜 (ISO 문자열)
  * @returns {Promise<Object>} 저장 결과
  */
-ipcMain.handle('save-dom-snapshot', async (event, pageUrl, domStructure, snapshotDate) => {
+/**
+ * DOM 스냅샷 저장 IPC 핸들러 (새로운 API 형식)
+ * @param {Electron.IpcMainInvokeEvent} event - IPC 이벤트 객체
+ * @param {Object} snapshotData - 스냅샷 데이터
+ * @returns {Promise<Object>} 저장 결과
+ */
+ipcMain.handle('save-dom-snapshot', async (event, snapshotData) => {
   try {
-    const date = new Date(snapshotDate);
-    const result = await DomSnapshotService.saveSnapshot(pageUrl, domStructure, date);
+    // 하위 호환성: 구형 형식 (pageUrl, domStructure, snapshotDate) 지원
+    if (typeof snapshotData === 'string') {
+      const [pageUrl, domStructure, snapshotDate] = arguments;
+      const date = new Date(snapshotDate || new Date());
+      snapshotData = {
+        url: pageUrl,
+        domData: domStructure,
+        pageTitle: null,
+        metadata: {}
+      };
+    }
+    
+    const result = await DomSnapshotService.saveSnapshot(snapshotData);
     return { success: true, ...result };
   } catch (error) {
     console.error('❌ DOM 스냅샷 저장 IPC 핸들러 오류:', error);
@@ -5428,19 +5489,36 @@ ipcMain.handle('save-dom-snapshot', async (event, pageUrl, domStructure, snapsho
 });
 
 /**
- * DOM 스냅샷 존재 여부 확인 IPC 핸들러
+ * DOM 스냅샷 존재 여부 확인 IPC 핸들러 (하위 호환성 유지)
  * @param {Electron.IpcMainInvokeEvent} event - IPC 이벤트 객체
  * @param {string} pageUrl - 정규화된 페이지 URL
  * @param {string} startDate - 시작 날짜 (ISO 문자열)
  * @param {string} endDate - 종료 날짜 (ISO 문자열)
  * @returns {Promise<boolean>} 존재 여부
  */
-ipcMain.handle('check-dom-snapshot', async (event, pageUrl, startDate, endDate) => {
+/**
+ * DOM 스냅샷 존재 여부 확인 IPC 핸들러
+ * @param {Electron.IpcMainInvokeEvent} event - IPC 이벤트 객체
+ * @param {string} normalizedUrl - 정규화된 페이지 URL
+ * @param {string} startDate - 시작 날짜 (ISO 문자열, 선택사항)
+ * @param {string} endDate - 종료 날짜 (ISO 문자열, 선택사항)
+ * @returns {Promise<boolean>} 존재 여부
+ */
+ipcMain.handle('check-dom-snapshot', async (event, normalizedUrl, startDate, endDate) => {
   try {
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-    const exists = await DomSnapshotService.checkSnapshotInPeriod(pageUrl, start, end);
-    return exists;
+    // 새로운 API로 변환: 최신 스냅샷 조회로 대체
+    const snapshot = await DomSnapshotService.getLatestSnapshot(normalizedUrl);
+    if (!snapshot) return false;
+    
+    // 날짜 범위가 지정된 경우 확인
+    if (startDate && endDate) {
+      const snapshotDate = new Date(snapshot.captured_at);
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      return snapshotDate >= start && snapshotDate <= end;
+    }
+    
+    return true;
   } catch (error) {
     console.error('❌ DOM 스냅샷 확인 IPC 핸들러 오류:', error);
     return false;
@@ -5448,7 +5526,24 @@ ipcMain.handle('check-dom-snapshot', async (event, pageUrl, startDate, endDate) 
 });
 
 /**
- * 오래된 DOM 스냅샷 정리 IPC 핸들러
+ * DOM 스냅샷 히스토리 조회 IPC 핸들러
+ * @param {Electron.IpcMainInvokeEvent} event - IPC 이벤트 객체
+ * @param {string} normalizedUrl - 정규화된 페이지 URL
+ * @param {number} limit - 조회 개수 제한
+ * @returns {Promise<Array>} 스냅샷 히스토리
+ */
+ipcMain.handle('get-dom-snapshot-history', async (event, normalizedUrl, limit = 10) => {
+  try {
+    const history = await DomSnapshotService.getSnapshotHistory(normalizedUrl, limit);
+    return { success: true, data: history };
+  } catch (error) {
+    console.error('❌ DOM 스냅샷 히스토리 조회 IPC 핸들러 오류:', error);
+    return { success: false, error: error.message, data: [] };
+  }
+});
+
+/**
+ * 오래된 DOM 스냅샷 정리 IPC 핸들러 (하위 호환성 유지)
  * @param {Electron.IpcMainInvokeEvent} event - IPC 이벤트 객체
  * @returns {Promise<Object>} 정리 결과
  */
@@ -5469,6 +5564,47 @@ ipcMain.handle('delete-step-screenshots', async (event, tcId) => {
   } catch (error) {
     console.error('[Screenshot] 스크린샷 삭제 실패:', error);
     return 0;
+  }
+});
+
+/**
+ * Recorder 설정 조회 IPC 핸들러
+ * @event ipcMain.handle:get-recorder-settings
+ */
+ipcMain.handle('get-recorder-settings', async () => {
+  try {
+    const settingsStore = await initStore();
+    if (!settingsStore) {
+      return { success: false, error: 'Store 초기화 실패' };
+    }
+    const settings = settingsStore.store;
+    return { success: true, data: settings };
+  } catch (error) {
+    console.error('[Store] Recorder 설정 조회 실패:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+/**
+ * Recorder 설정 저장 IPC 핸들러
+ * @event ipcMain.handle:set-recorder-settings
+ */
+ipcMain.handle('set-recorder-settings', async (event, settings) => {
+  try {
+    const settingsStore = await initStore();
+    if (!settingsStore) {
+      return { success: false, error: 'Store 초기화 실패' };
+    }
+    if (settings.panelHeights) {
+      settingsStore.set('panelHeights', settings.panelHeights);
+    }
+    if (settings.layout) {
+      settingsStore.set('layout', settings.layout);
+    }
+    return { success: true };
+  } catch (error) {
+    console.error('[Store] Recorder 설정 저장 실패:', error);
+    return { success: false, error: error.message };
   }
 });
 
@@ -5527,8 +5663,14 @@ ipcMain.handle('get-snapshot-image', async (event, snapshotImageId) => {
 
 ipcMain.handle('cleanup-old-snapshots', async (event) => {
   try {
-    const deletedCount = await DomSnapshotService.cleanupOldSnapshots();
-    return { success: true, deletedCount };
+    // 서버 API를 통해 만료된 스냅샷 삭제
+    const ApiService = require('./services/apiService');
+    const response = await ApiService.request('DELETE', '/api/dom-snapshots/expired');
+    return { 
+      success: true, 
+      deletedCount: response.deletedCount || 0,
+      message: response.message 
+    };
   } catch (error) {
     console.error('❌ DOM 스냅샷 정리 IPC 핸들러 오류:', error);
     return { success: false, error: error.message || 'DOM 스냅샷 정리 실패', deletedCount: 0 };

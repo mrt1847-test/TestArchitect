@@ -16,6 +16,9 @@ const testCaseRoutes = require('./routes/testCases');
 const scriptRoutes = require('./routes/scripts');
 const syncRoutes = require('./routes/sync');
 const objectRoutes = require('./routes/objects');
+const domSnapshotRoutes = require('./routes/domSnapshots');
+const locatorHealingRoutes = require('./routes/locatorHealing');
+const snapshotScheduler = require('./services/domSnapshotScheduler');
 
 const app = express();
 const server = http.createServer(app);
@@ -34,6 +37,8 @@ app.use('/api/test-cases', testCaseRoutes);
 app.use('/api/scripts', scriptRoutes);
 app.use('/api/sync', syncRoutes);
 app.use('/api/objects', objectRoutes);
+app.use('/api/dom-snapshots', domSnapshotRoutes);
+app.use('/api/locator-healing', locatorHealingRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -146,6 +151,10 @@ const PORT = process.env.PORT || 3001;
 // 데이터베이스 초기화
 db.init().then(() => {
   const dbConfig = db.getConfig();
+  
+  // DOM 스냅샷 스케줄러 시작 (주기적 정리 작업)
+  snapshotScheduler.startPeriodicCleanup();
+  
   server.listen(PORT, () => {
     console.log(`\n🚀 TestArchitect 서버 시작`);
     console.log(`📡 HTTP 서버: http://localhost:${PORT}`);

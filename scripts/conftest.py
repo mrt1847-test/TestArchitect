@@ -7,8 +7,9 @@ import pytest
 import sys
 import os
 import time
+import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 
 # 프로젝트 루트를 Python 경로에 추가
 project_root = Path(__file__).parent.parent
@@ -363,10 +364,108 @@ def pytest_configure(config):
 # 자동으로 assert_snapshot fixture를 제공하므로 여기서 정의하지 않음
 
 
+def _trigger_healing_if_needed(failure_info: Dict[str, Any], item) -> None:
+    """locator 실패 시 자동 힐링 트리거"""
+    try:
+        # 환경 변수로 자동 힐링 활성화 여부 확인
+        auto_heal = os.getenv('AUTO_HEAL_LOCATORS', 'true').lower() == 'true'
+        if not auto_heal:
+            return
+        
+        # 페이지 URL 및 현재 DOM 추출 시도 (fixture에서)
+        page_url = failure_info.get('page_url')
+        current_dom = None
+        
+        try:
+            if 'page' in item.fixturenames:
+                page = item.funcargs.get('page')
+                if page:
+                    # Playwright
+                    if hasattr(page, 'url'):
+                        page_url = page.url
+                        try:
+                            current_dom = page.content()
+                        except Exception:
+                            pass
+                    # Selenium
+                    elif hasattr(page, 'current_url'):
+                        page_url = page.current_url
+                        try:
+                            current_dom = page.page_source
+                        except Exception:
+                            pass
+            elif 'driver' in item.fixturenames:
+                # Selenium driver fixture
+                driver = item.funcargs.get('driver')
+                if driver:
+                    try:
+                        page_url = driver.current_url
+                        current_dom = driver.page_source
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        
+        # 서버 API 호출 (HTTP 요청)
+        import urllib.request
+        import urllib.parse
+        
+        api_url = os.getenv('HEALING_API_URL', 'http://localhost:3001/api/locator-healing/trigger')
+        
+        # 실패 정보 업데이트
+        failure_info['page_url'] = page_url
+        if current_dom:
+            failure_info['current_dom'] = current_dom
+        
+        payload = {
+            'failure_info': failure_info,
+            'test_file': str(item.fspath) if hasattr(item, 'fspath') else None,
+            'test_function': item.name,
+            'timestamp': time.time()
+        }
+        
+        data = json.dumps(payload).encode('utf-8')
+        req = urllib.request.Request(
+            api_url,
+            data=data,
+            headers={'Content-Type': 'application/json'},
+            method='POST'
+        )
+        
+        try:
+            # 비동기로 전송 (블로킹하지 않음)
+            urllib.request.urlopen(req, timeout=5)
+        except Exception as e:
+            # 서버 연결 실패는 무시 (테스트 실행을 방해하지 않음)
+            # 디버그 모드에서는 로그 출력
+            if os.getenv('DEBUG_HEALING', 'false').lower() == 'true':
+                print(f"[Healing] 힐링 트리거 실패: {e}")
+            pass
+    except Exception as e:
+        # 힐링 트리거 실패는 무시
+        if os.getenv('DEBUG_HEALING', 'false').lower() == 'true':
+            print(f"[Healing] 힐링 트리거 오류: {e}")
+        pass
+
+
 @pytest.hookimpl(tryfirst=True, hookwrapper=True)
 def pytest_runtest_makereport(item, call):
-    """테스트 결과를 리포트에 저장 (스크린샷 캡처를 위해)"""
+    """테스트 결과를 리포트에 저장 (스크린샷 캡처 및 locator 실패 감지)"""
     outcome = yield
     rep = outcome.get_result()
     setattr(item, f"rep_{rep.when}", rep)
+    
+    # 테스트 실패 시 locator 실패 감지
+    if rep.when == "call" and rep.failed:
+        try:
+            from test_utils import extract_locator_failure_info
+            failure_info = extract_locator_failure_info(rep, item)
+            if failure_info:
+                # 실패 정보를 리포트에 저장
+                rep.locator_failure = failure_info
+                # 서버로 전송 (자동 힐링 트리거)
+                _trigger_healing_if_needed(failure_info, item)
+        except Exception as e:
+            # locator 추출 실패는 무시 (테스트 실패 원인과 무관할 수 있음)
+            pass
 

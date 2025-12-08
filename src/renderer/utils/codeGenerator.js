@@ -35,6 +35,42 @@ function normalizeEventRecord(event) {
       attributeName: event.manualAttribute || null
     };
   }
+  if (event.wrapInTry === undefined) {
+    event.wrapInTry = false;
+  }
+  // 조건부 액션 및 상대 노드 탐색 필드 초기화
+  if (event.action === 'conditionalAction' || event.action === 'relativeAction' || event.action === 'loopAction') {
+    if (event.conditionElement === undefined) {
+      event.conditionElement = null;
+    }
+    if (event.childElement === undefined) {
+      event.childElement = null;
+    }
+    if (event.siblingElement === undefined) {
+      event.siblingElement = null;
+    }
+    if (event.ancestorElement === undefined) {
+      event.ancestorElement = null;
+    }
+    if (event.conditionType === undefined) {
+      event.conditionType = null;
+    }
+    if (event.conditionValue === undefined) {
+      event.conditionValue = null;
+    }
+    if (event.targetRelation === undefined) {
+      event.targetRelation = null;
+    }
+    if (event.targetSelector === undefined) {
+      event.targetSelector = null;
+    }
+    if (event.actionType === undefined) {
+      event.actionType = 'click';
+    }
+    if (event.loopMode === undefined) {
+      event.loopMode = 'single';
+    }
+  }
   return event;
 }
 
@@ -832,6 +868,442 @@ function emitManualActionLines(lines, action, frameworkLower, languageLower, ind
 }
 
 /**
+ * 조건부 액션 생성 (Python)
+ */
+function buildConditionalActionPython(ev, base = 'page') {
+  if (!ev || ev.action !== 'conditionalAction') return null;
+  
+  const conditionElement = ev.conditionElement;
+  if (!conditionElement || !conditionElement.selector) return null;
+  
+  const conditionType = ev.conditionType || 'is_visible';
+  const conditionValue = ev.conditionValue || '';
+  const actionType = ev.actionType || 'click';
+  const actionValue = ev.value || '';
+  
+  const elementSelector = conditionElement.selector;
+  let conditionCheck = '';
+  
+  // 조건 검증 코드 생성
+  if (conditionType === 'is_visible') {
+    conditionCheck = `${elementSelector}.is_visible()`;
+  } else if (conditionType === 'text_contains' && conditionValue) {
+    conditionCheck = `"${escapeForPythonString(conditionValue)}" in ${elementSelector}.inner_text()`;
+  } else if (conditionType === 'text_equals' && conditionValue) {
+    conditionCheck = `${elementSelector}.inner_text() == "${escapeForPythonString(conditionValue)}"`;
+  } else if (conditionType === 'class_name' && conditionValue) {
+    const className = conditionValue.replace(/^\./, '');
+    conditionCheck = `${elementSelector}.get_attribute('class') and "${escapeForPythonString(className)}" in ${elementSelector}.get_attribute('class')`;
+  } else if (conditionType === 'has_attribute' && conditionValue) {
+    conditionCheck = `${elementSelector}.get_attribute('${escapeForPythonString(conditionValue)}') is not None`;
+  } else {
+    conditionCheck = `${elementSelector}.is_visible()`;
+  }
+  
+  // 액션 코드 생성
+  let actionCode = '';
+  if (actionType === 'click') {
+    actionCode = `${elementSelector}.click()`;
+  } else if (actionType === 'type' && actionValue) {
+    actionCode = `${elementSelector}.fill("${escapeForPythonString(actionValue)}")`;
+  } else if (actionType === 'hover') {
+    actionCode = `${elementSelector}.hover()`;
+  } else if (actionType === 'doubleClick') {
+    actionCode = `${elementSelector}.dblclick()`;
+  } else if (actionType === 'rightClick') {
+    actionCode = `${elementSelector}.click(button="right")`;
+  } else {
+    actionCode = `${elementSelector}.click()`;
+  }
+  
+  return [
+    `if await ${conditionCheck}:`,
+    `    await ${actionCode}`
+  ];
+}
+
+/**
+ * 조건부 액션 생성 (JavaScript/TypeScript)
+ */
+function buildConditionalActionJS(ev, base = 'page') {
+  if (!ev || ev.action !== 'conditionalAction') return null;
+  
+  const conditionElement = ev.conditionElement;
+  if (!conditionElement || !conditionElement.selector) return null;
+  
+  const conditionType = ev.conditionType || 'is_visible';
+  const conditionValue = ev.conditionValue || '';
+  const actionType = ev.actionType || 'click';
+  const actionValue = ev.value || '';
+  
+  const elementSelector = conditionElement.selector;
+  let conditionCheck = '';
+  
+  // 조건 검증 코드 생성
+  if (conditionType === 'is_visible') {
+    conditionCheck = `await ${elementSelector}.isVisible()`;
+  } else if (conditionType === 'text_contains' && conditionValue) {
+    conditionCheck = `(await ${elementSelector}.innerText()).includes("${escapeForJSString(conditionValue)}")`;
+  } else if (conditionType === 'text_equals' && conditionValue) {
+    conditionCheck = `(await ${elementSelector}.innerText()) === "${escapeForJSString(conditionValue)}"`;
+  } else if (conditionType === 'class_name' && conditionValue) {
+    const className = conditionValue.replace(/^\./, '');
+    conditionCheck = `(await ${elementSelector}.getAttribute('class'))?.includes("${escapeForJSString(className)}")`;
+  } else if (conditionType === 'has_attribute' && conditionValue) {
+    conditionCheck = `(await ${elementSelector}.getAttribute('${escapeForJSString(conditionValue)}')) !== null`;
+  } else {
+    conditionCheck = `await ${elementSelector}.isVisible()`;
+  }
+  
+  // 액션 코드 생성
+  let actionCode = '';
+  if (actionType === 'click') {
+    actionCode = `await ${elementSelector}.click();`;
+  } else if (actionType === 'type' && actionValue) {
+    actionCode = `await ${elementSelector}.fill("${escapeForJSString(actionValue)}");`;
+  } else if (actionType === 'hover') {
+    actionCode = `await ${elementSelector}.hover();`;
+  } else if (actionType === 'doubleClick') {
+    actionCode = `await ${elementSelector}.dblclick();`;
+  } else if (actionType === 'rightClick') {
+    actionCode = `await ${elementSelector}.click({ button: 'right' });`;
+  } else {
+    actionCode = `await ${elementSelector}.click();`;
+  }
+  
+  return `if (${conditionCheck}) {\n  ${actionCode}\n}`;
+}
+
+/**
+ * 상대 노드 탐색 액션 생성 (Python)
+ */
+function buildRelativeActionPython(ev, base = 'page') {
+  if (!ev || ev.action !== 'relativeAction') return null;
+  
+  const conditionElement = ev.conditionElement;
+  if (!conditionElement || !conditionElement.selector) return null;
+  
+  const baseSelector = conditionElement.selector;
+  const targetRelation = ev.targetRelation || 'parent';
+  const targetSelector = ev.targetSelector || '';
+  const actionType = ev.actionType || 'click';
+  const actionValue = ev.value || '';
+  
+  let targetSelectorCode = baseSelector;
+  
+  // 상대 셀렉터 생성
+  if (targetRelation === 'parent') {
+    if (targetSelector) {
+      targetSelectorCode = `${baseSelector}.locator('xpath=..').locator('${targetSelector}')`;
+    } else {
+      targetSelectorCode = `${baseSelector}.locator('..')`;
+    }
+  } else if (targetRelation === 'ancestor') {
+    // 조상 요소가 선택되었으면 그것을 우선 사용
+    const ancestorElement = ev.ancestorElement;
+    if (ancestorElement && ancestorElement.selector) {
+      targetSelectorCode = ancestorElement.selector;
+    } else if (targetSelector) {
+      const ancestorTag = targetSelector.replace(/^\./, '').split('[')[0];
+      targetSelectorCode = `${baseSelector}.locator('xpath=ancestor::${ancestorTag}[1]')`;
+    } else {
+      targetSelectorCode = `${baseSelector}.locator('xpath=ancestor::*[1]')`;
+    }
+  } else if (targetRelation === 'sibling') {
+    // 형제 요소가 선택되었으면 그것을 우선 사용
+    const siblingElement = ev.siblingElement;
+    if (siblingElement && siblingElement.selector) {
+      targetSelectorCode = siblingElement.selector;
+    } else if (targetSelector) {
+      const tagName = targetSelector.replace(/^\./, '').split('[')[0];
+      targetSelectorCode = `${baseSelector}.locator('xpath=../following-sibling::${tagName}[1]')`;
+    } else {
+      targetSelectorCode = `${baseSelector}.locator('xpath=../following-sibling::*[1]')`;
+    }
+  } else if (targetRelation === 'child') {
+    // 자식 요소가 선택되었으면 그것을 우선 사용
+    const childElement = ev.childElement;
+    if (childElement && childElement.selector) {
+      targetSelectorCode = childElement.selector;
+    } else if (targetSelector) {
+      targetSelectorCode = `${baseSelector}.locator('${targetSelector}')`;
+    } else {
+      targetSelectorCode = `${baseSelector}.locator('*')`;
+    }
+  }
+  
+  // 액션 코드 생성
+  if (actionType === 'click') {
+    return `await ${targetSelectorCode}.click()`;
+  } else if (actionType === 'type' && actionValue) {
+    return `await ${targetSelectorCode}.fill("${escapeForPythonString(actionValue)}")`;
+  } else if (actionType === 'hover') {
+    return `await ${targetSelectorCode}.hover()`;
+  } else if (actionType === 'doubleClick') {
+    return `await ${targetSelectorCode}.dblclick()`;
+  } else if (actionType === 'rightClick') {
+    return `await ${targetSelectorCode}.click(button="right")`;
+  }
+  
+  return `await ${targetSelectorCode}.click()`;
+}
+
+/**
+ * 상대 노드 탐색 액션 생성 (JavaScript/TypeScript)
+ */
+function buildRelativeActionJS(ev, base = 'page') {
+  if (!ev || ev.action !== 'relativeAction') return null;
+  
+  const conditionElement = ev.conditionElement;
+  if (!conditionElement || !conditionElement.selector) return null;
+  
+  const baseSelector = conditionElement.selector;
+  const targetRelation = ev.targetRelation || 'parent';
+  const targetSelector = ev.targetSelector || '';
+  const actionType = ev.actionType || 'click';
+  const actionValue = ev.value || '';
+  
+  let targetSelectorCode = baseSelector;
+  
+  // 상대 셀렉터 생성
+  if (targetRelation === 'parent') {
+    if (targetSelector) {
+      targetSelectorCode = `${baseSelector}.locator('xpath=..').locator('${targetSelector}')`;
+    } else {
+      targetSelectorCode = `${baseSelector}.locator('..')`;
+    }
+  } else if (targetRelation === 'ancestor') {
+    // 조상 요소가 선택되었으면 그것을 우선 사용
+    const ancestorElement = ev.ancestorElement;
+    if (ancestorElement && ancestorElement.selector) {
+      targetSelectorCode = ancestorElement.selector;
+    } else if (targetSelector) {
+      const ancestorTag = targetSelector.replace(/^\./, '').split('[')[0];
+      targetSelectorCode = `${baseSelector}.locator('xpath=ancestor::${ancestorTag}[1]')`;
+    } else {
+      targetSelectorCode = `${baseSelector}.locator('xpath=ancestor::*[1]')`;
+    }
+  } else if (targetRelation === 'sibling') {
+    // 형제 요소가 선택되었으면 그것을 우선 사용
+    const siblingElement = ev.siblingElement;
+    if (siblingElement && siblingElement.selector) {
+      targetSelectorCode = siblingElement.selector;
+    } else if (targetSelector) {
+      const tagName = targetSelector.replace(/^\./, '').split('[')[0];
+      targetSelectorCode = `${baseSelector}.locator('xpath=../following-sibling::${tagName}[1]')`;
+    } else {
+      targetSelectorCode = `${baseSelector}.locator('xpath=../following-sibling::*[1]')`;
+    }
+  } else if (targetRelation === 'child') {
+    // 자식 요소가 선택되었으면 그것을 우선 사용
+    const childElement = ev.childElement;
+    if (childElement && childElement.selector) {
+      targetSelectorCode = childElement.selector;
+    } else if (targetSelector) {
+      targetSelectorCode = `${baseSelector}.locator('${targetSelector}')`;
+    } else {
+      targetSelectorCode = `${baseSelector}.locator('*')`;
+    }
+  }
+  
+  // 액션 코드 생성
+  if (actionType === 'click') {
+    return `await ${targetSelectorCode}.click();`;
+  } else if (actionType === 'type' && actionValue) {
+    return `await ${targetSelectorCode}.fill("${escapeForJSString(actionValue)}");`;
+  } else if (actionType === 'hover') {
+    return `await ${targetSelectorCode}.hover();`;
+  } else if (actionType === 'doubleClick') {
+    return `await ${targetSelectorCode}.dblclick();`;
+  } else if (actionType === 'rightClick') {
+    return `await ${targetSelectorCode}.click({ button: 'right' });`;
+  }
+  
+  return `await ${targetSelectorCode}.click();`;
+}
+
+/**
+ * 반복 액션 생성 (Python)
+ */
+function buildLoopActionPython(ev, base = 'page') {
+  if (!ev || ev.action !== 'loopAction') return null;
+  
+  const loopMode = ev.loopMode || 'single';
+  const loopSelector = ev.loopSelector || '';
+  const conditionElement = ev.conditionElement;
+  const conditionType = ev.conditionType || 'is_visible';
+  const conditionValue = ev.conditionValue || '';
+  const actionType = ev.actionType || 'click';
+  const actionValue = ev.value || '';
+  
+  if (loopMode === 'loop' && loopSelector) {
+    const lines = [
+      `items = ${base}.locator('${loopSelector}')`,
+      `count = await items.count()`,
+      `for i in range(count):`,
+      `    item = items.nth(i)`
+    ];
+    
+    // 조건이 있는 경우
+    if (conditionElement && conditionElement.selector) {
+      const elementSelector = conditionElement.selector.replace(base, 'item');
+      let conditionCheck = '';
+      
+      if (conditionType === 'is_visible') {
+        conditionCheck = `${elementSelector}.is_visible()`;
+      } else if (conditionType === 'text_contains' && conditionValue) {
+        conditionCheck = `"${escapeForPythonString(conditionValue)}" in ${elementSelector}.inner_text()`;
+      } else if (conditionType === 'text_equals' && conditionValue) {
+        conditionCheck = `${elementSelector}.inner_text() == "${escapeForPythonString(conditionValue)}"`;
+      } else {
+        conditionCheck = `${elementSelector}.is_visible()`;
+      }
+      
+      lines.push(`    if await ${conditionCheck}:`);
+      
+      // 액션 코드
+      if (actionType === 'click') {
+        lines.push(`        await item.click()`);
+      } else if (actionType === 'type' && actionValue) {
+        lines.push(`        await item.fill("${escapeForPythonString(actionValue)}")`);
+      } else {
+        lines.push(`        await item.click()`);
+      }
+    } else {
+      // 조건 없이 액션만
+      if (actionType === 'click') {
+        lines.push(`    await item.click()`);
+      } else if (actionType === 'type' && actionValue) {
+        lines.push(`    await item.fill("${escapeForPythonString(actionValue)}")`);
+      } else {
+        lines.push(`    await item.click()`);
+      }
+    }
+    
+    return lines;
+  }
+  
+  // 단일 액션
+  return buildConditionalActionPython(ev, base);
+}
+
+/**
+ * 반복 액션 생성 (JavaScript/TypeScript)
+ */
+function buildLoopActionJS(ev, base = 'page') {
+  if (!ev || ev.action !== 'loopAction') return null;
+  
+  const loopMode = ev.loopMode || 'single';
+  const loopSelector = ev.loopSelector || '';
+  const conditionElement = ev.conditionElement;
+  const conditionType = ev.conditionType || 'is_visible';
+  const conditionValue = ev.conditionValue || '';
+  const actionType = ev.actionType || 'click';
+  const actionValue = ev.value || '';
+  
+  if (loopMode === 'loop' && loopSelector) {
+    let code = `const items = ${base}.locator('${loopSelector}');\n`;
+    code += `const count = await items.count();\n`;
+    code += `for (let i = 0; i < count; i++) {\n`;
+    code += `  const item = items.nth(i);\n`;
+    
+    // 조건이 있는 경우
+    if (conditionElement && conditionElement.selector) {
+      const elementSelector = conditionElement.selector.replace(base, 'item');
+      let conditionCheck = '';
+      
+      if (conditionType === 'is_visible') {
+        conditionCheck = `await ${elementSelector}.isVisible()`;
+      } else if (conditionType === 'text_contains' && conditionValue) {
+        conditionCheck = `(await ${elementSelector}.innerText()).includes("${escapeForJSString(conditionValue)}")`;
+      } else if (conditionType === 'text_equals' && conditionValue) {
+        conditionCheck = `(await ${elementSelector}.innerText()) === "${escapeForJSString(conditionValue)}"`;
+      } else {
+        conditionCheck = `await ${elementSelector}.isVisible()`;
+      }
+      
+      code += `  if (${conditionCheck}) {\n`;
+      
+      // 액션 코드
+      if (actionType === 'click') {
+        code += `    await item.click();\n`;
+      } else if (actionType === 'type' && actionValue) {
+        code += `    await item.fill("${escapeForJSString(actionValue)}");\n`;
+      } else {
+        code += `    await item.click();\n`;
+      }
+      
+      code += `  }\n`;
+    } else {
+      // 조건 없이 액션만
+      if (actionType === 'click') {
+        code += `  await item.click();\n`;
+      } else if (actionType === 'type' && actionValue) {
+        code += `  await item.fill("${escapeForJSString(actionValue)}");\n`;
+      } else {
+        code += `  await item.click();\n`;
+      }
+    }
+    
+    code += `}`;
+    return code;
+  }
+  
+  // 단일 액션
+  return buildConditionalActionJS(ev, base);
+}
+
+/**
+ * Python 코드를 try-catch 블록으로 감싸기
+ */
+function wrapPythonInTry(actionLines, indent = '    ') {
+  if (!actionLines || (Array.isArray(actionLines) && actionLines.length === 0)) {
+    return actionLines;
+  }
+  
+  const lines = Array.isArray(actionLines) ? actionLines : [actionLines];
+  const result = [
+    `${indent}try:`
+  ];
+  
+  // 각 줄에 추가 들여쓰기 적용 (try 블록 내부)
+  lines.forEach(line => {
+    result.push(`${indent}    ${line.trimStart()}`);
+  });
+  
+  result.push(`${indent}except Exception as e:`);
+  result.push(`${indent}    print(f"요소 탐색 실패: {type(e).__name__}")`);
+  result.push(`${indent}    pass`);
+  
+  return result;
+}
+
+/**
+ * JavaScript/TypeScript 코드를 try-catch 블록으로 감싸기
+ */
+function wrapJSInTry(actionLine, indent = '  ') {
+  if (!actionLine) return actionLine;
+  
+  // 여러 줄인 경우 (개행 포함)
+  if (actionLine.includes('\n')) {
+    const lines = actionLine.split('\n');
+    const result = [`${indent}try {`];
+    lines.forEach(line => {
+      if (line.trim()) {
+        result.push(`${indent}  ${line.trimStart()}`);
+      }
+    });
+    result.push(`${indent}} catch (e) {`);
+    result.push(`${indent}  console.error("요소 탐색 실패:", e.name || "Error");`);
+    result.push(`${indent}}`);
+    return result.join('\n');
+  }
+  
+  // 단일 줄인 경우
+  return `${indent}try {\n${indent}  ${actionLine.trimStart()}\n${indent}} catch (e) {\n${indent}  console.error("요소 탐색 실패:", e.name || "Error");\n${indent}}`;
+}
+
+/**
  * 메인 코드 생성 함수
  */
 export function generateCode(events, manualList, framework, language) {
@@ -887,13 +1359,34 @@ export function generateCode(events, manualList, framework, language) {
               currentFrameContext = null;
             }
           }
-          const actionLine = buildPlaywrightPythonAction(event, selectorInfo, currentBase);
+          // 새로운 액션 타입 처리
+          let actionLine = null;
+          if (event.action === 'conditionalAction') {
+            actionLine = buildConditionalActionPython(event, currentBase);
+          } else if (event.action === 'relativeAction') {
+            actionLine = buildRelativeActionPython(event, currentBase);
+          } else if (event.action === 'loopAction') {
+            actionLine = buildLoopActionPython(event, currentBase);
+          } else {
+            actionLine = buildPlaywrightPythonAction(event, selectorInfo, currentBase);
+          }
+          
           if (actionLine) {
-            // 배열인 경우 각 줄에 들여쓰기 적용 (함수 내부는 4칸)
-            if (Array.isArray(actionLine)) {
-              actionLine.forEach(line => lines.push(`    ${line}`));
+            // wrapInTry 플래그 확인
+            if (event.wrapInTry) {
+              const wrappedLines = wrapPythonInTry(actionLine, '    ');
+              if (Array.isArray(wrappedLines)) {
+                wrappedLines.forEach(line => lines.push(line));
+              } else {
+                lines.push(wrappedLines);
+              }
             } else {
-              lines.push(`    ${actionLine}`);
+              // 배열인 경우 각 줄에 들여쓰기 적용 (함수 내부는 4칸)
+              if (Array.isArray(actionLine)) {
+                actionLine.forEach(line => lines.push(`    ${line}`));
+              } else {
+                lines.push(`    ${actionLine}`);
+              }
             }
           }
         } else if (entry.kind === 'manual') {
@@ -929,13 +1422,34 @@ export function generateCode(events, manualList, framework, language) {
               currentFrameContext = null;
             }
           }
-          const actionLine = buildPlaywrightPythonAction(event, selectorInfo, currentBase);
+          // 새로운 액션 타입 처리
+          let actionLine = null;
+          if (event.action === 'conditionalAction') {
+            actionLine = buildConditionalActionPython(event, currentBase);
+          } else if (event.action === 'relativeAction') {
+            actionLine = buildRelativeActionPython(event, currentBase);
+          } else if (event.action === 'loopAction') {
+            actionLine = buildLoopActionPython(event, currentBase);
+          } else {
+            actionLine = buildPlaywrightPythonAction(event, selectorInfo, currentBase);
+          }
+          
           if (actionLine) {
-            // 배열인 경우 각 줄에 들여쓰기 적용
-            if (Array.isArray(actionLine)) {
-              actionLine.forEach(line => lines.push(`    ${line}`));
+            // wrapInTry 플래그 확인
+            if (event.wrapInTry) {
+              const wrappedLines = wrapPythonInTry(actionLine, '    ');
+              if (Array.isArray(wrappedLines)) {
+                wrappedLines.forEach(line => lines.push(line));
+              } else {
+                lines.push(wrappedLines);
+              }
             } else {
-              lines.push(`    ${actionLine}`);
+              // 배열인 경우 각 줄에 들여쓰기 적용
+              if (Array.isArray(actionLine)) {
+                actionLine.forEach(line => lines.push(`    ${line}`));
+              } else {
+                lines.push(`    ${actionLine}`);
+              }
             }
             hasEmittedAction = true;
           }
@@ -997,9 +1511,36 @@ export function generateCode(events, manualList, framework, language) {
               currentFrameContext = null;
             }
           }
-          const actionLine = buildPlaywrightJSAction(event, selectorInfo, currentBase);
+          // 새로운 액션 타입 처리
+          let actionLine = null;
+          if (event.action === 'conditionalAction') {
+            actionLine = buildConditionalActionJS(event, currentBase);
+          } else if (event.action === 'relativeAction') {
+            actionLine = buildRelativeActionJS(event, currentBase);
+          } else if (event.action === 'loopAction') {
+            actionLine = buildLoopActionJS(event, currentBase);
+          } else {
+            actionLine = buildPlaywrightJSAction(event, selectorInfo, currentBase);
+          }
+          
           if (actionLine) {
-            lines.push(`  ${actionLine}`);
+            // wrapInTry 플래그 확인
+            if (event.wrapInTry) {
+              const wrappedLine = wrapJSInTry(actionLine, '  ');
+              lines.push(wrappedLine);
+            } else {
+              // 여러 줄인 경우 개행 처리
+              if (actionLine.includes('\n')) {
+                const actionLines = actionLine.split('\n');
+                actionLines.forEach(line => {
+                  if (line.trim()) {
+                    lines.push(`  ${line}`);
+                  }
+                });
+              } else {
+                lines.push(`  ${actionLine}`);
+              }
+            }
           }
         } else if (entry.kind === 'manual') {
           emitManualActionLines(lines, entry.action, frameworkLower, languageLower, '  ');
@@ -1033,9 +1574,36 @@ export function generateCode(events, manualList, framework, language) {
               currentFrameContext = null;
             }
           }
-          const actionLine = buildPlaywrightJSAction(event, selectorInfo, currentBase);
+          // 새로운 액션 타입 처리
+          let actionLine = null;
+          if (event.action === 'conditionalAction') {
+            actionLine = buildConditionalActionJS(event, currentBase);
+          } else if (event.action === 'relativeAction') {
+            actionLine = buildRelativeActionJS(event, currentBase);
+          } else if (event.action === 'loopAction') {
+            actionLine = buildLoopActionJS(event, currentBase);
+          } else {
+            actionLine = buildPlaywrightJSAction(event, selectorInfo, currentBase);
+          }
+          
           if (actionLine) {
-            lines.push(`  ${actionLine}`);
+            // wrapInTry 플래그 확인
+            if (event.wrapInTry) {
+              const wrappedLine = wrapJSInTry(actionLine, '  ');
+              lines.push(wrappedLine);
+            } else {
+              // 여러 줄인 경우 개행 처리
+              if (actionLine.includes('\n')) {
+                const actionLines = actionLine.split('\n');
+                actionLines.forEach(line => {
+                  if (line.trim()) {
+                    lines.push(`  ${line}`);
+                  }
+                });
+              } else {
+                lines.push(`  ${actionLine}`);
+              }
+            }
           }
         } else if (entry.kind === 'manual') {
           emitManualActionLines(lines, entry.action, frameworkLower, languageLower, '  ');
@@ -1078,13 +1646,34 @@ export function generateCode(events, manualList, framework, language) {
             lines.push('driver.switch_to.default_content()');
             currentFrame = null;
           }
-          const actionLine = buildSeleniumPythonAction(event, selectorInfo);
+          // 새로운 액션 타입 처리 (Selenium은 제한적 지원)
+          let actionLine = null;
+          if (event.action === 'conditionalAction' || event.action === 'loopAction') {
+            // Selenium에서는 조건부 액션을 기본 액션으로 변환
+            actionLine = buildSeleniumPythonAction(event, selectorInfo);
+          } else if (event.action === 'relativeAction') {
+            // Selenium에서는 상대 노드 탐색이 제한적이므로 기본 액션으로 변환
+            actionLine = buildSeleniumPythonAction(event, selectorInfo);
+          } else {
+            actionLine = buildSeleniumPythonAction(event, selectorInfo);
+          }
+          
           if (actionLine) {
-            // 배열인 경우 각 줄에 들여쓰기 적용
-            if (Array.isArray(actionLine)) {
-              actionLine.forEach(line => lines.push(`  ${line}`));
+            // wrapInTry 플래그 확인
+            if (event.wrapInTry) {
+              const wrappedLines = wrapPythonInTry(actionLine, '  ');
+              if (Array.isArray(wrappedLines)) {
+                wrappedLines.forEach(line => lines.push(line));
+              } else {
+                lines.push(wrappedLines);
+              }
             } else {
-              lines.push(`  ${actionLine}`);
+              // 배열인 경우 각 줄에 들여쓰기 적용
+              if (Array.isArray(actionLine)) {
+                actionLine.forEach(line => lines.push(`  ${line}`));
+              } else {
+                lines.push(`  ${actionLine}`);
+              }
             }
           }
         } else if (entry.kind === 'manual') {
@@ -1119,7 +1708,13 @@ export function generateCode(events, manualList, framework, language) {
           }
           const actionLine = buildSeleniumJSAction(event, selectorInfo);
           if (actionLine) {
-            lines.push(actionLine);
+            // wrapInTry 플래그 확인
+            if (event.wrapInTry) {
+              const wrappedLine = wrapJSInTry(actionLine, '  ');
+              lines.push(wrappedLine);
+            } else {
+              lines.push(actionLine);
+            }
           }
         } else if (entry.kind === 'manual') {
           emitManualActionLines(lines, entry.action, frameworkLower, languageLower, '  ');
@@ -1154,7 +1749,13 @@ export function generateCode(events, manualList, framework, language) {
           }
           const actionLine = buildSeleniumJSAction(event, selectorInfo);
           if (actionLine) {
-            lines.push(actionLine);
+            // wrapInTry 플래그 확인
+            if (event.wrapInTry) {
+              const wrappedLine = wrapJSInTry(actionLine, '  ');
+              lines.push(wrappedLine);
+            } else {
+              lines.push(actionLine);
+            }
           }
         } else if (entry.kind === 'manual') {
           emitManualActionLines(lines, entry.action, frameworkLower, languageLower, '  ');

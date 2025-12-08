@@ -7,6 +7,14 @@ import { generateCode } from './utils/codeGenerator.js';
 import { getAiSelectorSuggestions, getAiCodeReview } from './utils/aiService.js';
 import { getSelectorCandidatesWithUniqueness } from './utils/selectorUtils.js';
 import { normalizeURL, captureDOM, getCurrentPeriod } from './utils/domSnapshot.js';
+import { 
+  findParentElement, 
+  findAncestorElement, 
+  findSiblingElement, 
+  analyzeElementStructure,
+  generateRelativeSelector,
+  generateConditionCheck
+} from './utils/domAnalyzer.js';
 
 // Electron IPC 통신 (Electron 환경에서만 사용)
 // contextIsolation: true이므로 window.electronAPI를 통해 접근
@@ -90,6 +98,25 @@ let selectedLanguage = 'python';
 let currentEventIndex = -1;
 let allEvents = [];
 let codeEditor = null;
+
+// 조건부 액션 단계별 워크플로우 상태 관리
+let conditionalActionStep = 0; // 현재 단계 (0: 초기, 1: 액션 타입 선택, 2: 다음 단계...)
+let conditionalActionData = {
+  actionType: null, // 'conditionalAction', 'relativeAction', 'loopAction'
+  conditionElement: null,
+  childElement: null,
+  siblingElement: null,
+  ancestorElement: null,
+  conditionType: null,
+  conditionValue: null,
+  targetRelation: null,
+  targetSelector: null,
+  loopMode: null,
+  loopSelector: null,
+  actionTypeValue: null,
+  actionValue: null,
+  stepIndex: -1
+};
 let wsConnection = null;
 let manualActions = [];
 let manualActionSerial = 1;
@@ -377,7 +404,7 @@ async function trySaveDomSnapshot(url) {
       initElectronAPI();
     }
     
-    if (!electronAPI || !electronAPI.saveDomSnapshot || !electronAPI.checkDomSnapshot) {
+    if (!electronAPI || !electronAPI.saveDomSnapshot) {
       console.warn('[Recorder] electronAPI가 없어 DOM 스냅샷 저장을 건너뜁니다.');
       return;
     }
@@ -389,47 +416,64 @@ async function trySaveDomSnapshot(url) {
       return;
     }
     
-    // 같은 세션 내 중복 저장 방지
+    // 같은 세션 내 중복 저장 방지 (15일 주기 확인은 서버에서 처리)
     if (snapshotSavedUrls.has(normalizedUrl)) {
       console.log(`[Recorder] 이미 저장된 URL이므로 스냅샷 저장 건너뜀: ${normalizedUrl}`);
       return;
     }
     
-    // 현재 기간 확인
-    const period = getCurrentPeriod();
+    // DOM 구조 캡처 (현재 페이지에서)
+    // 주의: recorder.js는 iframe에서 실행되므로, 실제 DOM은 Content Script에서 캡처해야 함
+    // 여기서는 Content Script에서 전달받은 DOM 데이터를 사용하거나,
+    // Content Script에서 직접 캡처하도록 요청해야 함
+    let domStructure = null;
+    let pageTitle = null;
     
-    // 해당 기간 내 저장 이력 확인
-    const exists = await electronAPI.checkDomSnapshot(
-      normalizedUrl,
-      period.periodStartDate,
-      period.periodEndDate
-    );
-    
-    if (exists) {
-      console.log(`[Recorder] 해당 기간 내 이미 저장된 스냅샷이 있음: ${normalizedUrl}`);
-      snapshotSavedUrls.add(normalizedUrl); // 중복 체크를 위해 추가
-      return;
+    try {
+      // iframe 내부에서는 부모 페이지의 DOM에 직접 접근할 수 없으므로
+      // Content Script에서 DOM을 캡처하여 전달받아야 함
+      // 임시로 빈 문자열 사용 (나중에 Content Script에서 전달받도록 수정 필요)
+      domStructure = captureDOM(); // 이 함수는 iframe 내부 DOM을 반환
+      pageTitle = document.title || null;
+    } catch (error) {
+      console.warn('[Recorder] DOM 구조 캡처 시도 실패:', error);
+      // Content Script에서 캡처한 DOM을 사용하도록 개선 필요
     }
     
-    // DOM 구조 캡처
-    const domStructure = captureDOM();
     if (!domStructure) {
-      console.warn('[Recorder] DOM 구조 캡처 실패');
+      console.log('[Recorder] DOM 구조를 캡처할 수 없습니다. Content Script에서 캡처 필요');
       return;
     }
     
-    // 스냅샷 저장
-    const today = new Date();
-    const result = await electronAPI.saveDomSnapshot(
-      normalizedUrl,
-      domStructure,
-      today
-    );
+    // 메타데이터 준비
+    const metadata = {
+      userAgent: navigator.userAgent || 'Unknown',
+      viewport: {
+        width: window.innerWidth || 0,
+        height: window.innerHeight || 0
+      },
+      timestamp: new Date().toISOString()
+    };
+    
+    // 새로운 API 형식으로 스냅샷 저장
+    const snapshotData = {
+      url: url, // 원본 URL (정규화는 서버에서 수행)
+      domData: domStructure,
+      pageTitle: pageTitle,
+      metadata: metadata
+    };
+    
+    const result = await electronAPI.saveDomSnapshot(snapshotData);
     
     if (result && result.success) {
-      console.log(`[Recorder] ✅ DOM 스냅샷 저장 완료: ${normalizedUrl}`);
-      snapshotSavedUrls.add(normalizedUrl); // 중복 저장 방지
-      logMessage(`DOM 스냅샷 저장: ${normalizedUrl}`, 'success');
+      if (result.skipped) {
+        console.log(`[Recorder] DOM 스냅샷 저장 건너뜀: ${normalizedUrl} (${result.reason})`);
+        snapshotSavedUrls.add(normalizedUrl); // 중복 저장 방지
+      } else {
+        console.log(`[Recorder] ✅ DOM 스냅샷 저장 완료: ${normalizedUrl}`);
+        snapshotSavedUrls.add(normalizedUrl); // 중복 저장 방지
+        logMessage(`DOM 스냅샷 저장: ${normalizedUrl}`, 'success');
+      }
     } else {
       console.error('[Recorder] DOM 스냅샷 저장 실패:', result?.error || '알 수 없는 오류');
     }
@@ -775,6 +819,33 @@ function normalizeEventRecord(event) {
   if (event.frame === undefined && event.iframeContext) {
     event.frame = { iframeContext: event.iframeContext };
   }
+  if (event.wrapInTry === undefined) {
+    event.wrapInTry = false;
+  }
+  // 조건부 액션 및 상대 노드 탐색 필드 초기화
+  if (event.action === 'conditionalAction' || event.action === 'relativeAction' || event.action === 'loopAction') {
+    if (event.conditionElement === undefined) {
+      event.conditionElement = null;
+    }
+    if (event.conditionType === undefined) {
+      event.conditionType = null;
+    }
+    if (event.conditionValue === undefined) {
+      event.conditionValue = null;
+    }
+    if (event.targetRelation === undefined) {
+      event.targetRelation = null;
+    }
+    if (event.targetSelector === undefined) {
+      event.targetSelector = null;
+    }
+    if (event.actionType === undefined) {
+      event.actionType = 'click';
+    }
+    if (event.loopMode === undefined) {
+      event.loopMode = 'single';
+    }
+  }
   return event;
 }
 
@@ -852,6 +923,20 @@ function updateDeleteButtonState() {
   if (!deleteEventBtn) return;
   const hasSelection = currentEventIndex >= 0 && currentEventIndex < allEvents.length;
   deleteEventBtn.disabled = !hasSelection;
+}
+
+/**
+ * try 문 체크박스 상태 업데이트
+ */
+function updateTryWrapCheckbox(event) {
+  const checkbox = document.getElementById('wrap-in-try-checkbox');
+  if (!checkbox) return;
+  
+  if (event && typeof event.wrapInTry === 'boolean') {
+    checkbox.checked = event.wrapInTry;
+  } else {
+    checkbox.checked = false;
+  }
 }
 
 /**
@@ -1296,6 +1381,9 @@ function appendTimelineItem(ev, index) {
     showSelectors(ev.selectorCandidates || [], ev, index);
     showIframe(ev.iframeContext);
     updateDeleteButtonState();
+    
+    // try 문 체크박스 상태 업데이트
+    updateTryWrapCheckbox(ev);
   });
   
   timeline.appendChild(div);
@@ -1397,6 +1485,9 @@ function syncTimelineFromEvents(events, options = {}) {
     if (stepDetailsPanel) {
       stepDetailsPanel.classList.remove('hidden');
     }
+    
+    // try 문 체크박스 상태 업데이트
+    updateTryWrapCheckbox(selectedEvent);
   } else {
     currentEventIndex = -1;
     if (selectorList) {
@@ -1409,6 +1500,8 @@ function syncTimelineFromEvents(events, options = {}) {
     if (stepDetailsPanel) {
       stepDetailsPanel.classList.add('hidden');
     }
+    // try 문 체크박스 초기화
+    updateTryWrapCheckbox(null);
   }
 
   updateDeleteButtonState();
@@ -1423,15 +1516,160 @@ function updateTimeline() {
 }
 
 /**
+ * 타겟 위치 정보 가져오기
+ */
+function getTargetPositionInfo(event) {
+  if (!event || typeof event !== 'object') return null;
+  const target = event.target || null;
+  const extractFromPosition = (pos, source) => {
+    if (!pos || typeof pos !== 'object') return null;
+    const nth = typeof pos.nthOfType === 'number' ? pos.nthOfType : null;
+    if (!nth || nth < 1) return null;
+    const total = typeof pos.total === 'number' ? pos.total : null;
+    return {
+      nthOfType: nth,
+      total,
+      index: typeof pos.index === 'number' ? pos.index : null,
+      tag: source && source.tag ? String(source.tag).toLowerCase() : (target && target.tag ? String(target.tag).toLowerCase() : null),
+      repeats: source && typeof source.repeats === 'boolean'
+        ? source.repeats
+        : (typeof total === 'number' ? total > 1 : false)
+    };
+  };
+
+  const direct = target && target.position ? extractFromPosition(target.position, target) : null;
+  if (direct) return direct;
+
+  const targetDomContext = target && target.domContext && target.domContext.self ? target.domContext.self : null;
+  const contextSelf = event.domContext && event.domContext.self ? event.domContext.self : null;
+  const fallbackSelf = targetDomContext || contextSelf || null;
+  if (fallbackSelf && fallbackSelf.position) {
+    return extractFromPosition(fallbackSelf.position, fallbackSelf);
+  }
+
+  return null;
+}
+
+/**
+ * 셀렉터가 안정적인지 확인
+ */
+function selectorLikelyStable(selector) {
+  if (!selector || typeof selector !== 'string') return false;
+  // id, data-* 속성, aria-* 속성 등이 포함되면 충분히 안정적인 것으로 판단
+  if (/#/.test(selector)) return true;
+  if (/\[data-[^\]=]+=['"][^'"]+['"]/.test(selector)) return true;
+  if (/\[aria-[^\]=]+=['"][^'"]+['"]/.test(selector)) return true;
+  if (/\[id=['"][^'"]+['"]/.test(selector)) return true;
+  return false;
+}
+
+/**
+ * 셀렉터에 nth-of-type 추가
+ */
+function appendNthToSelector(selector, nth) {
+  if (!selector || typeof selector !== 'string') return null;
+  const trimmed = selector.trim();
+  if (!trimmed || /:nth-(child|of-type)\(/i.test(trimmed)) return null;
+  const match = trimmed.match(/([^\s>+~]+)$/);
+  if (!match) return null;
+  const lastPart = match[1];
+  const pseudoIndex = lastPart.indexOf(':');
+  const basePart = pseudoIndex >= 0 ? lastPart.slice(0, pseudoIndex) : lastPart;
+  const pseudoPart = pseudoIndex >= 0 ? lastPart.slice(pseudoIndex) : '';
+  const newLastPart = `${basePart}:nth-of-type(${nth})${pseudoPart}`;
+  const prefix = match.index ? trimmed.slice(0, match.index) : '';
+  return `${prefix}${newLastPart}`;
+}
+
+/**
+ * 필요시 nth 셀렉터 적용
+ */
+function enforceNthSelectorIfNeeded(candidate, event) {
+  if (!candidate || !event) return candidate;
+  const type = candidate.type || inferSelectorType(candidate.selector);
+  if (!type || type === 'xpath' || type === 'xpath-full') {
+    return candidate;
+  }
+  const positionInfo = getTargetPositionInfo(event);
+  if (!positionInfo) return candidate;
+  const nth = positionInfo.nthOfType;
+  const total = positionInfo.total;
+  const matchCount = typeof candidate.matchCount === 'number' ? candidate.matchCount : null;
+  const repeated = positionInfo.repeats === true || (typeof positionInfo.total === 'number' && positionInfo.total > 1);
+  const needsNth =
+    (matchCount !== null && matchCount > 1) ||
+    candidate.unique === false ||
+    (!selectorLikelyStable(candidate.selector) && repeated);
+  if (!needsNth) return candidate;
+  const reasonParts = (candidate.reason ? candidate.reason.split(' • ') : []).filter(Boolean);
+  const nthLabel = `nth-of-type(${nth}) 적용`;
+
+  if (type === 'text') {
+    const filtered = reasonParts.filter((part) => !/개 요소와 일치|유일 일치/.test(part));
+    if (!reasonParts.includes(nthLabel)) {
+      filtered.push(nthLabel);
+    }
+    return {
+      ...candidate,
+      reason: filtered.join(' • '),
+      unique: true,
+      matchCount: 1,
+      __nthApplied: nth,
+      __nthTotal: total,
+      __nthTag: positionInfo.tag || null
+    };
+  }
+
+  const appended = appendNthToSelector(candidate.selector, nth);
+  if (!appended) return candidate;
+  if (!reasonParts.includes(nthLabel)) {
+    reasonParts.push(nthLabel);
+  }
+  const filtered = reasonParts.filter((part) => !/개 요소와 일치|유일 일치/.test(part));
+  if (!filtered.includes(nthLabel)) {
+    filtered.push(nthLabel);
+  }
+  return {
+    ...candidate,
+    selector: appended,
+    reason: filtered.join(' • '),
+    unique: true,
+    matchCount: 1,
+    __nthApplied: nth,
+    __nthTotal: total,
+    __nthTag: positionInfo.tag || null
+  };
+}
+
+/**
  * 셀렉터 타입 추론 (내부 사용)
  */
 function inferSelectorType(selector) {
-  if (!selector || typeof selector !== 'string') return null;
+  if (!selector || typeof selector !== 'string') return 'css';
   const trimmed = selector.trim();
+  
+  // XPath 타입 확인
   if (trimmed.startsWith('xpath=')) return 'xpath';
-  if (trimmed.startsWith('//') || trimmed.startsWith('(')) return 'xpath';
+  if (trimmed.startsWith('//') || trimmed.startsWith('(') || trimmed.startsWith('/')) return 'xpath';
+  
+  // 텍스트 타입 확인
   if (trimmed.startsWith('text=')) return 'text';
-  if (trimmed.startsWith('#') || trimmed.startsWith('.') || trimmed.startsWith('[')) return 'css';
+  
+  // ID 셀렉터 확인
+  if (trimmed.startsWith('#')) return 'id';
+  
+  // 클래스 셀렉터 확인 (점으로 시작하고 공백/특수문자 없음)
+  if (trimmed.startsWith('.') && !trimmed.includes(' ')) return 'class';
+  
+  // 속성 셀렉터 확인
+  if (trimmed.includes('[') && trimmed.includes(']')) return 'attribute';
+  
+  // 단순 태그명 확인 (알파벳만, 공백 없음)
+  if (/^[a-z][a-z0-9-]*$/i.test(trimmed) && !trimmed.includes(' ') && !trimmed.includes('>') && !trimmed.includes(' ')) {
+    return 'tag';
+  }
+  
+  // 기본값: CSS 셀렉터 (복합 셀렉터 포함)
   return 'css';
 }
 
@@ -1468,10 +1706,13 @@ function buildSelectorTabGroups(event, baseCandidates, aiCandidates) {
     }
   };
 
-  const registerUnique = (source, candidate, originalIndex) => {
+  const registerUnique = (source, candidate, originalIndex, options = {}) => {
     if (!candidate || !candidate.selector) return;
     const targetList = source === 'ai' ? uniqueAiList : uniqueBaseList;
     const stored = { ...candidate, __sourceIndex: originalIndex };
+    if (options.derived === true) {
+      stored.__derived = true;
+    }
     const newIndex = targetList.push(stored) - 1;
     addIndex(groups.unique, source, newIndex);
   };
@@ -1485,9 +1726,27 @@ function buildSelectorTabGroups(event, baseCandidates, aiCandidates) {
 
       if (isAlreadyUnique) {
         registerUnique(source, candidate, index);
+        // 유일한 셀렉터는 반복 구조 그룹에 포함하지 않음
+        return;
       }
 
+      // 유일하지 않은 셀렉터만 반복 구조 그룹에 추가
       addIndex(groups.repeat, source, index);
+
+      const derivedCandidate = enforceNthSelectorIfNeeded({ ...candidate }, event);
+      if (derivedCandidate && derivedCandidate.unique === true) {
+        registerUnique(source, derivedCandidate, index, { derived: true });
+        const auto = {
+          ...derivedCandidate,
+          rawSelector: candidate.selector,
+          rawType: candidate.type || inferSelectorType(candidate.selector),
+          rawMatchCount: candidate.matchCount,
+          rawReason: candidate.reason,
+          __sourceIndex: index,
+          __derived: true
+        };
+        listRef[index] = { ...candidate, __autoDerived: auto };
+      }
     });
   };
 
@@ -4892,6 +5151,27 @@ function setupEventListeners() {
     });
   }
   
+  // try 문 체크박스 이벤트 리스너
+  const wrapInTryCheckbox = document.getElementById('wrap-in-try-checkbox');
+  if (wrapInTryCheckbox) {
+    wrapInTryCheckbox.addEventListener('change', (e) => {
+      if (currentEventIndex >= 0 && currentEventIndex < allEvents.length) {
+        allEvents[currentEventIndex].wrapInTry = e.target.checked;
+        // 코드 재생성
+        const normalizedEvents = allEvents.map(ev => normalizeEventRecord(ev));
+        const code = generateCode(normalizedEvents, manualActions, selectedFramework, selectedLanguage);
+        setCodeText(code);
+        // 코드를 TC에 실시간 저장
+        if (recording || normalizedEvents.length > 0) {
+          saveCodeToTCWithDebounce(code);
+        }
+      }
+    });
+  }
+  
+  // 패널 리사이즈 초기화
+  initPanelResize();
+  
   // 코드 미리보기 접기/펼치기
   const codeAreaToggle = document.getElementById('code-area-toggle');
   const codeAreaContent = document.getElementById('code-area-content');
@@ -4903,6 +5183,28 @@ function setupEventListeners() {
       codeArea.classList.toggle('collapsed');
       codeAreaToggle.classList.toggle('collapsed');
       codeAreaToggle.textContent = codeArea.classList.contains('collapsed') ? '▶' : '▼';
+      
+      // 접힐 때 패널 높이를 헤더만큼으로 설정 (위아래로 접기)
+      if (codeArea.classList.contains('collapsed')) {
+        // 헤더 높이 측정 (약간의 지연을 두어 DOM 업데이트 대기)
+        setTimeout(() => {
+          const header = codeArea.querySelector('.code-area-header');
+          const headerHeight = header ? header.offsetHeight : 40;
+          
+          // 패널 높이를 헤더만큼으로 강제 설정
+          codeArea.style.setProperty('height', `${headerHeight}px`, 'important');
+          codeArea.style.setProperty('min-height', `${headerHeight}px`, 'important');
+          codeArea.style.setProperty('max-height', `${headerHeight}px`, 'important');
+          codeArea.style.setProperty('overflow', 'hidden', 'important');
+        }, 10);
+      } else {
+        // 펼칠 때 높이 제한 해제
+        codeArea.style.removeProperty('height');
+        codeArea.style.removeProperty('min-height');
+        codeArea.style.removeProperty('max-height');
+        codeArea.style.removeProperty('overflow');
+        codeArea.style.minHeight = '300px';
+      }
     };
     
     // 토글 버튼 클릭
@@ -4934,6 +5236,28 @@ function setupEventListeners() {
       replayLogContent.classList.toggle('collapsed');
       replayLogToggle.classList.toggle('collapsed');
       replayLogToggle.textContent = replayLogContent.classList.contains('collapsed') ? '▶' : '▼';
+      
+      // 접힐 때 패널 높이를 헤더만큼으로 설정 (위아래로 접기)
+      if (replayLog.classList.contains('collapsed')) {
+        // 헤더 높이 측정 (약간의 지연을 두어 DOM 업데이트 대기)
+        setTimeout(() => {
+          const header = replayLog.querySelector('.replay-log-header');
+          const headerHeight = header ? header.offsetHeight : 50;
+          
+          // 패널 높이를 헤더만큼으로 강제 설정
+          replayLog.style.setProperty('height', `${headerHeight}px`, 'important');
+          replayLog.style.setProperty('min-height', `${headerHeight}px`, 'important');
+          replayLog.style.setProperty('max-height', `${headerHeight}px`, 'important');
+          replayLog.style.setProperty('overflow', 'hidden', 'important');
+        }, 10);
+      } else {
+        // 펼칠 때 높이 제한 해제
+        replayLog.style.removeProperty('height');
+        replayLog.style.removeProperty('min-height');
+        replayLog.style.removeProperty('max-height');
+        replayLog.style.removeProperty('overflow');
+        replayLog.style.minHeight = '180px';
+      }
     };
     
     // 토글 버튼 클릭
@@ -5044,6 +5368,30 @@ function setupEventListeners() {
     });
   } else {
     console.warn('[Recorder] Global wait 버튼 또는 메뉴를 찾을 수 없습니다.');
+  }
+  
+  // Global 조건부 액션 추가 버튼 이벤트 핸들러
+  const globalAddConditionalActionBtn = document.getElementById('global-add-conditional-action-btn');
+  console.log('[Recorder] Global 조건부 액션 버튼 찾기:', {
+    button: !!globalAddConditionalActionBtn
+  });
+  
+  if (globalAddConditionalActionBtn) {
+    console.log('[Recorder] ✅ Global 조건부 액션 버튼 이벤트 리스너 등록');
+    globalAddConditionalActionBtn.addEventListener('click', (e) => {
+      console.log('[Recorder] Global 조건부 액션 버튼 클릭됨');
+      e.preventDefault();
+      e.stopPropagation();
+      // 다른 메뉴 닫기
+      const actionMenu = document.getElementById('action-menu');
+      if (actionMenu) actionMenu.classList.add('hidden');
+      if (globalAssertionMenu) globalAssertionMenu.classList.add('hidden');
+      if (globalWaitMenu) globalWaitMenu.classList.add('hidden');
+      // 조건부 액션 단계별 워크플로우 시작
+      startConditionalActionWorkflow(-1, null);
+    });
+  } else {
+    console.warn('[Recorder] Global 조건부 액션 버튼을 찾을 수 없습니다.');
   }
 }
 
@@ -5329,6 +5677,1619 @@ function addAssertionAfterStep(stepIndex, assertionType, path, value, matchMode 
   updateCode({ preloadedEvents: normalized });
   
   logMessage(`Assertion 추가: ${assertionType}`, 'success');
+}
+
+/**
+ * 조건부 액션 추가 핸들러
+ * @param {number} stepIndex - 조건부 액션을 추가할 스텝의 인덱스
+ * @param {Object} stepEvent - 스텝 이벤트 정보
+ */
+function handleAddConditionalAction(stepIndex, stepEvent) {
+  // 조건부 액션 단계별 워크플로우 시작
+  startConditionalActionWorkflow(stepIndex, stepEvent);
+}
+
+/**
+ * 조건부 액션 단계별 워크플로우 시작
+ * @param {number} stepIndex - 조건부 액션을 추가할 스텝의 인덱스
+ * @param {Object} stepEvent - 스텝 이벤트 정보
+ */
+function startConditionalActionWorkflow(stepIndex, stepEvent) {
+  // 상태 초기화
+  conditionalActionStep = 1;
+  conditionalActionData = {
+    actionType: null,
+    conditionElement: null,
+    childElement: null,
+    siblingElement: null,
+    ancestorElement: null,
+    conditionType: null,
+    conditionValue: null,
+    targetRelation: null,
+    targetSelector: null,
+    loopMode: null,
+    loopSelector: null,
+    actionTypeValue: null,
+    actionValue: null,
+    stepIndex: stepIndex
+  };
+  
+  // 메뉴 표시
+  const menu = document.getElementById('global-conditional-action-menu');
+  if (menu) {
+    menu.classList.remove('hidden');
+    // 네비게이션 표시 (첫 단계에서도 취소 버튼 표시)
+    const navigation = document.getElementById('conditional-action-navigation');
+    const backBtn = document.getElementById('conditional-action-back-btn');
+    if (navigation) {
+      navigation.style.display = 'flex';
+      if (backBtn) {
+        backBtn.style.display = 'none'; // 첫 단계에서는 이전 버튼 숨김
+      }
+    }
+    updateConditionalActionStep(1);
+  }
+}
+
+/**
+ * 조건부 액션 단계별 UI 업데이트
+ * @param {number} step - 현재 단계 번호
+ */
+function updateConditionalActionStep(step) {
+  const menu = document.getElementById('global-conditional-action-menu');
+  const header = document.getElementById('conditional-action-header');
+  const buttonsContainer = document.getElementById('conditional-action-buttons');
+  const navigation = document.getElementById('conditional-action-navigation');
+  const backBtn = document.getElementById('conditional-action-back-btn');
+  const cancelBtn = document.getElementById('conditional-action-cancel-btn');
+  
+  if (!menu || !header || !buttonsContainer) return;
+  
+  // 취소 버튼 이벤트 리스너
+  if (cancelBtn) {
+    cancelBtn.onclick = () => cancelConditionalAction();
+  }
+  
+  // 이전 버튼 표시/숨김
+  if (navigation && backBtn) {
+    if (step > 1) {
+      navigation.style.display = 'flex';
+      backBtn.style.display = 'block';
+      backBtn.onclick = () => goToConditionalActionStep(step - 1);
+    } else {
+      // 첫 번째 단계에서도 취소 버튼은 표시
+      navigation.style.display = 'flex';
+      backBtn.style.display = 'none'; // 이전 버튼만 숨김
+    }
+  }
+  
+  // 단계별 UI 업데이트
+  buttonsContainer.innerHTML = '';
+  
+  if (step === 1) {
+    // 첫 번째 단계: 액션 타입 선택
+    header.textContent = '액션 타입 선택';
+    const actionTypes = [
+      { value: 'conditionalAction', label: '조건부 액션 (if 문)' },
+      { value: 'relativeAction', label: '상대 노드 탐색 (부모/형제/자식)' },
+      { value: 'loopAction', label: '반복 액션 (for 문)' }
+    ];
+    
+    actionTypes.forEach(type => {
+      const btn = document.createElement('button');
+      btn.className = 'assertion-menu-btn';
+      btn.textContent = type.label;
+      btn.onclick = () => {
+        conditionalActionData.actionType = type.value;
+        conditionalActionStep = 2;
+        updateConditionalActionStep(2);
+      };
+      buttonsContainer.appendChild(btn);
+    });
+  } else if (step === 2) {
+    // 두 번째 단계: 액션 타입에 따른 다음 선택지
+    if (conditionalActionData.actionType === 'conditionalAction') {
+      header.textContent = '조건 요소 선택';
+      const btn = document.createElement('button');
+      btn.className = 'assertion-menu-btn';
+      btn.textContent = '요소 선택하기';
+      btn.onclick = () => {
+        activateElementSelectionForConditionalActionStep();
+      };
+      buttonsContainer.appendChild(btn);
+    } else if (conditionalActionData.actionType === 'relativeAction') {
+      header.textContent = '액션 대상 선택';
+      const relations = [
+        { value: 'parent', label: '부모 노드' },
+        { value: 'ancestor', label: '조상 노드 (closest)' },
+        { value: 'sibling', label: '형제 노드' },
+        { value: 'child', label: '자식 노드' }
+      ];
+      
+      relations.forEach(rel => {
+        const btn = document.createElement('button');
+        btn.className = 'assertion-menu-btn';
+        btn.textContent = rel.label;
+        btn.onclick = () => {
+          conditionalActionData.targetRelation = rel.value;
+          conditionalActionStep = 3;
+          updateConditionalActionStep(3);
+        };
+        buttonsContainer.appendChild(btn);
+      });
+    } else if (conditionalActionData.actionType === 'loopAction') {
+      header.textContent = '반복 모드 선택';
+      const modes = [
+        { value: 'single', label: '단일 액션' },
+        { value: 'loop', label: '반복 액션 (리스트 순회)' }
+      ];
+      
+      modes.forEach(mode => {
+        const btn = document.createElement('button');
+        btn.className = 'assertion-menu-btn';
+        btn.textContent = mode.label;
+        btn.onclick = () => {
+          conditionalActionData.loopMode = mode.value;
+          if (mode.value === 'loop') {
+            // 리스트 셀렉터 입력 단계로
+            conditionalActionStep = 3;
+            updateConditionalActionStep(3);
+          } else {
+            // 조건 요소 선택 단계로
+            conditionalActionStep = 4;
+            updateConditionalActionStep(4);
+          }
+        };
+        buttonsContainer.appendChild(btn);
+      });
+    }
+  } else if (step === 3) {
+    // 세 번째 단계: 요소 선택 또는 추가 입력
+    if (conditionalActionData.actionType === 'conditionalAction') {
+      // 조건 요소가 선택되었으면 조건 타입 선택
+      if (conditionalActionData.conditionElement) {
+        header.textContent = '조건 타입 선택';
+        const conditionTypes = [
+          { value: 'is_visible', label: '요소가 보임 (is_visible)' },
+          { value: 'text_contains', label: '텍스트 포함' },
+          { value: 'text_equals', label: '텍스트 일치' },
+          { value: 'class_name', label: '클래스명 포함' },
+          { value: 'has_attribute', label: '속성 존재' }
+        ];
+        
+        conditionTypes.forEach(type => {
+          const btn = document.createElement('button');
+          btn.className = 'assertion-menu-btn';
+          btn.textContent = type.label;
+          btn.onclick = () => {
+            conditionalActionData.conditionType = type.value;
+            if (['text_contains', 'text_equals', 'class_name', 'has_attribute'].includes(type.value)) {
+              // 조건 값 입력 단계로
+              conditionalActionStep = 4;
+              updateConditionalActionStep(4);
+            } else {
+              // 실행할 액션 선택 단계로
+              conditionalActionStep = 5;
+              updateConditionalActionStep(5);
+            }
+          };
+          buttonsContainer.appendChild(btn);
+        });
+      }
+    } else if (conditionalActionData.actionType === 'relativeAction') {
+      // 기준 요소 선택
+      header.textContent = '기준 요소 선택';
+      const btn = document.createElement('button');
+      btn.className = 'assertion-menu-btn';
+      btn.textContent = '요소 선택하기';
+      btn.onclick = () => {
+        activateElementSelectionForRelativeActionStep('base');
+      };
+      buttonsContainer.appendChild(btn);
+    } else if (conditionalActionData.actionType === 'loopAction' && conditionalActionData.loopMode === 'loop') {
+      // 리스트 셀렉터 입력
+      header.textContent = '리스트 셀렉터 입력';
+      const inputContainer = document.createElement('div');
+      inputContainer.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
+      
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = '리스트 셀렉터 (예: .item)';
+      input.style.cssText = 'width: 100%; padding: 8px; border: 1px solid var(--vscode-input-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);';
+      
+      const confirmBtn = document.createElement('button');
+      confirmBtn.className = 'assertion-menu-btn';
+      confirmBtn.textContent = '확인';
+      confirmBtn.onclick = () => {
+        conditionalActionData.loopSelector = input.value;
+        if (conditionalActionData.loopSelector) {
+          conditionalActionStep = 4;
+          updateConditionalActionStep(4);
+        }
+      };
+      
+      inputContainer.appendChild(input);
+      inputContainer.appendChild(confirmBtn);
+      buttonsContainer.appendChild(inputContainer);
+    }
+  } else if (step === 4) {
+    // 네 번째 단계: 조건 값 입력 또는 관계 요소 선택
+    if (conditionalActionData.actionType === 'conditionalAction') {
+      if (['text_contains', 'text_equals', 'class_name', 'has_attribute'].includes(conditionalActionData.conditionType)) {
+        // 조건 값 입력
+        header.textContent = '조건 값 입력';
+        const inputContainer = document.createElement('div');
+        inputContainer.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
+        
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.placeholder = '조건 값 입력';
+        input.style.cssText = 'width: 100%; padding: 8px; border: 1px solid var(--vscode-input-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);';
+        
+        const confirmBtn = document.createElement('button');
+        confirmBtn.className = 'assertion-menu-btn';
+        confirmBtn.textContent = '확인';
+        confirmBtn.onclick = () => {
+          conditionalActionData.conditionValue = input.value;
+          conditionalActionStep = 5;
+          updateConditionalActionStep(5);
+        };
+        
+        inputContainer.appendChild(input);
+        inputContainer.appendChild(confirmBtn);
+        buttonsContainer.appendChild(inputContainer);
+      }
+    } else if (conditionalActionData.actionType === 'relativeAction') {
+      // 기준 요소가 선택되었으면 관계 요소 선택 또는 실행할 액션 선택
+      if (conditionalActionData.conditionElement) {
+        if (['child', 'sibling', 'ancestor'].includes(conditionalActionData.targetRelation)) {
+          // 관계 요소 선택
+          header.textContent = `${conditionalActionData.targetRelation === 'child' ? '자식' : conditionalActionData.targetRelation === 'sibling' ? '형제' : '조상'} 요소 선택`;
+          const btn = document.createElement('button');
+          btn.className = 'assertion-menu-btn';
+          btn.textContent = '요소 선택하기';
+          btn.onclick = () => {
+            activateElementSelectionForRelativeActionStep(conditionalActionData.targetRelation);
+          };
+          buttonsContainer.appendChild(btn);
+        } else {
+          // 부모 노드는 관계 요소 선택 불필요, 바로 실행할 액션 선택
+          conditionalActionStep = 5;
+          updateConditionalActionStep(5);
+        }
+      }
+    } else if (conditionalActionData.actionType === 'loopAction') {
+      // 조건 요소 선택
+      if (!conditionalActionData.conditionElement) {
+        header.textContent = '조건 요소 선택';
+        const btn = document.createElement('button');
+        btn.className = 'assertion-menu-btn';
+        btn.textContent = '요소 선택하기';
+        btn.onclick = () => {
+          activateElementSelectionForConditionalActionStep();
+        };
+        buttonsContainer.appendChild(btn);
+      } else if (!conditionalActionData.conditionType) {
+        // 조건 요소가 선택되었으면 조건 타입 선택
+        header.textContent = '조건 타입 선택';
+        const conditionTypes = [
+          { value: 'is_visible', label: '요소가 보임 (is_visible)' },
+          { value: 'text_contains', label: '텍스트 포함' },
+          { value: 'text_equals', label: '텍스트 일치' },
+          { value: 'class_name', label: '클래스명 포함' },
+          { value: 'has_attribute', label: '속성 존재' }
+        ];
+        
+        conditionTypes.forEach(type => {
+          const btn = document.createElement('button');
+          btn.className = 'assertion-menu-btn';
+          btn.textContent = type.label;
+          btn.onclick = () => {
+            conditionalActionData.conditionType = type.value;
+            if (['text_contains', 'text_equals', 'class_name', 'has_attribute'].includes(type.value)) {
+              // 조건 값 입력 단계로
+              conditionalActionStep = 5;
+              updateConditionalActionStep(5);
+            } else {
+              // 실행할 액션 선택 단계로
+              conditionalActionStep = 6;
+              updateConditionalActionStep(6);
+            }
+          };
+          buttonsContainer.appendChild(btn);
+        });
+      } else {
+        // 조건 타입이 선택되었으면 실행할 액션 선택
+        conditionalActionStep = 6;
+        updateConditionalActionStep(6);
+      }
+    }
+  } else if (step === 5) {
+    // 다섯 번째 단계: 조건 값 입력 또는 실행할 액션 선택
+    if (conditionalActionData.actionType === 'loopAction' && ['text_contains', 'text_equals', 'class_name', 'has_attribute'].includes(conditionalActionData.conditionType)) {
+      // 조건 값 입력
+      header.textContent = '조건 값 입력';
+      const inputContainer = document.createElement('div');
+      inputContainer.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
+      
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = '조건 값 입력';
+      input.style.cssText = 'width: 100%; padding: 8px; border: 1px solid var(--vscode-input-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);';
+      
+      const confirmBtn = document.createElement('button');
+      confirmBtn.className = 'assertion-menu-btn';
+      confirmBtn.textContent = '확인';
+      confirmBtn.onclick = () => {
+        conditionalActionData.conditionValue = input.value;
+        conditionalActionStep = 6;
+        updateConditionalActionStep(6);
+      };
+      
+      inputContainer.appendChild(input);
+      inputContainer.appendChild(confirmBtn);
+      buttonsContainer.appendChild(inputContainer);
+    } else {
+      // 실행할 액션 선택
+      header.textContent = '실행할 액션 선택';
+      const actions = [
+        { value: 'click', label: '클릭' },
+        { value: 'type', label: '입력' },
+        { value: 'hover', label: '호버' },
+        { value: 'doubleClick', label: '더블 클릭' },
+        { value: 'rightClick', label: '우클릭' }
+      ];
+      
+      actions.forEach(action => {
+        const btn = document.createElement('button');
+        btn.className = 'assertion-menu-btn';
+        btn.textContent = action.label;
+        btn.onclick = () => {
+          conditionalActionData.actionTypeValue = action.value;
+          if (action.value === 'type') {
+            // 입력 값 입력 단계로
+            conditionalActionStep = 6;
+            updateConditionalActionStep(6);
+          } else {
+            // 최종 확인 단계로
+            conditionalActionStep = 7;
+            updateConditionalActionStep(7);
+          }
+        };
+        buttonsContainer.appendChild(btn);
+      });
+    }
+  } else if (step === 6) {
+    // 여섯 번째 단계: 입력 값 입력 (type 액션인 경우) 또는 실행할 액션 선택
+    if (conditionalActionData.actionTypeValue === 'type') {
+      // 입력 값 입력
+      header.textContent = '입력할 값 입력';
+      const inputContainer = document.createElement('div');
+      inputContainer.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
+      
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = '입력할 값';
+      input.style.cssText = 'width: 100%; padding: 8px; border: 1px solid var(--vscode-input-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);';
+      
+      const confirmBtn = document.createElement('button');
+      confirmBtn.className = 'assertion-menu-btn';
+      confirmBtn.textContent = '확인';
+      confirmBtn.onclick = () => {
+        conditionalActionData.actionValue = input.value;
+        conditionalActionStep = 7;
+        updateConditionalActionStep(7);
+      };
+      
+      inputContainer.appendChild(input);
+      inputContainer.appendChild(confirmBtn);
+      buttonsContainer.appendChild(inputContainer);
+    } else {
+      // 실행할 액션 선택 (루프 액션의 경우)
+      header.textContent = '실행할 액션 선택';
+      const actions = [
+        { value: 'click', label: '클릭' },
+        { value: 'type', label: '입력' },
+        { value: 'hover', label: '호버' },
+        { value: 'doubleClick', label: '더블 클릭' },
+        { value: 'rightClick', label: '우클릭' }
+      ];
+      
+      actions.forEach(action => {
+        const btn = document.createElement('button');
+        btn.className = 'assertion-menu-btn';
+        btn.textContent = action.label;
+        btn.onclick = () => {
+          conditionalActionData.actionTypeValue = action.value;
+          if (action.value === 'type') {
+            // 입력 값 입력 단계로
+            conditionalActionStep = 7;
+            updateConditionalActionStep(7);
+          } else {
+            // 최종 확인 단계로
+            conditionalActionStep = 8;
+            updateConditionalActionStep(8);
+          }
+        };
+        buttonsContainer.appendChild(btn);
+      });
+    }
+  } else if (step === 7) {
+    // 일곱 번째 단계: 입력 값 입력 (type 액션인 경우) 또는 최종 확인
+    if (conditionalActionData.actionTypeValue === 'type' && !conditionalActionData.actionValue) {
+      // 입력 값 입력
+      header.textContent = '입력할 값 입력';
+      const inputContainer = document.createElement('div');
+      inputContainer.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
+      
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = '입력할 값';
+      input.style.cssText = 'width: 100%; padding: 8px; border: 1px solid var(--vscode-input-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);';
+      
+      const confirmBtn = document.createElement('button');
+      confirmBtn.className = 'assertion-menu-btn';
+      confirmBtn.textContent = '확인';
+      confirmBtn.onclick = () => {
+        conditionalActionData.actionValue = input.value;
+        conditionalActionStep = 8;
+        updateConditionalActionStep(8);
+      };
+      
+      inputContainer.appendChild(input);
+      inputContainer.appendChild(confirmBtn);
+      buttonsContainer.appendChild(inputContainer);
+    } else {
+      // 최종 확인
+      header.textContent = '조건부 액션 추가';
+      const confirmBtn = document.createElement('button');
+      confirmBtn.className = 'assertion-menu-btn';
+      confirmBtn.textContent = '추가';
+      confirmBtn.style.cssText = 'background: var(--vscode-button-background); color: var(--vscode-button-foreground);';
+      confirmBtn.onclick = () => {
+        completeConditionalAction();
+      };
+      buttonsContainer.appendChild(confirmBtn);
+    }
+  } else if (step === 8) {
+    // 여덟 번째 단계: 최종 확인
+    header.textContent = '실행할 액션 선택';
+    const actions = [
+      { value: 'click', label: '클릭' },
+      { value: 'type', label: '입력' },
+      { value: 'hover', label: '호버' },
+      { value: 'doubleClick', label: '더블 클릭' },
+      { value: 'rightClick', label: '우클릭' }
+    ];
+    
+    actions.forEach(action => {
+      const btn = document.createElement('button');
+      btn.className = 'assertion-menu-btn';
+      btn.textContent = action.label;
+      btn.onclick = () => {
+        conditionalActionData.actionTypeValue = action.value;
+        if (action.value === 'type') {
+          // 입력 값 입력 단계로
+          conditionalActionStep = 6;
+          updateConditionalActionStep(6);
+        } else {
+          // 최종 확인 단계로
+          conditionalActionStep = 7;
+          updateConditionalActionStep(7);
+        }
+      };
+      buttonsContainer.appendChild(btn);
+    });
+  } else if (step === 8) {
+    // 여덟 번째 단계: 최종 확인
+    header.textContent = '조건부 액션 추가';
+    const confirmBtn = document.createElement('button');
+    confirmBtn.className = 'assertion-menu-btn';
+    confirmBtn.textContent = '추가';
+    confirmBtn.style.cssText = 'background: var(--vscode-button-background); color: var(--vscode-button-foreground);';
+    confirmBtn.onclick = () => {
+      completeConditionalAction();
+    };
+    buttonsContainer.appendChild(confirmBtn);
+  }
+}
+
+/**
+ * 이전 단계로 이동
+ * @param {number} step - 이동할 단계 번호
+ */
+function goToConditionalActionStep(step) {
+  conditionalActionStep = step;
+  updateConditionalActionStep(step);
+}
+
+/**
+ * 조건부 액션을 위한 요소 선택 활성화 (단계별 워크플로우용)
+ */
+function activateElementSelectionForConditionalActionStep() {
+  startSimpleElementSelection((path, elementInfo) => {
+    if (!path || path.length === 0) {
+      alert('요소를 선택할 수 없습니다.');
+      return;
+    }
+    
+    const selectedElement = path[path.length - 1];
+    const elementData = {
+      selector: selectedElement.selector || selectedElement,
+      xpath: selectedElement.xpathValue || selectedElement.xpath || null,
+      text: elementInfo.text || selectedElement.textValue || null
+    };
+    
+    conditionalActionData.conditionElement = elementData;
+    
+    // 다음 단계로 진행
+    if (conditionalActionData.actionType === 'conditionalAction') {
+      conditionalActionStep = 3;
+      updateConditionalActionStep(3);
+    } else if (conditionalActionData.actionType === 'loopAction') {
+      // 루프 액션의 경우 조건 타입 선택 단계로
+      conditionalActionStep = 4;
+      updateConditionalActionStep(4);
+    }
+  }, null, conditionalActionData.stepIndex);
+}
+
+/**
+ * 상대 노드 탐색을 위한 요소 선택 활성화 (단계별 워크플로우용)
+ * @param {string} type - 'base', 'child', 'sibling', 'ancestor'
+ */
+function activateElementSelectionForRelativeActionStep(type) {
+  startSimpleElementSelection((path, elementInfo) => {
+    if (!path || path.length === 0) {
+      alert('요소를 선택할 수 없습니다.');
+      return;
+    }
+    
+    const selectedElement = path[path.length - 1];
+    const elementData = {
+      selector: selectedElement.selector || selectedElement,
+      xpath: selectedElement.xpathValue || selectedElement.xpath || null,
+      text: elementInfo.text || selectedElement.textValue || null
+    };
+    
+    if (type === 'base') {
+      conditionalActionData.conditionElement = elementData;
+      // 관계 요소 선택 단계로 (child, sibling, ancestor인 경우)
+      if (['child', 'sibling', 'ancestor'].includes(conditionalActionData.targetRelation)) {
+        conditionalActionStep = 4;
+        updateConditionalActionStep(4);
+      } else {
+        // 부모 노드는 바로 실행할 액션 선택
+        conditionalActionStep = 5;
+        updateConditionalActionStep(5);
+      }
+    } else if (type === 'child') {
+      // 부모-자식 관계 검증
+      if (conditionalActionData.conditionElement) {
+        const isValid = validateBySelector(conditionalActionData.conditionElement, elementData);
+        if (isValid) {
+          conditionalActionData.childElement = elementData;
+          conditionalActionStep = 5;
+          updateConditionalActionStep(5);
+        } else {
+          alert('선택한 요소가 부모 요소의 자식이 아닙니다.');
+        }
+      }
+    } else if (type === 'sibling') {
+      // 형제 관계 검증
+      if (conditionalActionData.conditionElement) {
+        const isValid = validateSiblingRelation(conditionalActionData.conditionElement, elementData);
+        if (isValid) {
+          conditionalActionData.siblingElement = elementData;
+          conditionalActionStep = 5;
+          updateConditionalActionStep(5);
+        } else {
+          alert('선택한 요소가 기준 요소의 형제가 아닙니다.');
+        }
+      }
+    } else if (type === 'ancestor') {
+      // 조상 관계 검증
+      if (conditionalActionData.conditionElement) {
+        const isValid = validateAncestorRelation(conditionalActionData.conditionElement, elementData);
+        if (isValid) {
+          conditionalActionData.ancestorElement = elementData;
+          conditionalActionStep = 5;
+          updateConditionalActionStep(5);
+        } else {
+          alert('선택한 요소가 기준 요소의 조상이 아닙니다.');
+        }
+      }
+    }
+  }, null, conditionalActionData.stepIndex);
+}
+
+/**
+ * 조건부 액션 완료 및 추가
+ */
+function completeConditionalAction() {
+  // addConditionalActionAfterStep 함수 호출
+  addConditionalActionAfterStep(conditionalActionData.stepIndex, {
+    actionType: conditionalActionData.actionType,
+    conditionElement: conditionalActionData.conditionElement,
+    childElement: conditionalActionData.childElement,
+    siblingElement: conditionalActionData.siblingElement,
+    ancestorElement: conditionalActionData.ancestorElement,
+    conditionType: conditionalActionData.conditionType,
+    conditionValue: conditionalActionData.conditionValue,
+    targetRelation: conditionalActionData.targetRelation,
+    targetSelector: conditionalActionData.targetSelector,
+    loopMode: conditionalActionData.loopMode,
+    loopSelector: conditionalActionData.loopSelector,
+    actionTypeValue: conditionalActionData.actionTypeValue,
+    actionValue: conditionalActionData.actionValue
+  });
+  
+  // 메뉴 닫기
+  const menu = document.getElementById('global-conditional-action-menu');
+  if (menu) {
+    menu.classList.add('hidden');
+  }
+  
+  // 상태 초기화
+  conditionalActionStep = 0;
+  conditionalActionData = {
+    actionType: null,
+    conditionElement: null,
+    childElement: null,
+    siblingElement: null,
+    ancestorElement: null,
+    conditionType: null,
+    conditionValue: null,
+    targetRelation: null,
+    targetSelector: null,
+    loopMode: null,
+    loopSelector: null,
+    actionTypeValue: null,
+    actionValue: null,
+    stepIndex: -1
+  };
+}
+
+/**
+ * 조건부 액션 추가 취소
+ */
+function cancelConditionalAction() {
+  // 메뉴 닫기
+  const menu = document.getElementById('global-conditional-action-menu');
+  if (menu) {
+    menu.classList.add('hidden');
+  }
+  
+  // 상태 초기화
+  conditionalActionStep = 0;
+  conditionalActionData = {
+    actionType: null,
+    conditionElement: null,
+    childElement: null,
+    siblingElement: null,
+    ancestorElement: null,
+    conditionType: null,
+    conditionValue: null,
+    targetRelation: null,
+    targetSelector: null,
+    loopMode: null,
+    loopSelector: null,
+    actionTypeValue: null,
+    actionValue: null,
+    stepIndex: -1
+  };
+}
+
+/**
+ * 조건부 액션 다이얼로그 표시
+ * @param {number} stepIndex - 스텝 인덱스 (-1이면 맨 끝에 추가)
+ * @param {Object} stepEvent - 스텝 이벤트 정보
+ */
+function showConditionalActionDialog(stepIndex, stepEvent) {
+  // 기존 다이얼로그가 있으면 제거
+  const existing = document.getElementById('conditional-action-dialog');
+  if (existing) {
+    existing.remove();
+  }
+  
+  const dialog = document.createElement('div');
+  dialog.id = 'conditional-action-dialog';
+  dialog.className = 'modal-dialog';
+  dialog.style.cssText = 'position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 10000; background: var(--vscode-editor-background); border: 1px solid var(--vscode-border); border-radius: 8px; padding: 20px; min-width: 500px; max-width: 700px; max-height: 80vh; overflow-y: auto;';
+  
+  const dialogContent = document.createElement('div');
+  dialogContent.className = 'modal-content';
+  
+  // 헤더
+  const header = document.createElement('div');
+  header.className = 'modal-header';
+  header.style.cssText = 'display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;';
+  header.innerHTML = '<h3>조건부 액션 추가</h3>';
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '×';
+  closeBtn.style.cssText = 'background: none; border: none; font-size: 24px; cursor: pointer; color: var(--vscode-foreground);';
+  closeBtn.addEventListener('click', () => dialog.remove());
+  header.appendChild(closeBtn);
+  
+  // 바디
+  const body = document.createElement('div');
+  body.className = 'modal-body';
+  
+  // 액션 타입 선택
+  const actionTypeSection = document.createElement('div');
+  actionTypeSection.style.cssText = 'margin-bottom: 20px;';
+  actionTypeSection.innerHTML = '<label style="display: block; margin-bottom: 8px; font-weight: bold;">액션 타입:</label>';
+  const actionTypeSelect = document.createElement('select');
+  actionTypeSelect.id = 'conditional-action-type';
+  actionTypeSelect.style.cssText = 'width: 100%; padding: 8px; border: 1px solid var(--vscode-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);';
+  actionTypeSelect.innerHTML = `
+    <option value="conditionalAction">조건부 액션 (if 문)</option>
+    <option value="relativeAction">상대 노드 탐색 (부모/형제/자식)</option>
+    <option value="loopAction">반복 액션 (for 문)</option>
+  `;
+  actionTypeSection.appendChild(actionTypeSelect);
+  
+  // 조건 요소 선택 섹션
+  const conditionElementSection = document.createElement('div');
+  conditionElementSection.id = 'condition-element-section';
+  conditionElementSection.style.cssText = 'margin-bottom: 20px;';
+  conditionElementSection.innerHTML = `
+    <label style="display: block; margin-bottom: 8px; font-weight: bold;">조건 요소 선택:</label>
+    <button id="select-condition-element" style="width: 100%; padding: 8px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; cursor: pointer;">요소 선택하기</button>
+    <div id="selected-condition-element" style="margin-top: 8px; padding: 8px; background: var(--vscode-input-background); border-radius: 4px; display: none;"></div>
+  `;
+  
+  // 조건 타입 선택
+  const conditionTypeSection = document.createElement('div');
+  conditionTypeSection.id = 'condition-type-section';
+  conditionTypeSection.style.cssText = 'margin-bottom: 20px; display: none;';
+  conditionTypeSection.innerHTML = `
+    <label style="display: block; margin-bottom: 8px; font-weight: bold;">조건 타입:</label>
+    <select id="condition-type" style="width: 100%; padding: 8px; border: 1px solid var(--vscode-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);">
+      <option value="is_visible">요소가 보임 (is_visible)</option>
+      <option value="text_contains">텍스트 포함</option>
+      <option value="text_equals">텍스트 일치</option>
+      <option value="class_name">클래스명 포함</option>
+      <option value="has_attribute">속성 존재</option>
+    </select>
+    <input id="condition-value" type="text" placeholder="조건 값 입력" style="width: 100%; margin-top: 8px; padding: 8px; border: 1px solid var(--vscode-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); display: none;">
+  `;
+  
+  // 액션 대상 선택 (상대 노드 탐색용)
+  const targetRelationSection = document.createElement('div');
+  targetRelationSection.id = 'target-relation-section';
+  targetRelationSection.style.cssText = 'margin-bottom: 20px; display: none;';
+  targetRelationSection.innerHTML = `
+    <label style="display: block; margin-bottom: 8px; font-weight: bold;">액션 대상:</label>
+    <select id="target-relation" style="width: 100%; padding: 8px; border: 1px solid var(--vscode-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);">
+      <option value="parent">부모 노드</option>
+      <option value="ancestor">조상 노드 (closest)</option>
+      <option value="sibling">형제 노드</option>
+      <option value="child">자식 노드</option>
+    </select>
+    <div id="child-selection-section" style="margin-top: 8px; display: none;">
+      <button id="select-child-element" type="button" style="width: 100%; padding: 8px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; cursor: pointer; margin-bottom: 8px;">자식 요소 선택하기</button>
+      <div id="selected-child-element" style="margin-bottom: 8px; padding: 8px; background: var(--vscode-input-background); border-radius: 4px; display: none;"></div>
+    </div>
+    <div id="sibling-selection-section" style="margin-top: 8px; display: none;">
+      <button id="select-sibling-element" type="button" style="width: 100%; padding: 8px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; cursor: pointer; margin-bottom: 8px;">형제 요소 선택하기</button>
+      <div id="selected-sibling-element" style="margin-bottom: 8px; padding: 8px; background: var(--vscode-input-background); border-radius: 4px; display: none;"></div>
+    </div>
+    <div id="ancestor-selection-section" style="margin-top: 8px; display: none;">
+      <button id="select-ancestor-element" type="button" style="width: 100%; padding: 8px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; cursor: pointer; margin-bottom: 8px;">조상 요소 선택하기</button>
+      <div id="selected-ancestor-element" style="margin-bottom: 8px; padding: 8px; background: var(--vscode-input-background); border-radius: 4px; display: none;"></div>
+    </div>
+    <input id="target-selector" type="text" placeholder="대상 셀렉터 (선택사항, 예: .item)" style="width: 100%; margin-top: 8px; padding: 8px; border: 1px solid var(--vscode-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);">
+  `;
+  
+  // 반복 모드 선택
+  const loopModeSection = document.createElement('div');
+  loopModeSection.id = 'loop-mode-section';
+  loopModeSection.style.cssText = 'margin-bottom: 20px; display: none;';
+  loopModeSection.innerHTML = `
+    <label style="display: block; margin-bottom: 8px; font-weight: bold;">반복 모드:</label>
+    <select id="loop-mode" style="width: 100%; padding: 8px; border: 1px solid var(--vscode-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);">
+      <option value="single">단일 액션</option>
+      <option value="loop">반복 액션 (리스트 순회)</option>
+    </select>
+    <input id="loop-selector" type="text" placeholder="반복할 리스트 셀렉터 (예: .item)" style="width: 100%; margin-top: 8px; padding: 8px; border: 1px solid var(--vscode-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); display: none;">
+  `;
+  
+  // 액션 타입 선택
+  const actionTypeInputSection = document.createElement('div');
+  actionTypeInputSection.style.cssText = 'margin-bottom: 20px;';
+  actionTypeInputSection.innerHTML = `
+    <label style="display: block; margin-bottom: 8px; font-weight: bold;">실행할 액션:</label>
+    <select id="action-type" style="width: 100%; padding: 8px; border: 1px solid var(--vscode-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);">
+      <option value="click">클릭</option>
+      <option value="type">입력</option>
+      <option value="hover">호버</option>
+      <option value="doubleClick">더블 클릭</option>
+      <option value="rightClick">우클릭</option>
+    </select>
+    <input id="action-value" type="text" placeholder="입력할 값 (type 액션인 경우)" style="width: 100%; margin-top: 8px; padding: 8px; border: 1px solid var(--vscode-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); display: none;">
+  `;
+  
+  // 코드 미리보기
+  const previewSection = document.createElement('div');
+  previewSection.style.cssText = 'margin-bottom: 20px;';
+  previewSection.innerHTML = `
+    <label style="display: block; margin-bottom: 8px; font-weight: bold;">코드 미리보기:</label>
+    <pre id="code-preview" style="padding: 12px; background: var(--vscode-textBlockQuote-background); border: 1px solid var(--vscode-border); border-radius: 4px; font-size: 12px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word;"></pre>
+  `;
+  
+  body.appendChild(actionTypeSection);
+  body.appendChild(conditionElementSection);
+  body.appendChild(conditionTypeSection);
+  body.appendChild(targetRelationSection);
+  body.appendChild(loopModeSection);
+  body.appendChild(actionTypeInputSection);
+  body.appendChild(previewSection);
+  
+  // 푸터
+  const footer = document.createElement('div');
+  footer.className = 'modal-footer';
+  footer.style.cssText = 'display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = '취소';
+  cancelBtn.className = 'btn btn-secondary';
+  cancelBtn.style.cssText = 'padding: 8px 16px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: none; border-radius: 4px; cursor: pointer;';
+  cancelBtn.addEventListener('click', () => dialog.remove());
+  const confirmBtn = document.createElement('button');
+  confirmBtn.textContent = '추가';
+  confirmBtn.className = 'btn btn-primary';
+  confirmBtn.style.cssText = 'padding: 8px 16px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; cursor: pointer;';
+  confirmBtn.addEventListener('click', () => {
+    const actionType = actionTypeSelect.value;
+    const conditionElement = dialog.dataset.conditionElement ? JSON.parse(dialog.dataset.conditionElement) : null;
+    const childElement = dialog.dataset.childElement ? JSON.parse(dialog.dataset.childElement) : null;
+    const siblingElement = dialog.dataset.siblingElement ? JSON.parse(dialog.dataset.siblingElement) : null;
+    const ancestorElement = dialog.dataset.ancestorElement ? JSON.parse(dialog.dataset.ancestorElement) : null;
+    const conditionType = document.getElementById('condition-type').value;
+    const conditionValue = document.getElementById('condition-value').value;
+    const targetRelation = document.getElementById('target-relation').value;
+    const targetSelector = document.getElementById('target-selector').value;
+    const loopMode = document.getElementById('loop-mode').value;
+    const loopSelector = document.getElementById('loop-selector').value;
+    const actionTypeValue = document.getElementById('action-type').value;
+    const actionValue = document.getElementById('action-value').value;
+    
+    addConditionalActionAfterStep(stepIndex, {
+      actionType,
+      conditionElement,
+      childElement,
+      siblingElement,
+      ancestorElement,
+      conditionType,
+      conditionValue,
+      targetRelation,
+      targetSelector,
+      loopMode,
+      loopSelector,
+      actionTypeValue,
+      actionValue
+    });
+    
+    dialog.remove();
+  });
+  
+  footer.appendChild(cancelBtn);
+  footer.appendChild(confirmBtn);
+  
+  dialogContent.appendChild(header);
+  dialogContent.appendChild(body);
+  dialogContent.appendChild(footer);
+  dialog.appendChild(dialogContent);
+  document.body.appendChild(dialog);
+  
+  // 액션 타입 변경 시 UI 업데이트
+  actionTypeSelect.addEventListener('change', () => {
+    updateConditionalActionUI(actionTypeSelect.value, dialog);
+  });
+  
+  // 조건 타입 변경 시 값 입력 필드 표시/숨김
+  document.getElementById('condition-type').addEventListener('change', (e) => {
+    const conditionValueInput = document.getElementById('condition-value');
+    const needsValue = ['text_contains', 'text_equals', 'class_name', 'has_attribute'].includes(e.target.value);
+    conditionValueInput.style.display = needsValue ? 'block' : 'none';
+    updateCodePreview(dialog);
+  });
+  
+  // 액션 타입 변경 시 값 입력 필드 표시/숨김
+  document.getElementById('action-type').addEventListener('change', (e) => {
+    const actionValueInput = document.getElementById('action-value');
+    actionValueInput.style.display = e.target.value === 'type' ? 'block' : 'none';
+    updateCodePreview(dialog);
+  });
+  
+  // 반복 모드 변경 시 리스트 셀렉터 표시/숨김
+  document.getElementById('loop-mode').addEventListener('change', (e) => {
+    const loopSelectorInput = document.getElementById('loop-selector');
+    loopSelectorInput.style.display = e.target.value === 'loop' ? 'block' : 'none';
+    updateCodePreview(dialog);
+  });
+  
+  // target-relation 변경 시 선택 버튼 표시/숨김
+  document.getElementById('target-relation').addEventListener('change', (e) => {
+    const childSelectionSection = document.getElementById('child-selection-section');
+    const siblingSelectionSection = document.getElementById('sibling-selection-section');
+    const ancestorSelectionSection = document.getElementById('ancestor-selection-section');
+    const targetSelectorInput = document.getElementById('target-selector');
+    
+    // 모든 선택 섹션 숨김
+    childSelectionSection.style.display = 'none';
+    siblingSelectionSection.style.display = 'none';
+    ancestorSelectionSection.style.display = 'none';
+    
+    // 선택된 요소 데이터 초기화
+    delete dialog.dataset.childElement;
+    delete dialog.dataset.siblingElement;
+    delete dialog.dataset.ancestorElement;
+    
+    const selectedChildDiv = document.getElementById('selected-child-element');
+    const selectedSiblingDiv = document.getElementById('selected-sibling-element');
+    const selectedAncestorDiv = document.getElementById('selected-ancestor-element');
+    if (selectedChildDiv) selectedChildDiv.style.display = 'none';
+    if (selectedSiblingDiv) selectedSiblingDiv.style.display = 'none';
+    if (selectedAncestorDiv) selectedAncestorDiv.style.display = 'none';
+    
+    // 선택된 관계에 따라 해당 섹션 표시
+    if (e.target.value === 'child') {
+      childSelectionSection.style.display = 'block';
+      targetSelectorInput.placeholder = '또는 셀렉터를 직접 입력하세요 (예: .item)';
+    } else if (e.target.value === 'sibling') {
+      siblingSelectionSection.style.display = 'block';
+      targetSelectorInput.placeholder = '또는 셀렉터를 직접 입력하세요 (예: .item)';
+    } else if (e.target.value === 'ancestor') {
+      ancestorSelectionSection.style.display = 'block';
+      targetSelectorInput.placeholder = '또는 셀렉터를 직접 입력하세요 (예: .item)';
+    } else {
+      targetSelectorInput.placeholder = '대상 셀렉터 (선택사항, 예: .item)';
+    }
+    updateCodePreview(dialog);
+  });
+  
+  // 요소 선택 버튼 이벤트
+  document.getElementById('select-condition-element').addEventListener('click', () => {
+    activateElementSelectionForConditionalAction(stepIndex, dialog);
+  });
+  
+  // 자식 요소 선택 버튼 이벤트
+  document.getElementById('select-child-element').addEventListener('click', () => {
+    activateChildElementSelection(stepIndex, dialog);
+  });
+  
+  // 형제 요소 선택 버튼 이벤트
+  document.getElementById('select-sibling-element').addEventListener('click', () => {
+    activateSiblingElementSelection(stepIndex, dialog);
+  });
+  
+  // 조상 요소 선택 버튼 이벤트
+  document.getElementById('select-ancestor-element').addEventListener('click', () => {
+    activateAncestorElementSelection(stepIndex, dialog);
+  });
+  
+  // 모든 입력 변경 시 미리보기 업데이트
+  [actionTypeSelect, document.getElementById('condition-type'), document.getElementById('condition-value'),
+   document.getElementById('target-relation'), document.getElementById('target-selector'),
+   document.getElementById('loop-mode'), document.getElementById('loop-selector'),
+   document.getElementById('action-type'), document.getElementById('action-value')].forEach(el => {
+    if (el) {
+      el.addEventListener('input', () => updateCodePreview(dialog));
+      el.addEventListener('change', () => updateCodePreview(dialog));
+    }
+  });
+  
+  // 초기 UI 업데이트
+  updateConditionalActionUI(actionTypeSelect.value, dialog);
+}
+
+/**
+ * 조건부 액션 UI 업데이트
+ */
+function updateConditionalActionUI(actionType, dialog) {
+  const conditionTypeSection = document.getElementById('condition-type-section');
+  const targetRelationSection = document.getElementById('target-relation-section');
+  const loopModeSection = document.getElementById('loop-mode-section');
+  
+  if (actionType === 'conditionalAction' || actionType === 'loopAction') {
+    conditionTypeSection.style.display = 'block';
+  } else {
+    conditionTypeSection.style.display = 'none';
+  }
+  
+  if (actionType === 'relativeAction') {
+    targetRelationSection.style.display = 'block';
+  } else {
+    targetRelationSection.style.display = 'none';
+  }
+  
+  if (actionType === 'loopAction') {
+    loopModeSection.style.display = 'block';
+  } else {
+    loopModeSection.style.display = 'none';
+  }
+  
+  updateCodePreview(dialog);
+}
+
+/**
+ * 코드 미리보기 업데이트
+ */
+function updateCodePreview(dialog) {
+  const preview = document.getElementById('code-preview');
+  if (!preview) return;
+  
+  const actionType = document.getElementById('conditional-action-type').value;
+  const conditionElement = dialog.dataset.conditionElement ? JSON.parse(dialog.dataset.conditionElement) : null;
+  const conditionType = document.getElementById('condition-type').value;
+  const conditionValue = document.getElementById('condition-value').value;
+  const targetRelation = document.getElementById('target-relation').value;
+  const targetSelector = document.getElementById('target-selector').value;
+  const loopMode = document.getElementById('loop-mode').value;
+  const loopSelector = document.getElementById('loop-selector').value;
+  const actionTypeValue = document.getElementById('action-type').value;
+  const actionValue = document.getElementById('action-value').value;
+  
+  let code = '';
+  
+  if (actionType === 'conditionalAction') {
+    if (conditionElement && conditionType) {
+      const elementSelector = conditionElement.selector || 'page.locator("...")';
+      code = `# 조건부 액션\n`;
+      code += `${elementSelector}\n`;
+      code += `if await ${elementSelector}.is_visible():\n`;
+      code += `    await ${elementSelector}.click()`;
+    } else {
+      code = '조건 요소를 선택하세요.';
+    }
+  } else if (actionType === 'relativeAction') {
+    if (conditionElement) {
+      const baseSelector = conditionElement.selector || 'page.locator("...")';
+      let targetSelectorCode = baseSelector;
+      const childElement = dialog.dataset.childElement ? JSON.parse(dialog.dataset.childElement) : null;
+      const siblingElement = dialog.dataset.siblingElement ? JSON.parse(dialog.dataset.siblingElement) : null;
+      const ancestorElement = dialog.dataset.ancestorElement ? JSON.parse(dialog.dataset.ancestorElement) : null;
+      
+      if (targetRelation === 'parent') {
+        targetSelectorCode = `${baseSelector}.locator('..')`;
+      } else if (targetRelation === 'ancestor') {
+        // 조상 요소가 선택되었으면 그것을 사용, 아니면 targetSelector 사용
+        if (ancestorElement && ancestorElement.selector) {
+          targetSelectorCode = ancestorElement.selector;
+        } else if (targetSelector) {
+          targetSelectorCode = `${baseSelector}.locator('xpath=ancestor::${targetSelector.replace(/^\./, '')}[1]')`;
+        } else {
+          targetSelectorCode = `${baseSelector}.locator('xpath=ancestor::*[1]')`;
+        }
+      } else if (targetRelation === 'sibling') {
+        // 형제 요소가 선택되었으면 그것을 사용, 아니면 targetSelector 사용
+        if (siblingElement && siblingElement.selector) {
+          targetSelectorCode = siblingElement.selector;
+        } else if (targetSelector) {
+          const tagName = targetSelector.replace(/^\./, '').split('[')[0];
+          targetSelectorCode = `${baseSelector}.locator('xpath=../following-sibling::${tagName}[1]')`;
+        } else {
+          targetSelectorCode = `${baseSelector}.locator('xpath=../following-sibling::*[1]')`;
+        }
+      } else if (targetRelation === 'child') {
+        // 자식 요소가 선택되었으면 그것을 사용, 아니면 targetSelector 사용
+        if (childElement && childElement.selector) {
+          targetSelectorCode = childElement.selector;
+        } else if (targetSelector) {
+          targetSelectorCode = `${baseSelector}.locator('${targetSelector}')`;
+        } else {
+          targetSelectorCode = `${baseSelector}.locator('...')`;
+        }
+      }
+      code = `# 상대 노드 탐색\n`;
+      code += `element = ${baseSelector}\n`;
+      code += `await ${targetSelectorCode}.click()`;
+    } else {
+      code = '조건 요소를 선택하세요.';
+    }
+  } else if (actionType === 'loopAction') {
+    if (loopMode === 'loop' && loopSelector) {
+      code = `# 반복 액션\n`;
+      code += `items = page.locator('${loopSelector}')\n`;
+      code += `count = await items.count()\n`;
+      code += `for i in range(count):\n`;
+      code += `    item = items.nth(i)\n`;
+      if (conditionElement && conditionType) {
+        const elementSelector = conditionElement.selector || 'item.locator("...")';
+        code += `    if await ${elementSelector}.is_visible():\n`;
+        code += `        await item.click()`;
+      } else {
+        code += `    await item.click()`;
+      }
+    } else {
+      code = '반복 모드를 선택하고 리스트 셀렉터를 입력하세요.';
+    }
+  }
+  
+  preview.textContent = code;
+}
+
+/**
+ * 조건부 액션을 위한 요소 선택 활성화
+ */
+function activateElementSelectionForConditionalAction(stepIndex, dialog) {
+  startSimpleElementSelection((path, elementInfo) => {
+    if (!path || path.length === 0) {
+      alert('요소를 선택할 수 없습니다.');
+      return;
+    }
+    
+    const selectedElement = path[path.length - 1];
+    const elementData = {
+      selector: selectedElement.selector || selectedElement,
+      xpath: selectedElement.xpathValue || selectedElement.xpath || null,
+      text: elementInfo.text || selectedElement.textValue || null
+    };
+    
+    dialog.dataset.conditionElement = JSON.stringify(elementData);
+    
+    const selectedElementDiv = document.getElementById('selected-condition-element');
+    selectedElementDiv.style.display = 'block';
+    selectedElementDiv.textContent = `선택된 요소: ${elementData.selector}`;
+    
+    updateCodePreview(dialog);
+  }, null, stepIndex);
+}
+
+/**
+ * 자식 요소 선택 활성화 (부모-자식 관계 검증 포함)
+ */
+function activateChildElementSelection(stepIndex, dialog) {
+  // 부모 요소가 선택되었는지 확인
+  const conditionElement = dialog.dataset.conditionElement ? JSON.parse(dialog.dataset.conditionElement) : null;
+  if (!conditionElement) {
+    alert('먼저 부모 요소를 선택하세요.');
+    return;
+  }
+  
+  // 부모 요소 정보를 저장하여 검증에 사용
+  dialog.dataset.parentElementForValidation = JSON.stringify(conditionElement);
+  
+  startSimpleElementSelection((path, elementInfo) => {
+    if (!path || path.length === 0) {
+      alert('요소를 선택할 수 없습니다.');
+      return;
+    }
+    
+    const selectedElement = path[path.length - 1];
+    const childElementData = {
+      selector: selectedElement.selector || selectedElement,
+      xpath: selectedElement.xpathValue || selectedElement.xpath || null,
+      text: elementInfo.text || selectedElement.textValue || null
+    };
+    
+    // 부모-자식 관계 검증
+    const parentElement = dialog.dataset.parentElementForValidation ? JSON.parse(dialog.dataset.parentElementForValidation) : null;
+    if (parentElement) {
+      const isValid = validateBySelector(parentElement, childElementData);
+      
+      if (isValid) {
+        // 검증 성공: 자식 요소 저장
+        dialog.dataset.childElement = JSON.stringify(childElementData);
+        
+        const selectedChildDiv = document.getElementById('selected-child-element');
+        selectedChildDiv.style.display = 'block';
+        selectedChildDiv.textContent = `선택된 자식 요소: ${childElementData.selector}`;
+        
+        // target-selector에 자동으로 채우기
+        const targetSelectorInput = document.getElementById('target-selector');
+        if (targetSelectorInput && !targetSelectorInput.value) {
+          // 셀렉터에서 클래스나 ID 추출 시도
+          const selector = childElementData.selector || '';
+          const match = selector.match(/['"]([^'"]+)['"]/);
+          if (match) {
+            targetSelectorInput.value = match[1];
+          }
+        }
+        
+        updateCodePreview(dialog);
+      } else {
+        // 검증 실패: 경고 메시지
+        alert('선택한 요소가 부모 요소의 자식이 아닙니다. 부모 요소 내부의 자식 요소를 선택하세요.');
+      }
+    } else {
+      // 부모 요소 정보가 없으면 그냥 저장 (검증 없이)
+      dialog.dataset.childElement = JSON.stringify(childElementData);
+      
+      const selectedChildDiv = document.getElementById('selected-child-element');
+      selectedChildDiv.style.display = 'block';
+      selectedChildDiv.textContent = `선택된 자식 요소: ${childElementData.selector}`;
+      
+      updateCodePreview(dialog);
+    }
+  }, null, stepIndex);
+}
+
+/**
+ * 셀렉터 기반 부모-자식 관계 검증
+ */
+function validateBySelector(parentElement, childElement) {
+  // XPath 기반 검증
+  if (parentElement.xpath && childElement.xpath) {
+    const parentXPath = parentElement.xpath;
+    const childXPath = childElement.xpath;
+    
+    // child의 xpath가 parent의 xpath로 시작하는지 확인
+    if (childXPath.startsWith(parentXPath + '/') || 
+        childXPath.startsWith(parentXPath + '[') ||
+        childXPath === parentXPath) {
+      return true;
+    }
+  }
+  
+  // 셀렉터 기반 검증
+  if (parentElement.selector && childElement.selector) {
+    const parentSelector = parentElement.selector;
+    const childSelector = childElement.selector;
+    
+    // childSelector가 parentSelector를 포함하거나 확장한 형태인지 확인
+    if (childSelector.includes(parentSelector)) {
+      // parent.locator(...) 형태인지 확인
+      if (childSelector.startsWith(parentSelector + '.locator(') ||
+          childSelector.startsWith(parentSelector + '[') ||
+          childSelector === parentSelector) {
+        return true;
+      }
+    }
+  }
+  
+  return false;
+}
+
+/**
+ * 형제 요소 선택 활성화 (형제 관계 검증 포함)
+ */
+function activateSiblingElementSelection(stepIndex, dialog) {
+  // 기준 요소가 선택되었는지 확인
+  const conditionElement = dialog.dataset.conditionElement ? JSON.parse(dialog.dataset.conditionElement) : null;
+  if (!conditionElement) {
+    alert('먼저 기준 요소를 선택하세요.');
+    return;
+  }
+  
+  // 기준 요소 정보를 저장하여 검증에 사용
+  dialog.dataset.baseElementForValidation = JSON.stringify(conditionElement);
+  
+  startSimpleElementSelection((path, elementInfo) => {
+    if (!path || path.length === 0) {
+      alert('요소를 선택할 수 없습니다.');
+      return;
+    }
+    
+    const selectedElement = path[path.length - 1];
+    const siblingElementData = {
+      selector: selectedElement.selector || selectedElement,
+      xpath: selectedElement.xpathValue || selectedElement.xpath || null,
+      text: elementInfo.text || selectedElement.textValue || null
+    };
+    
+    // 형제 관계 검증
+    const baseElement = dialog.dataset.baseElementForValidation ? JSON.parse(dialog.dataset.baseElementForValidation) : null;
+    if (baseElement) {
+      const isValid = validateSiblingRelation(baseElement, siblingElementData);
+      
+      if (isValid) {
+        // 검증 성공: 형제 요소 저장
+        dialog.dataset.siblingElement = JSON.stringify(siblingElementData);
+        
+        const selectedSiblingDiv = document.getElementById('selected-sibling-element');
+        selectedSiblingDiv.style.display = 'block';
+        selectedSiblingDiv.textContent = `선택된 형제 요소: ${siblingElementData.selector}`;
+        
+        // target-selector에 자동으로 채우기
+        const targetSelectorInput = document.getElementById('target-selector');
+        if (targetSelectorInput && !targetSelectorInput.value) {
+          const selector = siblingElementData.selector || '';
+          const match = selector.match(/['"]([^'"]+)['"]/);
+          if (match) {
+            targetSelectorInput.value = match[1];
+          }
+        }
+        
+        updateCodePreview(dialog);
+      } else {
+        // 검증 실패: 경고 메시지
+        alert('선택한 요소가 기준 요소의 형제가 아닙니다. 같은 부모를 가진 형제 요소를 선택하세요.');
+      }
+    } else {
+      // 기준 요소 정보가 없으면 그냥 저장 (검증 없이)
+      dialog.dataset.siblingElement = JSON.stringify(siblingElementData);
+      
+      const selectedSiblingDiv = document.getElementById('selected-sibling-element');
+      selectedSiblingDiv.style.display = 'block';
+      selectedSiblingDiv.textContent = `선택된 형제 요소: ${siblingElementData.selector}`;
+      
+      updateCodePreview(dialog);
+    }
+  }, null, stepIndex);
+}
+
+/**
+ * 조상 요소 선택 활성화 (조상 관계 검증 포함)
+ */
+function activateAncestorElementSelection(stepIndex, dialog) {
+  // 기준 요소가 선택되었는지 확인
+  const conditionElement = dialog.dataset.conditionElement ? JSON.parse(dialog.dataset.conditionElement) : null;
+  if (!conditionElement) {
+    alert('먼저 기준 요소를 선택하세요.');
+    return;
+  }
+  
+  // 기준 요소 정보를 저장하여 검증에 사용
+  dialog.dataset.baseElementForValidation = JSON.stringify(conditionElement);
+  
+  startSimpleElementSelection((path, elementInfo) => {
+    if (!path || path.length === 0) {
+      alert('요소를 선택할 수 없습니다.');
+      return;
+    }
+    
+    const selectedElement = path[path.length - 1];
+    const ancestorElementData = {
+      selector: selectedElement.selector || selectedElement,
+      xpath: selectedElement.xpathValue || selectedElement.xpath || null,
+      text: elementInfo.text || selectedElement.textValue || null
+    };
+    
+    // 조상 관계 검증
+    const baseElement = dialog.dataset.baseElementForValidation ? JSON.parse(dialog.dataset.baseElementForValidation) : null;
+    if (baseElement) {
+      const isValid = validateAncestorRelation(baseElement, ancestorElementData);
+      
+      if (isValid) {
+        // 검증 성공: 조상 요소 저장
+        dialog.dataset.ancestorElement = JSON.stringify(ancestorElementData);
+        
+        const selectedAncestorDiv = document.getElementById('selected-ancestor-element');
+        selectedAncestorDiv.style.display = 'block';
+        selectedAncestorDiv.textContent = `선택된 조상 요소: ${ancestorElementData.selector}`;
+        
+        // target-selector에 자동으로 채우기
+        const targetSelectorInput = document.getElementById('target-selector');
+        if (targetSelectorInput && !targetSelectorInput.value) {
+          const selector = ancestorElementData.selector || '';
+          const match = selector.match(/['"]([^'"]+)['"]/);
+          if (match) {
+            targetSelectorInput.value = match[1];
+          }
+        }
+        
+        updateCodePreview(dialog);
+      } else {
+        // 검증 실패: 경고 메시지
+        alert('선택한 요소가 기준 요소의 조상이 아닙니다. 기준 요소의 상위 요소를 선택하세요.');
+      }
+    } else {
+      // 기준 요소 정보가 없으면 그냥 저장 (검증 없이)
+      dialog.dataset.ancestorElement = JSON.stringify(ancestorElementData);
+      
+      const selectedAncestorDiv = document.getElementById('selected-ancestor-element');
+      selectedAncestorDiv.style.display = 'block';
+      selectedAncestorDiv.textContent = `선택된 조상 요소: ${ancestorElementData.selector}`;
+      
+      updateCodePreview(dialog);
+    }
+  }, null, stepIndex);
+}
+
+/**
+ * 형제 관계 검증
+ */
+function validateSiblingRelation(baseElement, siblingElement) {
+  // XPath 기반 검증: 같은 부모를 가져야 함
+  if (baseElement.xpath && siblingElement.xpath) {
+    const baseXPath = baseElement.xpath;
+    const siblingXPath = siblingElement.xpath;
+    
+    // 부모 경로 추출 (마지막 / 또는 [ 이전까지)
+    const baseParentMatch = baseXPath.match(/^(.+)\/[^\/]+$/);
+    const siblingParentMatch = siblingXPath.match(/^(.+)\/[^\/]+$/);
+    
+    if (baseParentMatch && siblingParentMatch) {
+      const baseParent = baseParentMatch[1];
+      const siblingParent = siblingParentMatch[1];
+      
+      // 같은 부모를 가지면 형제
+      if (baseParent === siblingParent) {
+        return true;
+      }
+    }
+  }
+  
+  // 셀렉터 기반 검증: 같은 부모 경로를 포함해야 함
+  if (baseElement.selector && siblingElement.selector) {
+    const baseSelector = baseElement.selector;
+    const siblingSelector = siblingElement.selector;
+    
+    // 부모 경로 추출 시도
+    // 예: page.locator('.parent').locator('.child1') vs page.locator('.parent').locator('.child2')
+    const baseParentMatch = baseSelector.match(/^(.+)\.locator\([^)]+\)$/);
+    const siblingParentMatch = siblingSelector.match(/^(.+)\.locator\([^)]+\)$/);
+    
+    if (baseParentMatch && siblingParentMatch) {
+      const baseParent = baseParentMatch[1];
+      const siblingParent = siblingParentMatch[1];
+      
+      // 같은 부모를 가지면 형제
+      if (baseParent === siblingParent) {
+        return true;
+      }
+    }
+  }
+  
+  return false;
+}
+
+/**
+ * 조상 관계 검증
+ */
+function validateAncestorRelation(baseElement, ancestorElement) {
+  // XPath 기반 검증: ancestor의 xpath가 base의 xpath로 시작해야 함
+  if (baseElement.xpath && ancestorElement.xpath) {
+    const baseXPath = baseElement.xpath;
+    const ancestorXPath = ancestorElement.xpath;
+    
+    // base의 xpath가 ancestor의 xpath로 시작하는지 확인
+    // 예: ancestor: /html/body/div[1], base: /html/body/div[1]/span[2] -> true
+    if (baseXPath.startsWith(ancestorXPath + '/') || 
+        baseXPath.startsWith(ancestorXPath + '[') ||
+        baseXPath === ancestorXPath) {
+      return true;
+    }
+  }
+  
+  // 셀렉터 기반 검증: base의 셀렉터가 ancestor의 셀렉터를 포함해야 함
+  if (baseElement.selector && ancestorElement.selector) {
+    const baseSelector = baseElement.selector;
+    const ancestorSelector = ancestorElement.selector;
+    
+    // baseSelector가 ancestorSelector를 포함하는지 확인
+    // 예: ancestor: page.locator('.parent'), base: page.locator('.parent').locator('.child')
+    if (baseSelector.includes(ancestorSelector)) {
+      // baseSelector가 ancestorSelector로 시작하는지 확인
+      if (baseSelector.startsWith(ancestorSelector + '.locator(') ||
+          baseSelector.startsWith(ancestorSelector + '[') ||
+          baseSelector === ancestorSelector) {
+        return true;
+      }
+    }
+  }
+  
+  return false;
+}
+
+/**
+ * 조건부 액션 추가
+ */
+function addConditionalActionAfterStep(stepIndex, actionData) {
+  const timestamp = Date.now();
+  const currentUrl = window.location.href || '';
+  const currentTitle = document.title || '';
+  
+  // target과 description 생성
+  let target = null;
+  let description = null;
+  
+  if (actionData.actionType === 'relativeAction') {
+    // relativeAction의 경우 targetRelation과 targetSelector 정보를 target에 포함
+    const relationLabels = {
+      'parent': '부모 노드',
+      'ancestor': '조상 노드',
+      'sibling': '형제 노드',
+      'child': '자식 노드'
+    };
+    const relationLabel = relationLabels[actionData.targetRelation] || actionData.targetRelation;
+    
+    if (actionData.childElement && actionData.childElement.selector) {
+      target = `${relationLabel}: ${actionData.childElement.selector}`;
+    } else if (actionData.siblingElement && actionData.siblingElement.selector) {
+      target = `${relationLabel}: ${actionData.siblingElement.selector}`;
+    } else if (actionData.ancestorElement && actionData.ancestorElement.selector) {
+      target = `${relationLabel}: ${actionData.ancestorElement.selector}`;
+    } else if (actionData.targetSelector) {
+      target = `${relationLabel}: ${actionData.targetSelector}`;
+    } else if (actionData.conditionElement && actionData.conditionElement.selector) {
+      target = `${relationLabel} (기준: ${actionData.conditionElement.selector})`;
+    } else {
+      target = relationLabel;
+    }
+    
+    const actionLabels = {
+      'click': '클릭',
+      'type': '입력',
+      'hover': '호버',
+      'doubleClick': '더블 클릭',
+      'rightClick': '우클릭'
+    };
+    const actionLabel = actionLabels[actionData.actionTypeValue] || actionData.actionTypeValue || '액션';
+    description = `${actionLabel} - ${target}`;
+  } else if (actionData.actionType === 'conditionalAction') {
+    // conditionalAction의 경우
+    if (actionData.conditionElement && actionData.conditionElement.selector) {
+      target = actionData.conditionElement.selector;
+    }
+    description = `조건부 액션 (${actionData.conditionType || '조건'})`;
+  } else if (actionData.actionType === 'loopAction') {
+    // loopAction의 경우
+    if (actionData.loopSelector) {
+      target = actionData.loopSelector;
+    }
+    description = `반복 액션 (${actionData.loopMode === 'loop' ? '반복' : '단일'})`;
+  }
+  
+  const eventRecord = {
+    version: 2,
+    timestamp,
+    action: actionData.actionType,
+    conditionElement: actionData.conditionElement,
+    childElement: actionData.childElement || null,
+    siblingElement: actionData.siblingElement || null,
+    ancestorElement: actionData.ancestorElement || null,
+    conditionType: actionData.conditionType,
+    conditionValue: actionData.conditionValue,
+    targetRelation: actionData.targetRelation,
+    targetSelector: actionData.targetSelector,
+    loopMode: actionData.loopMode,
+    loopSelector: actionData.loopSelector,
+    actionType: actionData.actionTypeValue,
+    value: actionData.actionValue,
+    tag: null,
+    selectorCandidates: actionData.conditionElement ? [{
+      selector: actionData.conditionElement.selector,
+      type: 'css',
+      score: 100
+    }] : [],
+    iframeContext: null,
+    page: {
+      url: currentUrl,
+      title: currentTitle
+    },
+    frame: { iframeContext: null },
+    target: target,
+    description: description,
+    clientRect: null,
+    metadata: {
+      schemaVersion: 2,
+      userAgent: navigator.userAgent
+    },
+    manual: {
+      id: `conditional-${timestamp}`,
+      type: actionData.actionType,
+      resultName: null,
+      attributeName: null
+    }
+  };
+  
+  // 현재 이벤트 배열에 삽입
+  let insertIndex;
+  if (stepIndex === -1) {
+    // 맨 끝에 추가
+    insertIndex = allEvents.length;
+  } else {
+    insertIndex = stepIndex + 1;
+  }
+  const updatedEvents = [...allEvents];
+  updatedEvents.splice(insertIndex, 0, eventRecord);
+  
+  // 타임라인 업데이트 및 코드 갱신
+  const normalized = syncTimelineFromEvents(updatedEvents, {
+    preserveSelection: false,
+    selectLast: false,
+    resetAiState: false
+  });
+  updateCode({ preloadedEvents: normalized });
+  
+  // 정규화된 이벤트를 TC step으로 저장
+  const normalizedEvent = normalizeEventRecord(eventRecord);
+  saveEventAsStep(normalizedEvent);
+  
+  logMessage(`조건부 액션 추가: ${actionData.actionType}`, 'success');
 }
 
 function handleGlobalAssertion(assertionType) {
@@ -5637,6 +7598,9 @@ function init() {
   // AI 설정 초기화
   setupAiSettings();
 
+  // Recorder 설정 로드
+  loadRecorderSettings();
+
   // 초기 상태 설정
   updateDeleteButtonState();
   
@@ -5766,6 +7730,158 @@ window.addEventListener('message', (event) => {
       break;
   }
 });
+
+/**
+ * 패널 리사이즈 초기화
+ */
+function initPanelResize() {
+  const resizeHandles = document.querySelectorAll('.panel-resize-handle');
+  
+  console.log('[Resize] 리사이즈 핸들 개수:', resizeHandles.length); // 디버깅용
+  
+  resizeHandles.forEach(handle => {
+    const panelId = handle.dataset.panel;
+    if (!panelId) {
+      console.warn('[Resize] panelId가 없습니다:', handle);
+      return;
+    }
+    
+    const panel = document.getElementById(panelId);
+    if (!panel) {
+      console.warn('[Resize] 패널을 찾을 수 없습니다:', panelId);
+      return;
+    }
+    
+    console.log('[Resize] 리사이즈 핸들 초기화:', panelId); // 디버깅용
+    
+    let isResizing = false;
+    let startY = 0;
+    let startHeight = 0;
+    
+    const startResize = (e) => {
+      isResizing = true;
+      startY = e.clientY || (e.touches && e.touches[0].clientY);
+      startHeight = panel.offsetHeight;
+      
+      document.addEventListener('mousemove', doResize);
+      document.addEventListener('mouseup', stopResize);
+      document.addEventListener('touchmove', doResize);
+      document.addEventListener('touchend', stopResize);
+      
+      e.preventDefault();
+    };
+    
+    const doResize = (e) => {
+      if (!isResizing) return;
+      
+      const currentY = e.clientY || (e.touches && e.touches[0].clientY);
+      const diff = currentY - startY;
+      
+      // 패널 위치에 따라 높이 조정 방향 결정
+      // 모든 패널은 하단 핸들로 아래로 드래그하면 높이 증가
+      const newHeight = startHeight + diff;
+      
+      // 최소/최대 높이 제한
+      const minHeight = 150;
+      const maxHeight = window.innerHeight * 0.8;
+      
+      if (newHeight >= minHeight && newHeight <= maxHeight) {
+        panel.style.height = `${newHeight}px`;
+        panel.style.minHeight = `${newHeight}px`;
+      }
+      
+      e.preventDefault();
+    };
+    
+    const stopResize = () => {
+      if (isResizing) {
+        isResizing = false;
+        
+        // 최종 높이 저장
+        const finalHeight = panel.offsetHeight;
+        savePanelHeight(panelId, finalHeight);
+        
+        document.removeEventListener('mousemove', doResize);
+        document.removeEventListener('mouseup', stopResize);
+        document.removeEventListener('touchmove', doResize);
+        document.removeEventListener('touchend', stopResize);
+      }
+    };
+    
+    handle.addEventListener('mousedown', startResize);
+    handle.addEventListener('touchstart', startResize);
+  });
+}
+
+/**
+ * Recorder 설정 로드
+ */
+async function loadRecorderSettings() {
+  try {
+    if (!electronAPI || !electronAPI.getRecorderSettings) {
+      console.warn('[Recorder] electronAPI.getRecorderSettings를 사용할 수 없습니다.');
+      return;
+    }
+    
+    const result = await electronAPI.getRecorderSettings();
+    if (result && result.success && result.data) {
+      const settings = result.data;
+      
+      // 패널 높이 복원
+      if (settings.panelHeights) {
+        Object.keys(settings.panelHeights).forEach(panelId => {
+          const panel = document.getElementById(panelId);
+          if (panel && settings.panelHeights[panelId]) {
+            const height = settings.panelHeights[panelId];
+            panel.style.height = `${height}px`;
+            panel.style.minHeight = `${height}px`;
+          }
+        });
+      }
+      
+      console.log('[Recorder] 설정 로드 완료:', settings);
+    }
+  } catch (error) {
+    console.error('[Recorder] 설정 로드 실패:', error);
+  }
+}
+
+/**
+ * 패널 높이 저장
+ */
+async function savePanelHeight(panelId, height) {
+  try {
+    if (!electronAPI || !electronAPI.getRecorderSettings || !electronAPI.setRecorderSettings) {
+      console.warn('[Recorder] electronAPI를 사용할 수 없습니다.');
+      return;
+    }
+    
+    // 현재 설정 로드
+    const result = await electronAPI.getRecorderSettings();
+    if (!result || !result.success) {
+      console.warn('[Recorder] 설정 로드 실패');
+      return;
+    }
+    
+    const settings = result.data || {};
+    if (!settings.panelHeights) {
+      settings.panelHeights = {};
+    }
+    
+    // 높이 업데이트
+    settings.panelHeights[panelId] = height;
+    
+    // 설정 저장
+    await electronAPI.setRecorderSettings({
+      panelHeights: settings.panelHeights,
+      layout: settings.layout || {}
+    });
+    
+    console.log(`[Recorder] 패널 높이 저장: ${panelId} = ${height}px`);
+  } catch (error) {
+    console.error('[Recorder] 패널 높이 저장 실패:', error);
+  }
+}
 
 // DOMContentLoaded 이벤트 대기
 if (document.readyState === 'loading') {

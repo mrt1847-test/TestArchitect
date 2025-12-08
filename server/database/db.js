@@ -190,6 +190,40 @@ async function createTables() {
       INDEX idx_snapshot_images_test_case_id (test_case_id),
       INDEX idx_snapshot_images_step_index (step_index),
       INDEX idx_snapshot_images_name (snapshot_name)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
+    // DOM 스냅샷 테이블 (로케이터 자동 회복용)
+    `CREATE TABLE IF NOT EXISTS dom_snapshots (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      normalized_url VARCHAR(500) NOT NULL,
+      snapshot_data LONGTEXT NOT NULL,
+      snapshot_hash VARCHAR(64) NOT NULL,
+      page_title VARCHAR(500),
+      captured_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      expires_at DATETIME NOT NULL,
+      metadata JSON,
+      INDEX idx_normalized_url (normalized_url),
+      INDEX idx_expires_at (expires_at),
+      INDEX idx_captured_at (captured_at),
+      UNIQUE KEY unique_url_hash (normalized_url, snapshot_hash)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
+    // 로케이터 힐링 히스토리 테이블
+    `CREATE TABLE IF NOT EXISTS locator_healing_history (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      test_script_id INT NOT NULL,
+      test_case_id INT NULL,
+      failed_locator TEXT NOT NULL,
+      healed_locator TEXT NOT NULL,
+      healing_method VARCHAR(50),
+      snapshot_id INT,
+      page_url VARCHAR(500),
+      healed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      success BOOLEAN DEFAULT TRUE,
+      FOREIGN KEY (test_script_id) REFERENCES test_scripts(id) ON DELETE CASCADE,
+      FOREIGN KEY (snapshot_id) REFERENCES dom_snapshots(id) ON DELETE SET NULL,
+      INDEX idx_test_script_id (test_script_id),
+      INDEX idx_healed_at (healed_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
   ];
 

@@ -4,8 +4,7 @@
  */
 
 import { generateCode } from './utils/codeGenerator.js';
-import { getAiSelectorSuggestions, getAiCodeReview } from './utils/aiService.js';
-import { getSelectorCandidatesWithUniqueness } from './utils/selectorUtils.js';
+import { getSelectorCandidatesWithUniqueness, inferSelectorType } from './utils/selectorUtils.js';
 import { normalizeURL, captureDOM, getCurrentPeriod } from './utils/domSnapshot.js';
 import { 
   findParentElement, 
@@ -15,6 +14,180 @@ import {
   generateRelativeSelector,
   generateConditionCheck
 } from './utils/domAnalyzer.js';
+import { shouldFilterIntermediateUrl, waitForFinalPage, removeQueryParams } from './utils/urlFilter.js';
+import {
+  replayState,
+  STEP_DELAY_MS,
+  MAX_NAVIGATION_WAIT_MS,
+  resetReplayState,
+  scheduleNextStep as scheduleReplayNextStep,
+  finishReplay,
+  abortReplay,
+  sendReplayStep,
+  handleReplayStepResult,
+  buildActionTimeline,
+  buildReplayQueue,
+  startReplay as startReplayModule
+} from './recorder/recorder-replay.js';
+import {
+  aiSuggestionState,
+  aiSettings,
+  aiSettingsLoaded,
+  aiSettingsDirty,
+  aiCodeReviewState,
+  getAiState,
+  setAiState,
+  formatAiStatusTime,
+  appendAiMessage,
+  sanitizeAiSettingValue,
+  setAiSettingsStatus,
+  applyAiSettingsToInputs,
+  isAiConfigured,
+  loadAiSettingsFromStorage,
+  markAiSettingsDirty,
+  saveAiSettings,
+  normalizeAiCandidates,
+  buildAiRequestPayload,
+  requestAiSelectorsForEvent,
+  renderAiRequestControls,
+  performAiCodeReview as performAiCodeReviewModule
+} from './recorder/recorder-ai.js';
+import {
+  buildManualActionEntry,
+  addManualAction,
+  handleVerifyAction,
+  handleWaitAction,
+  handleInteractionAction,
+  addVerifyAction,
+  addWaitAction,
+  addInteractionAction,
+  captureVerifyImageScreenshot
+} from './recorder/recorder-actions.js';
+import {
+  selectorTabState,
+  buildSelectorTabGroups,
+  getGroupCount,
+  showSelectors,
+  renderSelectorItems,
+  renderSelectorGroup,
+  updateSelectorTabUI,
+  applySelector,
+  highlightSelector
+} from './recorder/recorder-selectors.js';
+import {
+  selectionState,
+  simpleSelectionState,
+  setElementStatus,
+  updateElementButtonState,
+  ensureElementPanelVisibility,
+  resetSelectionUI,
+  resetSelectionState,
+  getCurrentSelectionNode,
+  renderSelectionPath,
+  createSelectionCandidateItem,
+  renderSelectionCandidates,
+  updateSelectionActionsVisibility,
+  buildSelectionPathArray,
+  buildSelectionPreviewLines,
+  updateSelectionCodePreview,
+  applyCandidateToNode,
+  sendSelectionMessage,
+  requestElementPick,
+  startSelectionWorkflow,
+  cancelSelectionWorkflow,
+  startSimpleElementSelection,
+  handleSimpleElementSelectionPicked,
+  cancelSimpleElementSelection,
+  handleElementSelectionPicked,
+  handleElementSelectionError,
+  handleElementSelectionCancelled,
+  handleElementAction,
+  startChildSelection,
+  startParentSelection,
+  applySelectionAction
+} from './recorder/recorder-selection.js';
+import {
+  connectWebSocket as connectWebSocketModule,
+  normalizeEventRecord as normalizeEventRecordModule,
+  saveEventAsStep as saveEventAsStepModule,
+  syncTimelineFromEvents as syncTimelineFromEventsModule,
+  startRecording as startRecordingModule,
+  stopRecording as stopRecordingModule
+} from './recorder/recorder-core.js';
+import {
+  logMessage as logMessageModule,
+  normalizeTimelineSelectorValue,
+  resolveTimelineSelector as resolveTimelineSelectorModule,
+  formatSelectorTypeLabel as formatSelectorTypeLabelModule,
+  getActionIcon as getActionIconModule,
+  formatActionLabel as formatActionLabelModule,
+  formatTargetInfo as formatTargetInfoModule,
+  updateDeleteButtonState as updateDeleteButtonStateModule,
+  updateTryWrapCheckbox as updateTryWrapCheckboxModule,
+  getCodeText as getCodeTextModule,
+  setCodeText as setCodeTextModule,
+  getCodeMirrorMode as getCodeMirrorModeModule,
+  refreshCodeEditorMode as refreshCodeEditorModeModule,
+  updateStepsEmptyState as updateStepsEmptyStateModule,
+  showIframe as showIframeModule,
+  appendTimelineItem as appendTimelineItemModule,
+  handleElementHover as handleElementHoverModule,
+  clearElementHover as clearElementHoverModule
+} from './recorder/recorder-ui.js';
+import {
+  createConditionalActionState,
+  validateBySelector as validateBySelectorModule,
+  validateSiblingRelation as validateSiblingRelationModule,
+  validateAncestorRelation as validateAncestorRelationModule,
+  addAssertionAfterStep as addAssertionAfterStepModule,
+  addConditionalActionAfterStep as addConditionalActionAfterStepModule,
+  handleStepAssertion as handleStepAssertionModule,
+} from './recorder/recorder-conditional.js';
+import {
+  saveCodeToTC as saveCodeToTCModule,
+  saveCodeToTCWithDebounce as saveCodeToTCWithDebounceModule,
+  syncAllEventsToTC as syncAllEventsToTCModule,
+  syncCodeToTC as syncCodeToTCModule
+} from './recorder/recorder-tc-sync.js';
+import {
+  handleGlobalAssertion as handleGlobalAssertionModule,
+  handleGlobalWait as handleGlobalWaitModule
+} from './recorder/recorder-global-actions.js';
+import {
+  initDOMElements as initDOMElementsModule,
+  initPanelResize as initPanelResizeModule,
+  loadRecorderSettings as loadRecorderSettingsModule,
+  savePanelHeight as savePanelHeightModule
+} from './recorder/recorder-init.js';
+import {
+  setupEventListeners as setupEventListenersModule,
+  setupActionMenu as setupActionMenuModule,
+  setupOverlayToggle as setupOverlayToggleModule,
+  setupAiSettings as setupAiSettingsModule
+} from './recorder/recorder-event-listeners.js';
+import {
+  setupIpcListeners as setupIpcListenersModule,
+  setupPostMessageListeners as setupPostMessageListenersModule,
+  handleWebSocketMessage as handleWebSocketMessageModule
+} from './recorder/recorder-messaging.js';
+import {
+  showConditionalActionDialog as showConditionalActionDialogModule,
+  updateConditionalActionUI as updateConditionalActionUIModule,
+  updateCodePreview as updateCodePreviewModule,
+  activateElementSelectionForConditionalAction as activateElementSelectionForConditionalActionModule,
+  activateChildElementSelection as activateChildElementSelectionModule,
+  activateSiblingElementSelection as activateSiblingElementSelectionModule,
+  activateAncestorElementSelection as activateAncestorElementSelectionModule
+} from './recorder/recorder-conditional-dialog.js';
+import {
+  startConditionalActionWorkflow as startConditionalActionWorkflowModule,
+  updateConditionalActionStep as updateConditionalActionStepModule,
+  goToConditionalActionStep as goToConditionalActionStepModule,
+  activateElementSelectionForConditionalActionStep as activateElementSelectionForConditionalActionStepModule,
+  activateElementSelectionForRelativeActionStep as activateElementSelectionForRelativeActionStepModule,
+  completeConditionalAction as completeConditionalActionModule,
+  cancelConditionalAction as cancelConditionalActionModule
+} from './recorder/recorder-conditional-workflow.js';
 
 // Electron IPC 통신 (Electron 환경에서만 사용)
 // contextIsolation: true이므로 window.electronAPI를 통해 접근
@@ -124,273 +297,65 @@ let manualActionSerial = 1;
 // DOM 스냅샷 저장 상태 관리 (같은 세션 내 중복 저장 방지)
 const snapshotSavedUrls = new Set();
 
-// 리플레이 상태 관리 (popup.js 이식)
-let replayState = {
-  running: false,
-  events: [],
-  index: 0,
-  sessionId: null, // Electron 환경에서는 sessionId 사용
-  pending: false,
-  awaitingNavigation: false,
-  awaitingContent: false,
-  navigationGuard: null,
-  scheduledTimer: null
-};
-
-// 리플레이 상수
-const STEP_DELAY_MS = 150;
-const NAVIGATION_RECOVERY_DELAY_MS = 800;
-const DOM_COMPLETE_DELAY_MS = 250;
-const MAX_NAVIGATION_WAIT_MS = 15000;
+// 리플레이 상태 및 상수는 recorder-replay.js에서 import
 
 // 셀렉터 탭 상태 관리 (popup.js의 selectorTabState 이식)
-const selectorTabState = {
-  active: 'unique', // 'unique' | 'repeat'
-  grouped: null,
-  contentEl: null,
-  buttons: null,
-  event: null,
-  resolvedIndex: -1
-};
+// selectorTabState는 recorder-selectors.js에서 import
 
-// AI 상태 관리 (popup.js 이식)
-const aiSuggestionState = new Map();
-const aiSettingsDefaults = { endpoint: '', apiKey: '', model: '' };
-let aiSettings = { ...aiSettingsDefaults };
-let aiSettingsLoaded = false;
-let aiSettingsDirty = false;
-const aiCodeReviewState = {
-  status: 'idle',
-  updatedAt: null,
-  summary: '',
-  changes: []
-};
+// AI 상태는 recorder-ai.js에서 import
 
 // 요소 선택 워크플로우 상태 관리 (popup.js 이식)
-const selectionState = {
-  active: false,
-  stage: 'idle', // 'idle' | 'await-root' | 'await-candidate' | 'await-action' | 'await-child' | 'await-parent'
-  stack: [], // 선택된 노드 스택
-  pendingAction: null, // 'verifyText' | 'verifyElementPresent' | 'waitForElement' | 'click' | 'type' 등
-  pendingStepIndex: null, // assertion을 추가할 스텝 인덱스
-  pendingAttribute: '',
-  codePreview: ''
-};
+// selectionState, simpleSelectionState는 recorder-selection.js에서 import
 
-// 심플 요소 선택 상태 관리 (Add assertion/wait 전용)
-const simpleSelectionState = {
-  active: false,
-  callback: null, // (path, elementInfo) => void
-  pendingAction: null, // 'verifyText' | 'verifyElementPresent' | 'waitForElement' 등
-  pendingStepIndex: null
-};
-
-// WebSocket 연결
+// WebSocket 연결 (래퍼 함수)
 function connectWebSocket() {
-  if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-    console.log('[Recorder] WebSocket이 이미 연결되어 있습니다.');
-    return;
-  }
-
-  const wsUrl = 'ws://localhost:3000';
-  console.log('[Recorder] WebSocket 연결 시도:', wsUrl);
-
-  try {
-    wsConnection = new WebSocket(wsUrl);
-
-    wsConnection.onopen = () => {
-      console.log('[Recorder] WebSocket 연결 성공');
-      logMessage('WebSocket 연결 성공', 'success');
-      
-      // 연결 성공 시 Extension에 등록 메시지 전송
-      wsConnection.send(JSON.stringify({
-        type: 'register',
-        source: 'recorder-window',
-        timestamp: Date.now()
-      }));
-    };
-
-    wsConnection.onmessage = (event) => {
-      try {
-        const message = JSON.parse(event.data);
-        handleWebSocketMessage(message);
-      } catch (error) {
-        console.error('[Recorder] WebSocket 메시지 파싱 오류:', error);
-        console.error('[Recorder] 원본 메시지:', event.data.substring(0, 200));
-      }
-    };
-
-    wsConnection.onerror = (error) => {
-      console.error('[Recorder] WebSocket 오류:', error);
-      logMessage('WebSocket 연결 오류', 'error');
-    };
-
-    wsConnection.onclose = () => {
-      console.log('[Recorder] WebSocket 연결 종료');
-      wsConnection = null;
-      // 녹화 중이면 중지
-      if (recording) {
-        recording = false;
-        if (startBtn) startBtn.disabled = false;
-        if (stopBtn) stopBtn.disabled = true;
-        logMessage('WebSocket 연결이 끊어져 녹화가 중지되었습니다.', 'error');
-      }
-      // 자동 재연결 시도 (녹화 중이 아닐 때만)
-      if (!recording) {
-        setTimeout(connectWebSocket, 2000);
-      }
-    };
-  } catch (error) {
-    console.error('[Recorder] WebSocket 연결 실패:', error);
-    logMessage('WebSocket 연결 실패: ' + error.message, 'error');
-  }
-}
-
-// WebSocket 메시지 처리
-function handleWebSocketMessage(message) {
-  // 디버깅: 메시지 타입이 없거나 예상과 다를 때 로그 출력
-  if (!message || !message.type) {
-    console.log('[Recorder] WebSocket 메시지 타입 없음, 전체 메시지:', message);
-    return;
+  const stateRefs = {
+    recording,
+    wsConnection,
+    startBtn,
+    stopBtn
+  };
+  
+  const result = connectWebSocketModule(
+    logMessage,
+    handleWebSocketMessage,
+    stateRefs
+  );
+  
+  if (result) {
+    wsConnection = result;
   }
   
-  switch (message.type) {
-    case 'connected':
-      console.log('[Recorder] 서버 연결 확인:', message.message);
-      break;
-      
-    case 'registered':
-      // 등록 확인 메시지 (무시하거나 로그만 출력)
-      console.log('[Recorder] 등록 확인:', message.message || '등록 완료');
-      break;
+  return result;
+}
 
-    case 'dom-event':
-      // Content Script에서 전송된 DOM 이벤트
-      // iframe 환경에서는 postMessage로도 받으므로 WebSocket은 무시
-      // 별도 윈도우 환경에서만 WebSocket 사용
-      console.log('[Recorder] 📨 DOM 이벤트 수신 (WebSocket):', {
-        action: message.event?.action || message.action,
-        timestamp: message.timestamp || Date.now(),
-        sessionId: message.sessionId || 'N/A',
-        url: message.event?.page?.url || 'N/A',
-        isIframe: window.parent !== window
-      });
-      
-      if (window.parent === window) {
-        // 별도 윈도우: WebSocket 사용
-        console.log('[Recorder] ✅ 별도 윈도우 환경 - DOM 이벤트 처리');
-        const eventData = message.event || message;
-        handleDomEvent(eventData);
-      } else {
-        // iframe 환경: WebSocket 무시 (postMessage 사용)
-        console.log('[Recorder] ⚠️ iframe 환경 - WebSocket dom-event 무시 (postMessage 사용)');
-      }
-      break;
+// 원래 함수 정의는 recorder-core.js로 이동됨
 
-    case 'element-hover':
-      // 요소 하이라이트 정보
-      handleElementHover(message);
-      break;
-
-    case 'element-hover-clear':
-      // 요소 하이라이트 해제
-      clearElementHover();
-      break;
-
-    case 'recording-start':
-      if (!recording) {
-        startRecording();
-      }
-      break;
-
-    case 'recording-stop':
-      if (recording) {
-        stopRecording();
-      }
-      break;
-
-    case 'url-changed':
-    case 'page-navigated':
-      // URL 변경 감지 (페이지 전환)
-      console.log('[Recorder] URL 변경 감지:', message.url);
-      
-      // 녹화 중인 경우에만 처리
-      if (recording) {
-        logMessage(`페이지 전환: ${message.url}`, 'info');
-        
-        // DOM 스냅샷 저장 시도
-        trySaveDomSnapshot(message.url);
-        
-        // URL 변경 이벤트를 스텝으로 추가 (선택적)
-        // 필요시 navigate 이벤트를 추가할 수 있음
-        // const navigateEvent = {
-        //   action: 'navigate',
-        //   target: message.url,
-        //   timestamp: message.timestamp || Date.now(),
-        //   type: 'navigation'
-        // };
-        // handleDomEvent(navigateEvent);
-        
-        console.log('[Recorder] URL 변경 처리 완료 (녹화 상태 유지)');
-      } else {
-        console.log('[Recorder] URL 변경 감지되었지만 녹화 중이 아니므로 무시');
-      }
-      break;
-
-    case 'replay-step-result':
-      // 리플레이 스텝 결과 처리
-      handleReplayStepResult(message);
-      break;
-
-    case 'ELEMENT_SELECTION_START':
-      // 요소 선택 모드 시작 (확인용 로그만 출력, 실제 처리는 Content Script에서 함)
-      console.log('[Recorder] 요소 선택 모드 시작 메시지 수신');
-      break;
-
-    case 'ELEMENT_SELECTION_PICKED':
-      // 요소 선택 완료
-      // 심플 요소 선택이 활성화되어 있으면 심플 처리, 아니면 기존 처리
-      console.log('[Recorder] ELEMENT_SELECTION_PICKED 수신 (WebSocket), simpleSelectionState.active:', simpleSelectionState.active);
-      if (simpleSelectionState.active) {
-        handleSimpleElementSelectionPicked(message);
-      } else {
-        console.log('[Recorder] simpleSelectionState.active가 false이므로 handleElementSelectionPicked 호출');
-        handleElementSelectionPicked(message);
-      }
-      break;
-
-    case 'ELEMENT_SELECTION_ERROR':
-      // 요소 선택 오류
-      if (simpleSelectionState.active) {
-        cancelSimpleElementSelection();
-        if (elementStatusEl) {
-          const reason = message && message.reason ? message.reason : '요소를 선택할 수 없습니다.';
-          elementStatusEl.textContent = reason;
-          elementStatusEl.className = 'element-status error';
-        }
-      } else {
-        handleElementSelectionError(message);
-      }
-      break;
-
-    case 'ELEMENT_SELECTION_CANCELLED':
-    case 'ELEMENT_SELECTION_CANCEL':
-      // 요소 선택 취소
-      if (simpleSelectionState.active) {
-        cancelSimpleElementSelection();
-      } else {
-        handleElementSelectionCancelled();
-      }
-      break;
-
-    case 'error':
-      // 에러 메시지 처리
-      console.error('[Recorder] WebSocket 에러 메시지:', message.message || message.error || message);
-      break;
-      
-    default:
-      console.log('[Recorder] 알 수 없는 메시지 타입:', message.type);
-  }
+// WebSocket 메시지 처리 (래퍼 함수)
+function handleWebSocketMessage(message) {
+  handleWebSocketMessageModule(message, {
+    recording,
+    logMessage,
+    handleDomEvent,
+    startRecording,
+    stopRecording,
+    handleElementHover,
+    clearElementHover,
+    trySaveDomSnapshot,
+    simpleSelectionState,
+    elementStatusEl,
+    handleSimpleElementSelectionPicked: handleSimpleElementSelectionPickedWrapper,
+    handleElementSelectionPicked: handleElementSelectionPickedWrapper,
+    cancelSimpleElementSelection: cancelSimpleElementSelectionWrapper,
+    handleElementSelectionError: handleElementSelectionErrorWrapper,
+    handleElementSelectionCancelled: handleElementSelectionCancelledWrapper,
+    wsConnection,
+    finishReplay,
+    abortReplay,
+    scheduleReplayNextStep,
+    sendReplayStep,
+    handleReplayStepResult
+  });
 }
 
 /**
@@ -484,7 +449,27 @@ async function trySaveDomSnapshot(url) {
 
 // DOM 이벤트 처리
 function handleDomEvent(event) {
-  if (!recording) return;
+  console.log('[Recorder] handleDomEvent 호출됨:', {
+    recording,
+    eventAction: event?.action || event?.type,
+    timeline: !!timeline,
+    allEventsLength: allEvents.length
+  });
+  
+  if (!recording) {
+    console.warn('[Recorder] 녹화 중이 아니므로 이벤트 무시');
+    return;
+  }
+
+  if (!timeline) {
+    console.error('[Recorder] timeline이 null입니다. DOM 요소를 찾을 수 없습니다.');
+    // timeline 재초기화 시도
+    timeline = document.getElementById('timeline');
+    if (!timeline) {
+      console.error('[Recorder] timeline 재초기화 실패');
+      return;
+    }
+  }
 
   // 요소 선택 모드가 활성화되어 있으면 클릭 이벤트 무시
   // Content Script에서 이미 ELEMENT_SELECTION_PICKED를 WebSocket으로 보내므로
@@ -495,6 +480,7 @@ function handleDomEvent(event) {
   }
 
   const normalizedEvent = normalizeEventRecord(event);
+  console.log('[Recorder] 이벤트 정규화 완료:', normalizedEvent.action);
   
   // CDP에서 이미 생성된 셀렉터 후보 사용 (selectorUtils.js로 생성됨)
   // selectorCandidates가 없으면 빈 배열로 처리
@@ -519,9 +505,15 @@ function handleDomEvent(event) {
   
   allEvents.push(normalizedEvent);
   const index = allEvents.length - 1;
+  console.log('[Recorder] 이벤트 추가됨, 인덱스:', index, '전체 이벤트 수:', allEvents.length);
   
   // Timeline에 아이템 추가
-  appendTimelineItem(normalizedEvent, index);
+  try {
+    appendTimelineItem(normalizedEvent, index);
+    console.log('[Recorder] 타임라인 아이템 추가 완료');
+  } catch (error) {
+    console.error('[Recorder] 타임라인 아이템 추가 실패:', error);
+  }
   
   // 빈 상태 메시지 업데이트 (이벤트 추가 후)
   updateStepsEmptyState();
@@ -532,10 +524,13 @@ function handleDomEvent(event) {
   const lastItem = timeline?.querySelector(`[data-event-index="${index}"]`);
   if (lastItem) {
     lastItem.classList.add('selected');
+    console.log('[Recorder] 마지막 이벤트 선택됨');
+  } else {
+    console.warn('[Recorder] 마지막 이벤트 아이템을 찾을 수 없음:', index);
   }
   
   // 셀렉터 표시
-  showSelectors(normalizedEvent.selectorCandidates || [], normalizedEvent, index);
+  showSelectorsWrapper(normalizedEvent.selectorCandidates || [], normalizedEvent, index);
   showIframe(normalizedEvent.iframeContext);
   
   // 코드 업데이트
@@ -547,966 +542,252 @@ function handleDomEvent(event) {
   logMessage(`이벤트 캡처: ${normalizedEvent.action || 'unknown'}`, 'info');
   
   // 실시간으로 TC step으로 저장
-  saveEventAsStep(normalizedEvent);
+  try {
+    saveEventAsStep(normalizedEvent);
+    console.log('[Recorder] TC step 저장 완료');
+  } catch (error) {
+    console.error('[Recorder] TC step 저장 실패:', error);
+  }
 }
 
-// 코드 저장 debounce 타이머
-let codeSaveTimer = null;
-const CODE_SAVE_DELAY = 1000; // 1초 지연
+// 코드 저장 debounce 타이머 (recorder-tc-sync.js 모듈에서 관리)
+// let codeSaveTimer = null;
+// const CODE_SAVE_DELAY = 1000; // 1초 지연
 
 /**
- * 코드를 TC script로 실시간 저장
+ * 코드를 TC script로 실시간 저장 (래퍼 함수)
  */
 async function saveCodeToTC(code) {
-  // TC ID와 Project ID 확인
-  const tcId = tcIdInput?.value;
-  const projectId = projectIdInput?.value;
-  
-  if (!tcId || !projectId) {
-    // TC ID나 Project ID가 없으면 저장하지 않음 (조용히 무시)
-    return;
-  }
-  
-  if (!code || !code.trim()) {
-    // 코드가 없으면 저장하지 않음
-    return;
-  }
-  
-  // electronAPI 재확인
-  if (!electronAPI) {
-    initElectronAPI();
-  }
-  
-  if (!electronAPI) {
-    console.warn('[Recorder] electronAPI가 없어 코드 저장을 건너뜁니다.');
-    return;
-  }
-  
-  try {
-    // 기존 스크립트 확인
-    const scriptsResponse = await electronAPI.invoke('api-get-scripts', {
-      test_case_id: parseInt(tcId, 10)
-    });
-    
-    if (!scriptsResponse || !scriptsResponse.success) {
-      console.warn('[Recorder] ⚠️ 기존 스크립트 조회 실패:', scriptsResponse?.error);
-      return;
-    }
-    
-    const existingScripts = scriptsResponse.data || [];
-    const existingScript = existingScripts.find(
-      s => s.language === selectedLanguage && s.framework === selectedFramework && s.status === 'active'
-    );
-    
-    if (existingScript) {
-      // 기존 스크립트 업데이트
-      const updateResponse = await electronAPI.invoke('api-update-script', existingScript.id, {
-        code: code
-      });
-      
-      if (updateResponse && updateResponse.success) {
-        console.log(`[Recorder] ✅ 코드가 TC script로 업데이트되었습니다: Script ID ${existingScript.id}`);
-        
-        // 부모 윈도우에 스크립트 업데이트 알림 (iframe 환경)
-        if (window.parent !== window) {
-          try {
-            window.parent.postMessage({
-              type: 'tc-script-updated',
-              tcId: parseInt(tcId, 10)
-            }, '*');
-          } catch (e) {
-            console.warn('[Recorder] 부모 윈도우 메시지 전송 실패:', e);
-          }
-        }
-      } else {
-        console.warn('[Recorder] ⚠️ 코드 업데이트 실패:', updateResponse?.error || '알 수 없는 오류');
-      }
-    } else {
-      // 새 스크립트 생성
-      const scriptName = `Generated ${selectedLanguage} script`;
-      const createResponse = await electronAPI.invoke('api-create-script', {
-        test_case_id: parseInt(tcId, 10),
-        name: scriptName,
-        framework: selectedFramework,
-        language: selectedLanguage,
-        code: code,
-        status: 'active'
-      });
-      
-      if (createResponse && createResponse.success) {
-        console.log(`[Recorder] ✅ 코드가 TC script로 생성되었습니다: Script ID ${createResponse.data?.id}`);
-        
-        // 부모 윈도우에 스크립트 생성 알림 (iframe 환경)
-        if (window.parent !== window) {
-          try {
-            window.parent.postMessage({
-              type: 'tc-script-updated',
-              tcId: parseInt(tcId, 10)
-            }, '*');
-          } catch (e) {
-            console.warn('[Recorder] 부모 윈도우 메시지 전송 실패:', e);
-          }
-        }
-      } else {
-        console.warn('[Recorder] ⚠️ 코드 생성 실패:', createResponse?.error || '알 수 없는 오류');
-      }
-    }
-  } catch (error) {
-    console.error('[Recorder] ❌ 코드 저장 중 오류:', error);
-  }
+  await saveCodeToTCModule(code, {
+    tcIdInput,
+    projectIdInput,
+    selectedLanguage,
+    selectedFramework,
+    electronAPI,
+    initElectronAPI
+  });
 }
 
 /**
- * 코드 저장 (debounce 적용)
+ * 코드 저장 (debounce 적용) (래퍼 함수)
  */
 function saveCodeToTCWithDebounce(code) {
-  // 기존 타이머 취소
-  if (codeSaveTimer) {
-    clearTimeout(codeSaveTimer);
-  }
-  
-  // 새 타이머 설정
-  codeSaveTimer = setTimeout(() => {
-    saveCodeToTC(code);
-    codeSaveTimer = null;
-  }, CODE_SAVE_DELAY);
+  saveCodeToTCWithDebounceModule(code, {
+    tcIdInput,
+    projectIdInput,
+    selectedLanguage,
+    selectedFramework,
+    electronAPI,
+    initElectronAPI
+  });
 }
 
 /**
  * 이벤트를 TC step으로 실시간 저장
  */
+// 이벤트를 TC step으로 저장 (래퍼 함수)
 async function saveEventAsStep(event) {
-  // TC ID와 Project ID 확인
   const tcId = tcIdInput?.value;
   const projectId = projectIdInput?.value;
   
-  if (!tcId || !projectId) {
-    // TC ID나 Project ID가 없으면 저장하지 않음 (조용히 무시)
-    return;
-  }
-  
-  // electronAPI 재확인 (동적으로 다시 확인)
-  if (!electronAPI) {
-    initElectronAPI();
-  }
-  
-  if (!electronAPI) {
-    console.warn('[Recorder] electronAPI가 없어 실시간 저장을 건너뜁니다.');
-    return;
-  }
-  
-  try {
-    // Main 프로세스에 이벤트 전송하여 step으로 변환 및 저장
-    const result = await electronAPI.invoke('save-event-step', {
-      tcId: parseInt(tcId, 10),
-      projectId: parseInt(projectId, 10),
-      event: event
-    });
-    
-    if (result && result.success) {
-      console.log('[Recorder] ✅ 이벤트가 TC step으로 저장되었습니다:', result.stepIndex);
-      
-      // 부모 윈도우에 TC 새로고침 요청 (iframe 환경)
-      if (window.parent !== window) {
-        try {
-          window.parent.postMessage({
-            type: 'tc-step-updated',
-            tcId: parseInt(tcId, 10)
-          }, '*');
-          console.log('[Recorder] 부모 윈도우에 TC 새로고침 요청 전송');
-        } catch (e) {
-          console.warn('[Recorder] 부모 윈도우 메시지 전송 실패:', e);
-        }
-      }
-    } else {
-      console.warn('[Recorder] ⚠️ 이벤트 저장 실패:', result?.error || '알 수 없는 오류');
-    }
-  } catch (error) {
-    console.error('[Recorder] ❌ 이벤트 저장 중 오류:', error);
-  }
+  await saveEventAsStepModule(
+    event,
+    tcId,
+    projectId,
+    electronAPI,
+    initElectronAPI
+  );
 }
 
+// 원래 함수 정의는 recorder-core.js로 이동됨
+
 /**
- * 전체 이벤트를 TC steps로 동기화
+ * 전체 이벤트를 TC steps로 동기화 (래퍼 함수)
  */
 async function syncAllEventsToTC() {
-  const tcId = tcIdInput?.value;
-  
-  if (!tcId) {
-    logMessage('TC ID를 입력하세요.', 'error');
-    return { success: false, error: 'TC ID가 필요합니다' };
-  }
-  
-  // electronAPI 재확인
-  if (!electronAPI) {
-    initElectronAPI();
-  }
-  
-  if (!electronAPI) {
-    logMessage('Electron API를 사용할 수 없습니다.', 'error');
-    return { success: false, error: 'Electron API를 사용할 수 없습니다' };
-  }
-  
-  if (allEvents.length === 0) {
-    logMessage('동기화할 이벤트가 없습니다.', 'info');
-    return { success: false, error: '동기화할 이벤트가 없습니다' };
-  }
-  
-  try {
-    logMessage('TC steps 동기화 중...', 'info');
-    
-    const result = await electronAPI.invoke('sync-events-to-tc', {
-      tcId: parseInt(tcId, 10),
-      events: allEvents
-    });
-    
-    if (result && result.success) {
-      console.log(`[Recorder] ✅ ${result.stepCount}개의 steps가 TC에 동기화되었습니다`);
-      logMessage(`${result.stepCount}개의 steps가 TC에 동기화되었습니다`, 'success');
-      return { success: true, stepCount: result.stepCount };
-    } else {
-      const errorMsg = result?.error || '알 수 없는 오류';
-      console.warn('[Recorder] ⚠️ TC steps 동기화 실패:', errorMsg);
-      logMessage('TC steps 동기화 실패: ' + errorMsg, 'error');
-      return { success: false, error: errorMsg };
-    }
-  } catch (error) {
-    console.error('[Recorder] ❌ TC steps 동기화 중 오류:', error);
-    logMessage('TC steps 동기화 중 오류: ' + error.message, 'error');
-    return { success: false, error: error.message };
-  }
+  return await syncAllEventsToTCModule({
+    tcIdInput,
+    allEvents,
+    electronAPI,
+    initElectronAPI,
+    logMessage
+  });
 }
 
 /**
- * 현재 코드를 TC steps로 동기화
+ * 현재 코드를 TC steps로 동기화 (래퍼 함수)
  * 코드에서 steps를 추출하거나 현재 이벤트를 steps로 변환
  */
 async function syncCodeToTC() {
-  const tcId = tcIdInput?.value;
-  
-  if (!tcId) {
-    logMessage('TC ID를 입력하세요.', 'error');
-    return { success: false, error: 'TC ID가 필요합니다' };
-  }
-  
-  if (!electronAPI) {
-    logMessage('Electron API를 사용할 수 없습니다.', 'error');
-    return { success: false, error: 'Electron API를 사용할 수 없습니다' };
-  }
-  
-  // 현재 이벤트를 steps로 변환하여 동기화
-  if (allEvents.length === 0) {
-    logMessage('동기화할 이벤트가 없습니다.', 'info');
-    return { success: false, error: '동기화할 이벤트가 없습니다' };
-  }
-  
-  // syncAllEventsToTC를 사용하여 동기화
-  return await syncAllEventsToTC();
+  return await syncCodeToTCModule({
+    tcIdInput,
+    allEvents,
+    electronAPI,
+    logMessage
+  });
 }
 
-// 이벤트 레코드 정규화
+// 이벤트 레코드 정규화 (래퍼 함수)
 function normalizeEventRecord(event) {
-  if (!event || typeof event !== 'object') return event;
-  if (!event.version) {
-    event.version = 2;
-  }
-  if (!event.metadata) {
-    event.metadata = { schemaVersion: event.version };
-  }
-  if (event.page === undefined) {
-    event.page = null;
-  }
-  if (event.frame === undefined && event.iframeContext) {
-    event.frame = { iframeContext: event.iframeContext };
-  }
-  if (event.wrapInTry === undefined) {
-    event.wrapInTry = false;
-  }
-  // 조건부 액션 및 상대 노드 탐색 필드 초기화
-  if (event.action === 'conditionalAction' || event.action === 'relativeAction' || event.action === 'loopAction') {
-    if (event.conditionElement === undefined) {
-      event.conditionElement = null;
-    }
-    if (event.conditionType === undefined) {
-      event.conditionType = null;
-    }
-    if (event.conditionValue === undefined) {
-      event.conditionValue = null;
-    }
-    if (event.targetRelation === undefined) {
-      event.targetRelation = null;
-    }
-    if (event.targetSelector === undefined) {
-      event.targetSelector = null;
-    }
-    if (event.actionType === undefined) {
-      event.actionType = 'click';
-    }
-    if (event.loopMode === undefined) {
-      event.loopMode = 'single';
-    }
-  }
-  return event;
+  return normalizeEventRecordModule(event);
 }
 
-// Timeline 셀렉터 해석
+// 원래 함수 정의는 recorder-core.js로 이동됨
+
+// Timeline 셀렉터 해석 (래퍼 함수)
 function resolveTimelineSelector(event) {
-  if (!event) return '';
-  const cleanedPrimary = normalizeTimelineSelectorValue(event.primarySelector);
-  if (cleanedPrimary) return cleanedPrimary;
-  if (Array.isArray(event.selectorCandidates)) {
-    const candidate = event.selectorCandidates.find((c) => normalizeTimelineSelectorValue(c && c.selector));
-    if (candidate && normalizeTimelineSelectorValue(candidate.selector)) {
-      return normalizeTimelineSelectorValue(candidate.selector);
-    }
-  }
-  const xpathValue = normalizeTimelineSelectorValue(event.primarySelectorXPath);
-  if (xpathValue) return xpathValue;
-  const textValue = normalizeTimelineSelectorValue(event.primarySelectorText);
-  if (textValue) return textValue;
-  const rawSelector = normalizeTimelineSelectorValue(event.selector);
-  if (rawSelector) return rawSelector;
-  if (event.tag && typeof event.tag === 'string') {
-    return event.tag.toLowerCase();
-  }
-  return '';
+  return resolveTimelineSelectorModule(event);
 }
 
-function normalizeTimelineSelectorValue(raw) {
-  if (!raw || typeof raw !== 'string') return '';
-  const trimmed = raw.trim();
-  if (!trimmed || trimmed.length === 0) return '';
-  if (/셀렉터$/i.test(trimmed)) return '';
-  return trimmed;
-}
+// 원래 함수 정의는 recorder-ui.js로 이동됨
 
 /**
- * 셀렉터 타입 레이블 포맷팅
+ * 셀렉터 타입 레이블 포맷팅 (래퍼 함수)
  * popup.js의 formatSelectorTypeLabel 이식
  */
 function formatSelectorTypeLabel(type) {
-  if (!type) return '선택된 셀렉터';
-  const lowered = type.toLowerCase();
-  switch (lowered) {
-    case 'css':
-      return 'CSS 셀렉터';
-    case 'text':
-      return '텍스트 셀렉터';
-    case 'xpath':
-      return 'XPath 셀렉터';
-    case 'xpath-full':
-      return '절대 XPath 셀렉터';
-    case 'id':
-      return 'ID 셀렉터';
-    case 'class':
-      return '클래스 셀렉터';
-    case 'class-tag':
-      return '태그+클래스 셀렉터';
-    case 'tag':
-      return '태그 셀렉터';
-    case 'data-testid':
-    case 'data-test':
-    case 'data-qa':
-    case 'data-cy':
-    case 'data-id':
-      return `${lowered.toUpperCase()} 셀렉터`;
-    default:
-      return `${lowered.toUpperCase()} 셀렉터`;
-  }
+  return formatSelectorTypeLabelModule(type);
 }
 
 /**
- * 삭제 버튼 상태 업데이트
+ * 삭제 버튼 상태 업데이트 (래퍼 함수)
  * popup.js의 updateDeleteButtonState 이식
  */
 function updateDeleteButtonState() {
-  if (!deleteEventBtn) return;
-  const hasSelection = currentEventIndex >= 0 && currentEventIndex < allEvents.length;
-  deleteEventBtn.disabled = !hasSelection;
+  updateDeleteButtonStateModule(deleteEventBtn, currentEventIndex, allEvents);
 }
 
 /**
- * try 문 체크박스 상태 업데이트
+ * try 문 체크박스 상태 업데이트 (래퍼 함수)
  */
 function updateTryWrapCheckbox(event) {
-  const checkbox = document.getElementById('wrap-in-try-checkbox');
-  if (!checkbox) return;
-  
-  if (event && typeof event.wrapInTry === 'boolean') {
-    checkbox.checked = event.wrapInTry;
-  } else {
-    checkbox.checked = false;
-  }
+  updateTryWrapCheckboxModule(event);
 }
 
 /**
- * 코드 텍스트 가져오기
+ * 코드 텍스트 가져오기 (래퍼 함수)
  * popup.js의 getCodeText 이식
  */
 function getCodeText() {
-  if (codeEditor) {
-    return codeEditor.getValue();
-  }
-  return codeOutput ? codeOutput.value || '' : '';
+  return getCodeTextModule(codeEditor, codeOutput);
 }
 
 /**
- * 코드 텍스트 설정
+ * 코드 텍스트 설정 (래퍼 함수)
  * popup.js의 setCodeText 이식
  */
 function setCodeText(text) {
-  const next = text || '';
-  if (codeEditor && codeEditor.getValue() !== next) {
-    const cursor = codeEditor.getCursor();
-    codeEditor.setValue(next);
-    if (cursor) {
-      const totalLines = Math.max(codeEditor.lineCount() - 1, 0);
-      codeEditor.setCursor({ line: Math.min(cursor.line, totalLines), ch: cursor.ch });
-    }
-  }
-  if (codeOutput && codeOutput.value !== next) {
-    codeOutput.value = next;
-  }
+  setCodeTextModule(text, codeEditor, codeOutput);
 }
 
 /**
- * CodeMirror 모드 가져오기
+ * CodeMirror 모드 가져오기 (래퍼 함수)
  * popup.js의 getCodeMirrorMode 이식
  */
 function getCodeMirrorMode(language) {
-  const lang = language || selectedLanguage || 'javascript';
-  if (lang === 'python' || lang === 'python-class') {
-    return 'text/x-python';
-  }
-  if (lang === 'typescript') {
-    return 'text/typescript';
-  }
-  return 'text/javascript';
+  return getCodeMirrorModeModule(language, selectedLanguage);
 }
 
 /**
- * 코드 에디터 모드 새로고침
+ * 코드 에디터 모드 새로고침 (래퍼 함수)
  * popup.js의 refreshCodeEditorMode 이식
  */
 function refreshCodeEditorMode() {
-  if (codeEditor) {
-    codeEditor.setOption('mode', getCodeMirrorMode(selectedLanguage));
-  }
+  refreshCodeEditorModeModule(codeEditor, selectedLanguage);
 }
 
-// 액션 타입별 아이콘 매핑
+// 액션 타입별 아이콘 매핑 (래퍼 함수)
 function getActionIcon(action) {
-  const iconMap = {
-    'click': '👆',
-    'doubleClick': '👆👆',
-    'rightClick': '🖱',
-    'hover': '👋',
-    'type': '⌨',
-    'input': '⌨',
-    'clear': '🗑',
-    'select': '📋',
-    'navigate': '🌐',
-    'goto': '🌐',
-    'open': '🌐',
-    'wait': '⏱',
-    'waitForElement': '⏳',
-    'verifyText': '✓',
-    'verifyTextContains': '✓',
-    'verifyElementPresent': '✓',
-    'verifyElementNotPresent': '✗',
-    'verifyTitle': '📄',
-    'verifyUrl': '🔗',
-    'verifyImage': '🖼'
-  };
-  return iconMap[action] || '•';
+  return getActionIconModule(action);
 }
 
-// 액션 라벨 포맷팅
+// 액션 라벨 포맷팅 (래퍼 함수)
 function formatActionLabel(action) {
-  const labelMap = {
-    'click': 'Click',
-    'doubleClick': 'Double click',
-    'rightClick': 'Right click',
-    'hover': 'Hover',
-    'type': 'Type',
-    'input': 'Type',
-    'clear': 'Clear',
-    'select': 'Select',
-    'navigate': 'Navigate',
-    'goto': 'Navigate',
-    'open': 'Navigate',
-    'wait': 'Wait',
-    'waitForElement': 'Wait for element',
-    'verifyText': 'Verify text',
-    'verifyTextContains': 'Verify text contains',
-    'verifyElementPresent': 'Verify element present',
-    'verifyElementNotPresent': 'Verify element not present',
-    'verifyTitle': 'Verify title',
-    'verifyUrl': 'Verify URL',
-    'verifyImage': 'Verify image'
-  };
-  return labelMap[action] || action;
+  return formatActionLabelModule(action);
 }
 
-// 타겟 정보 포맷팅
+// 타겟 정보 포맷팅 (래퍼 함수)
 function formatTargetInfo(ev) {
-  if (ev.target) {
-    if (ev.target.id) return `#${ev.target.id}`;
-    if (ev.target.className) return `.${ev.target.className.split(' ')[0]}`;
-    if (ev.target.tagName) return ev.target.tagName.toLowerCase();
-  }
-  return null;
+  return formatTargetInfoModule(ev);
 }
 
-// Timeline 아이템 추가 (확장 프로그램 버전 기반)
+// Timeline 아이템 추가 (래퍼 함수)
 function appendTimelineItem(ev, index) {
-  if (!timeline) return;
-  
-  const div = document.createElement('div');
-  div.className = 'recorder-step';
-  div.dataset.eventIndex = index;
-  
-  const action = ev.action || 'event';
-  const actionIcon = getActionIcon(action);
-  const actionLabel = formatActionLabel(action);
-  const usedSelector = resolveTimelineSelector(ev);
-  const targetInfo = formatTargetInfo(ev);
-  
-  // 단계 번호
-  const stepNumber = document.createElement('div');
-  stepNumber.className = 'recorder-step-number';
-  stepNumber.textContent = index + 1;
-  
-  // 아이콘
-  const stepIcon = document.createElement('div');
-  stepIcon.className = 'recorder-step-icon';
-  stepIcon.textContent = actionIcon;
-  
-  // 콘텐츠 영역
-  const stepContent = document.createElement('div');
-  stepContent.className = 'recorder-step-content';
-  
-  // 액션 라인
-  const actionLine = document.createElement('div');
-  actionLine.className = 'recorder-step-action';
-  actionLine.textContent = actionLabel;
-  
-  // verifyImage 액션의 경우 이미지 미리보기 추가
-  if (action === 'verifyImage' && ev.elementImageData) {
-    const imagePreview = document.createElement('div');
-    imagePreview.className = 'recorder-step-image-preview';
-    imagePreview.style.cssText = 'margin: 4px 0; max-width: 200px; max-height: 150px; border: 1px solid var(--vscode-border); border-radius: 4px; overflow: hidden;';
-    
-    const img = document.createElement('img');
-    img.src = ev.elementImageData;
-    img.style.cssText = 'width: 100%; height: auto; display: block;';
-    img.alt = '요소 이미지';
-    
-    imagePreview.appendChild(img);
-    stepContent.appendChild(actionLine);
-    stepContent.appendChild(imagePreview);
-  }
-  
-  // 타겟 정보
-  if (targetInfo || usedSelector) {
-    const targetLine = document.createElement('div');
-    targetLine.className = 'recorder-step-target';
-    targetLine.textContent = targetInfo || usedSelector || '';
-    if (action !== 'verifyImage' || !ev.elementImageData) {
-      stepContent.appendChild(actionLine);
-    }
-    stepContent.appendChild(targetLine);
-  } else {
-    if (action !== 'verifyImage' || !ev.elementImageData) {
-      stepContent.appendChild(actionLine);
-    }
-  }
-  
-  // 셀렉터 정보 (있는 경우)
-  if (usedSelector && usedSelector !== targetInfo) {
-    const selectorLine = document.createElement('div');
-    selectorLine.className = 'recorder-step-selector';
-    selectorLine.textContent = usedSelector;
-    stepContent.appendChild(selectorLine);
-  }
-  
-  // 액션 버튼들
-  const stepActions = document.createElement('div');
-  stepActions.className = 'recorder-step-actions';
-  
-  const deleteBtn = document.createElement('button');
-  deleteBtn.className = 'recorder-step-btn';
-  deleteBtn.textContent = '🗑';
-  deleteBtn.title = '삭제';
-  deleteBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (confirm('이 단계를 삭제하시겠습니까?')) {
-      deleteCurrentEvent();
-    }
-  });
-  
-  // 더보기 버튼 (펼치기/접기)
-  const expandBtn = document.createElement('button');
-  expandBtn.className = 'recorder-step-expand';
-  expandBtn.innerHTML = '▼';
-  expandBtn.title = '상세 정보 펼치기/접기';
-  expandBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const isExpanded = div.classList.contains('expanded');
-    const details = div.querySelector('.recorder-step-details');
-    
-    if (!isExpanded) {
-      // 펼칠 때
-      div.classList.add('expanded');
-      if (details) {
-        // 실제 높이 계산을 위해 임시로 표시
-        details.style.maxHeight = 'none';
-        const scrollHeight = details.scrollHeight;
-        details.style.maxHeight = '0px';
-        // 리플로우 후 실제 높이 설정
-        requestAnimationFrame(() => {
-          details.style.maxHeight = `${scrollHeight + 20}px`;
-        });
-      }
-      expandBtn.innerHTML = '▲';
-    } else {
-      // 접을 때
-      if (details) {
-        details.style.maxHeight = '0px';
-        setTimeout(() => {
-          div.classList.remove('expanded');
-          details.style.maxHeight = ''; // 인라인 스타일 제거
-        }, 300); // transition 시간과 맞춤
-      }
-      expandBtn.innerHTML = '▼';
-    }
-  });
-  
-  stepActions.appendChild(expandBtn);
-  stepActions.appendChild(deleteBtn);
-  
-  // 상세 정보 영역 (기본적으로 숨김)
-  const stepDetails = document.createElement('div');
-  stepDetails.className = 'recorder-step-details';
-  
-  // Type 정보
-  const typeRow = document.createElement('div');
-  typeRow.className = 'step-detail-row';
-  const typeLabel = document.createElement('span');
-  typeLabel.className = 'step-detail-label';
-  typeLabel.textContent = 'type:';
-  const typeValue = document.createElement('span');
-  typeValue.className = 'step-detail-value';
-  typeValue.textContent = action;
-  typeRow.appendChild(typeLabel);
-  typeRow.appendChild(typeValue);
-  stepDetails.appendChild(typeRow);
-  
-  // Selectors 정보
-  if (usedSelector || (ev.selectorCandidates && ev.selectorCandidates.length > 0)) {
-    const selectorsRow = document.createElement('div');
-    selectorsRow.className = 'step-detail-row';
-    const selectorsLabel = document.createElement('span');
-    selectorsLabel.className = 'step-detail-label';
-    selectorsLabel.textContent = 'selectors:';
-    selectorsRow.appendChild(selectorsLabel);
-    
-    const selectorsContainer = document.createElement('div');
-    selectorsContainer.className = 'step-detail-selectors';
-    
-    // Primary selector
-    if (usedSelector) {
-      const selectorItem = document.createElement('div');
-      selectorItem.className = 'step-detail-selector-item';
-      const selectorLabel = document.createElement('span');
-      selectorLabel.className = 'step-detail-selector-label';
-      selectorLabel.textContent = 'selector #1:';
-      const selectorValue = document.createElement('span');
-      selectorValue.className = 'step-detail-selector-value';
-      selectorValue.textContent = usedSelector;
-      selectorItem.appendChild(selectorLabel);
-      selectorItem.appendChild(selectorValue);
-      selectorsContainer.appendChild(selectorItem);
-    }
-    
-    // Additional selectors from candidates
-    if (ev.selectorCandidates && ev.selectorCandidates.length > 0) {
-      let selectorIndex = 2;
-      ev.selectorCandidates.slice(0, 3).forEach((candidate) => {
-        const selector = candidate.selector || candidate;
-        if (selector && selector !== usedSelector) {
-          const selectorItem = document.createElement('div');
-          selectorItem.className = 'step-detail-selector-item';
-          const selectorLabel = document.createElement('span');
-          selectorLabel.className = 'step-detail-selector-label';
-          selectorLabel.textContent = `selector #${selectorIndex}:`;
-          const selectorValue = document.createElement('span');
-          selectorValue.className = 'step-detail-selector-value';
-          selectorValue.textContent = selector;
-          selectorItem.appendChild(selectorLabel);
-          selectorItem.appendChild(selectorValue);
-          selectorsContainer.appendChild(selectorItem);
-          selectorIndex++;
-        }
-      });
-    }
-    
-    selectorsRow.appendChild(selectorsContainer);
-    stepDetails.appendChild(selectorsRow);
-  }
-  
-  // Value 정보 (type 액션인 경우)
-  if (ev.action === 'type' && ev.value) {
-    const valueRow = document.createElement('div');
-    valueRow.className = 'step-detail-row';
-    const valueLabel = document.createElement('span');
-    valueLabel.className = 'step-detail-label';
-    valueLabel.textContent = 'value:';
-    const valueValue = document.createElement('span');
-    valueValue.className = 'step-detail-value';
-    valueValue.textContent = ev.value;
-    valueRow.appendChild(valueLabel);
-    valueRow.appendChild(valueValue);
-    stepDetails.appendChild(valueRow);
-  }
-  
-  // 이미지 정보 (verifyImage 액션인 경우)
-  if (ev.action === 'verifyImage' && ev.elementImageData) {
-    const imageRow = document.createElement('div');
-    imageRow.className = 'step-detail-row';
-    const imageLabel = document.createElement('span');
-    imageLabel.className = 'step-detail-label';
-    imageLabel.textContent = '요소 이미지:';
-    const imageValue = document.createElement('div');
-    imageValue.className = 'step-detail-image';
-    imageValue.style.cssText = 'margin-top: 4px; max-width: 400px; max-height: 300px; border: 1px solid var(--vscode-border); border-radius: 4px; overflow: hidden;';
-    
-    const detailImg = document.createElement('img');
-    detailImg.src = ev.elementImageData;
-    detailImg.style.cssText = 'width: 100%; height: auto; display: block;';
-    detailImg.alt = '요소 이미지';
-    
-    imageValue.appendChild(detailImg);
-    imageRow.appendChild(imageLabel);
-    imageRow.appendChild(imageValue);
-    stepDetails.appendChild(imageRow);
-  }
-  
-  // 스텝에 귀속된 Assertion 추가 섹션
-  const assertionSection = document.createElement('div');
-  assertionSection.className = 'step-assertion-section';
-  
-  const addAssertionBtn = document.createElement('button');
-  addAssertionBtn.className = 'step-add-assertion-btn';
-  addAssertionBtn.textContent = 'Add assertion';
-  addAssertionBtn.type = 'button';
-  
-  const assertionMenu = document.createElement('div');
-  assertionMenu.className = 'step-assertion-menu hidden';
-  
-  const menuHeader = document.createElement('div');
-  menuHeader.className = 'assertion-menu-header';
-  menuHeader.textContent = 'Assertion 타입 선택';
-  assertionMenu.appendChild(menuHeader);
-  
-  const menuButtons = document.createElement('div');
-  menuButtons.className = 'assertion-menu-buttons';
-  
-  const assertionTypes = [
-    { type: 'verifyText', label: '텍스트 검증' },
-    { type: 'verifyTextContains', label: '텍스트 부분일치 검증' },
-    { type: 'verifyElementPresent', label: '요소 존재 검증' },
-    { type: 'verifyElementNotPresent', label: '요소 부재 검증' },
-    { type: 'verifyTitle', label: '타이틀 검증' },
-    { type: 'verifyUrl', label: 'URL 검증' },
-    { type: 'verifyImage', label: '이미지 비교' }
-  ];
-  
-  assertionTypes.forEach(({ type, label }) => {
-    const btn = document.createElement('button');
-    btn.className = 'assertion-menu-btn';
-    btn.textContent = label;
-    btn.setAttribute('data-assertion', type);
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      assertionMenu.classList.add('hidden');
-      handleStepAssertion(index, type, ev);
-    });
-    menuButtons.appendChild(btn);
-  });
-  
-  assertionMenu.appendChild(menuButtons);
-  
-  addAssertionBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    assertionMenu.classList.toggle('hidden');
-  });
-  
-  assertionSection.appendChild(addAssertionBtn);
-  assertionSection.appendChild(assertionMenu);
-  stepDetails.appendChild(assertionSection);
-  
-  // 메인 영역 (번호, 아이콘, 콘텐츠, 액션 버튼)
-  const stepMain = document.createElement('div');
-  stepMain.className = 'recorder-step-main';
-  stepMain.appendChild(stepNumber);
-  stepMain.appendChild(stepIcon);
-  stepMain.appendChild(stepContent);
-  stepMain.appendChild(stepActions);
-  
-  // 조립
-  div.appendChild(stepMain);
-  div.appendChild(stepDetails);
-  
-  // 클릭 이벤트 (선택만, 펼치기는 expandBtn에서 처리)
-  div.addEventListener('click', (e) => {
-    // expandBtn이나 stepActions를 클릭한 경우는 제외
-    if (e.target.closest('.recorder-step-expand') || e.target.closest('.recorder-step-actions')) {
+  if (!timeline) {
+    console.error('[Recorder] appendTimelineItem: timeline이 null입니다.');
+    timeline = document.getElementById('timeline');
+    if (!timeline) {
+      console.error('[Recorder] appendTimelineItem: timeline 재초기화 실패');
       return;
     }
-    
-    // 이전 선택 해제
-    document.querySelectorAll('.recorder-step').forEach(item => item.classList.remove('selected'));
-    // 현재 선택
-    div.classList.add('selected');
-    currentEventIndex = index;
-    
-    // Step Details 패널 표시
-    const stepDetailsPanel = document.getElementById('step-details-panel');
-    if (stepDetailsPanel) {
-      stepDetailsPanel.classList.remove('hidden');
-    }
-    
-    // 해당 이벤트의 셀렉터 표시
-    showSelectors(ev.selectorCandidates || [], ev, index);
-    showIframe(ev.iframeContext);
-    updateDeleteButtonState();
-    
-    // try 문 체크박스 상태 업데이트
-    updateTryWrapCheckbox(ev);
-  });
+  }
   
-  timeline.appendChild(div);
+  const stateRefs = {
+    currentEventIndex: {
+      get value() { return currentEventIndex; },
+      set value(v) { currentEventIndex = v; }
+    },
+    allEvents
+  };
+  
+  console.log('[Recorder] appendTimelineItem 호출:', { action: ev.action, index, timeline: !!timeline });
+  
+  appendTimelineItemModule(
+    ev,
+    index,
+    timeline,
+    resolveTimelineSelectorModule,
+    getActionIconModule,
+    formatActionLabelModule,
+    formatTargetInfoModule,
+    deleteCurrentEvent,
+    handleStepAssertion,
+    showSelectorsWrapper,
+    (ctx) => showIframeModule(ctx, iframeBanner),
+    updateDeleteButtonState,
+    updateTryWrapCheckbox,
+    stateRefs
+  );
 }
 
+// 원래 함수 정의는 recorder-ui.js로 이동됨
+
 /**
- * 빈 상태 메시지 업데이트
+ * 빈 상태 메시지 업데이트 (래퍼 함수)
  */
 function updateStepsEmptyState() {
-  const stepsEmpty = document.getElementById('steps-empty');
-  const timeline = document.getElementById('timeline');
-  
-  if (stepsEmpty && timeline) {
-    // timeline에 recorder-step이 있는지 확인
-    const hasSteps = timeline.querySelectorAll('.recorder-step').length > 0;
-    
-    if (hasSteps || allEvents.length > 0) {
-      stepsEmpty.classList.add('hidden');
-    } else {
-      stepsEmpty.classList.remove('hidden');
-    }
-  }
+  updateStepsEmptyStateModule(allEvents);
 }
 
 /**
  * 타임라인을 이벤트 목록과 동기화 (확장 프로그램 버전 기반)
  */
+// 이벤트로부터 타임라인 동기화 (래퍼 함수)
 function syncTimelineFromEvents(events, options = {}) {
-  const {
-    preserveSelection = false,
-    selectLast = false,
-    resetAiState = false
-  } = options;
-  const previousIndex = preserveSelection ? currentEventIndex : -1;
-  const normalizedEvents = Array.isArray(events)
-    ? events.map((ev) => normalizeEventRecord(ev))
-    : [];
-
-  // AI 상태 관리
-  const nextAiState = new Map();
-  normalizedEvents.forEach((event) => {
-    const key = getAiStateKey(event);
-    if (!key) return;
-    const existing = resetAiState ? null : aiSuggestionState.get(key);
-    const hasCandidates = Array.isArray(event.aiSelectorCandidates) && event.aiSelectorCandidates.length > 0;
-    if (existing && existing.status === 'loading') {
-      nextAiState.set(key, existing);
-    } else if (hasCandidates) {
-      nextAiState.set(key, {
-        status: 'loaded',
-        error: null,
-        updatedAt: event.aiSelectorsUpdatedAt || (existing && existing.updatedAt) || null
-      });
-    } else if (existing) {
-      nextAiState.set(key, existing);
-    } else {
-      nextAiState.set(key, { status: 'idle', error: null });
-    }
-  });
-  aiSuggestionState.clear();
-  nextAiState.forEach((state, key) => aiSuggestionState.set(key, state));
-
-  // 빈 상태 메시지 업데이트
-  updateStepsEmptyState();
-
-  allEvents = normalizedEvents;
-  if (timeline) {
-    timeline.innerHTML = '';
-    normalizedEvents.forEach((event, index) => {
-      appendTimelineItem(event, index);
-    });
-    const items = timeline.querySelectorAll('.recorder-step');
-    items.forEach((item) => item.classList.remove('selected'));
-    // 빈 상태 메시지 업데이트
-    updateStepsEmptyState();
-  }
-
-  let indexToSelect = -1;
-  if (preserveSelection && previousIndex >= 0 && previousIndex < normalizedEvents.length) {
-    indexToSelect = previousIndex;
-  } else if (selectLast && normalizedEvents.length > 0) {
-    indexToSelect = normalizedEvents.length - 1;
-  }
-
-  if (indexToSelect >= 0) {
-    currentEventIndex = indexToSelect;
-    const selectedItem = timeline
-      ? timeline.querySelector(`[data-event-index="${indexToSelect}"]`)
-      : null;
-    if (selectedItem) {
-      selectedItem.classList.add('selected');
-    }
-    const selectedEvent = normalizedEvents[indexToSelect];
-    showSelectors(selectedEvent.selectorCandidates || [], selectedEvent, indexToSelect);
-    showIframe(selectedEvent.iframeContext);
-    
-    // Step Details 패널 표시
-    const stepDetailsPanel = document.getElementById('step-details-panel');
-    if (stepDetailsPanel) {
-      stepDetailsPanel.classList.remove('hidden');
-    }
-    
-    // try 문 체크박스 상태 업데이트
-    updateTryWrapCheckbox(selectedEvent);
-  } else {
-    currentEventIndex = -1;
-    if (selectorList) {
-      selectorList.innerHTML = '';
-    }
-    showIframe(null);
-    
-    // Step Details 패널 숨기기
-    const stepDetailsPanel = document.getElementById('step-details-panel');
-    if (stepDetailsPanel) {
-      stepDetailsPanel.classList.add('hidden');
-    }
-    // try 문 체크박스 초기화
-    updateTryWrapCheckbox(null);
-  }
-
-  updateDeleteButtonState();
-  return normalizedEvents;
+  const stateRefs = {
+    allEvents,
+    currentEventIndex,
+    timeline,
+    selectorList
+  };
+  
+  return syncTimelineFromEventsModule(
+    events,
+    options,
+    stateRefs,
+    normalizeEventRecordModule,
+    appendTimelineItem,
+    updateStepsEmptyState,
+    showSelectorsWrapper,
+    showIframe,
+    updateDeleteButtonState,
+    updateTryWrapCheckbox,
+    aiSuggestionState,
+    getAiStateKey
+  );
 }
+
+// 원래 함수 정의는 recorder-core.js로 이동됨
 
 /**
  * Timeline 업데이트 (기존 함수 - 호환성 유지)
@@ -1515,956 +796,58 @@ function updateTimeline() {
   syncTimelineFromEvents(allEvents, { preserveSelection: true });
 }
 
-/**
- * 타겟 위치 정보 가져오기
- */
-function getTargetPositionInfo(event) {
-  if (!event || typeof event !== 'object') return null;
-  const target = event.target || null;
-  const extractFromPosition = (pos, source) => {
-    if (!pos || typeof pos !== 'object') return null;
-    const nth = typeof pos.nthOfType === 'number' ? pos.nthOfType : null;
-    if (!nth || nth < 1) return null;
-    const total = typeof pos.total === 'number' ? pos.total : null;
-    return {
-      nthOfType: nth,
-      total,
-      index: typeof pos.index === 'number' ? pos.index : null,
-      tag: source && source.tag ? String(source.tag).toLowerCase() : (target && target.tag ? String(target.tag).toLowerCase() : null),
-      repeats: source && typeof source.repeats === 'boolean'
-        ? source.repeats
-        : (typeof total === 'number' ? total > 1 : false)
-    };
-  };
+// getTargetPositionInfo, selectorLikelyStable, appendNthToSelector, enforceNthSelectorIfNeeded, buildSelectorTabGroups, getGroupCount, showSelectors, renderSelectorItems, renderSelectorGroup, updateSelectorTabUI, applySelector, highlightSelector 함수들이 recorder-selectors.js로 이동됨
 
-  const direct = target && target.position ? extractFromPosition(target.position, target) : null;
-  if (direct) return direct;
-
-  const targetDomContext = target && target.domContext && target.domContext.self ? target.domContext.self : null;
-  const contextSelf = event.domContext && event.domContext.self ? event.domContext.self : null;
-  const fallbackSelf = targetDomContext || contextSelf || null;
-  if (fallbackSelf && fallbackSelf.position) {
-    return extractFromPosition(fallbackSelf.position, fallbackSelf);
-  }
-
-  return null;
-}
+// ============================================================================
+// AI 기능 (recorder-ai.js 모듈로 이동됨)
+// ============================================================================
 
 /**
- * 셀렉터가 안정적인지 확인
+ * 셀렉터 표시 래퍼 함수
  */
-function selectorLikelyStable(selector) {
-  if (!selector || typeof selector !== 'string') return false;
-  // id, data-* 속성, aria-* 속성 등이 포함되면 충분히 안정적인 것으로 판단
-  if (/#/.test(selector)) return true;
-  if (/\[data-[^\]=]+=['"][^'"]+['"]/.test(selector)) return true;
-  if (/\[aria-[^\]=]+=['"][^'"]+['"]/.test(selector)) return true;
-  if (/\[id=['"][^'"]+['"]/.test(selector)) return true;
-  return false;
-}
-
-/**
- * 셀렉터에 nth-of-type 추가
- */
-function appendNthToSelector(selector, nth) {
-  if (!selector || typeof selector !== 'string') return null;
-  const trimmed = selector.trim();
-  if (!trimmed || /:nth-(child|of-type)\(/i.test(trimmed)) return null;
-  const match = trimmed.match(/([^\s>+~]+)$/);
-  if (!match) return null;
-  const lastPart = match[1];
-  const pseudoIndex = lastPart.indexOf(':');
-  const basePart = pseudoIndex >= 0 ? lastPart.slice(0, pseudoIndex) : lastPart;
-  const pseudoPart = pseudoIndex >= 0 ? lastPart.slice(pseudoIndex) : '';
-  const newLastPart = `${basePart}:nth-of-type(${nth})${pseudoPart}`;
-  const prefix = match.index ? trimmed.slice(0, match.index) : '';
-  return `${prefix}${newLastPart}`;
-}
-
-/**
- * 필요시 nth 셀렉터 적용
- */
-function enforceNthSelectorIfNeeded(candidate, event) {
-  if (!candidate || !event) return candidate;
-  const type = candidate.type || inferSelectorType(candidate.selector);
-  if (!type || type === 'xpath' || type === 'xpath-full') {
-    return candidate;
-  }
-  const positionInfo = getTargetPositionInfo(event);
-  if (!positionInfo) return candidate;
-  const nth = positionInfo.nthOfType;
-  const total = positionInfo.total;
-  const matchCount = typeof candidate.matchCount === 'number' ? candidate.matchCount : null;
-  const repeated = positionInfo.repeats === true || (typeof positionInfo.total === 'number' && positionInfo.total > 1);
-  const needsNth =
-    (matchCount !== null && matchCount > 1) ||
-    candidate.unique === false ||
-    (!selectorLikelyStable(candidate.selector) && repeated);
-  if (!needsNth) return candidate;
-  const reasonParts = (candidate.reason ? candidate.reason.split(' • ') : []).filter(Boolean);
-  const nthLabel = `nth-of-type(${nth}) 적용`;
-
-  if (type === 'text') {
-    const filtered = reasonParts.filter((part) => !/개 요소와 일치|유일 일치/.test(part));
-    if (!reasonParts.includes(nthLabel)) {
-      filtered.push(nthLabel);
-    }
-    return {
-      ...candidate,
-      reason: filtered.join(' • '),
-      unique: true,
-      matchCount: 1,
-      __nthApplied: nth,
-      __nthTotal: total,
-      __nthTag: positionInfo.tag || null
-    };
-  }
-
-  const appended = appendNthToSelector(candidate.selector, nth);
-  if (!appended) return candidate;
-  if (!reasonParts.includes(nthLabel)) {
-    reasonParts.push(nthLabel);
-  }
-  const filtered = reasonParts.filter((part) => !/개 요소와 일치|유일 일치/.test(part));
-  if (!filtered.includes(nthLabel)) {
-    filtered.push(nthLabel);
-  }
-  return {
-    ...candidate,
-    selector: appended,
-    reason: filtered.join(' • '),
-    unique: true,
-    matchCount: 1,
-    __nthApplied: nth,
-    __nthTotal: total,
-    __nthTag: positionInfo.tag || null
-  };
-}
-
-/**
- * 셀렉터 타입 추론 (내부 사용)
- */
-function inferSelectorType(selector) {
-  if (!selector || typeof selector !== 'string') return 'css';
-  const trimmed = selector.trim();
+function showSelectorsWrapper(list, event, eventIndex) {
+  const applySelectorFn = (s, ei, src, li) => applySelector(s, ei, src, li, allEvents, currentEventIndex, inferSelectorType, showSelectorsWrapper, updateTimeline, updateCode, logMessage);
+  const highlightSelectorFn = (c) => highlightSelector(c, logMessage);
   
-  // XPath 타입 확인
-  if (trimmed.startsWith('xpath=')) return 'xpath';
-  if (trimmed.startsWith('//') || trimmed.startsWith('(') || trimmed.startsWith('/')) return 'xpath';
-  
-  // 텍스트 타입 확인
-  if (trimmed.startsWith('text=')) return 'text';
-  
-  // ID 셀렉터 확인
-  if (trimmed.startsWith('#')) return 'id';
-  
-  // 클래스 셀렉터 확인 (점으로 시작하고 공백/특수문자 없음)
-  if (trimmed.startsWith('.') && !trimmed.includes(' ')) return 'class';
-  
-  // 속성 셀렉터 확인
-  if (trimmed.includes('[') && trimmed.includes(']')) return 'attribute';
-  
-  // 단순 태그명 확인 (알파벳만, 공백 없음)
-  if (/^[a-z][a-z0-9-]*$/i.test(trimmed) && !trimmed.includes(' ') && !trimmed.includes('>') && !trimmed.includes(' ')) {
-    return 'tag';
-  }
-  
-  // 기본값: CSS 셀렉터 (복합 셀렉터 포함)
-  return 'css';
-}
-
-/**
- * 셀렉터 탭 그룹 생성
- * popup.js의 buildSelectorTabGroups 이식
- */
-function buildSelectorTabGroups(event, baseCandidates, aiCandidates) {
-  const safeBase = Array.isArray(baseCandidates) ? baseCandidates : [];
-  const safeAi = Array.isArray(aiCandidates) ? aiCandidates : [];
-  const uniqueBaseList = [];
-  const uniqueAiList = [];
-  const repeatBaseList = [];
-  const repeatAiList = [];
-
-  const createGroup = (listRef) => ({
-    listRef,
-    indices: []
-  });
-
-  const groups = {
-    unique: {
-      base: createGroup(uniqueBaseList),
-      ai: createGroup(uniqueAiList)
-    },
-    repeat: {
-      base: createGroup(repeatBaseList),
-      ai: createGroup(repeatAiList)
-    }
-  };
-
-  const addIndex = (group, source, index) => {
-    const arr = group[source].indices;
-    if (!arr.includes(index)) {
-      arr.push(index);
-    }
-  };
-
-  const registerUnique = (source, candidate, originalIndex, options = {}) => {
-    if (!candidate || !candidate.selector) return;
-    const targetList = source === 'ai' ? uniqueAiList : uniqueBaseList;
-    const stored = { ...candidate, __sourceIndex: originalIndex };
-    if (options.derived === true) {
-      stored.__derived = true;
-    }
-    const newIndex = targetList.push(stored) - 1;
-    addIndex(groups.unique, source, newIndex);
-  };
-
-  const registerRepeat = (source, candidate, originalIndex) => {
-    if (!candidate || !candidate.selector) return;
-    const targetList = source === 'ai' ? repeatAiList : repeatBaseList;
-    const stored = { ...candidate, __sourceIndex: originalIndex, __isRaw: true };
-    const newIndex = targetList.push(stored) - 1;
-    addIndex(groups.repeat, source, newIndex);
-  };
-
-  const assign = (listRef, source) => {
-    if (!Array.isArray(listRef)) return;
-    listRef.forEach((candidate, index) => {
-      if (!candidate || !candidate.selector) return;
-      
-      // 원본 셀렉터 정보 확인 (rawSelector가 있으면 원본, 없으면 현재 셀렉터가 원본)
-      const rawSelector = candidate.rawSelector || candidate.selector;
-      const rawType = candidate.rawType || candidate.type || inferSelectorType(candidate.selector);
-      const rawMatchCount = typeof candidate.rawMatchCount === 'number' 
-        ? candidate.rawMatchCount 
-        : (typeof candidate.matchCount === 'number' ? candidate.matchCount : null);
-      const rawUnique = candidate.rawUnique !== undefined ? candidate.rawUnique : (rawMatchCount === 1);
-      
-      // 가공 여부 확인 (셀렉터가 변경되었거나, 부모 노드 기반으로 생성되었거나, 인덱싱이 적용된 경우)
-      const isProcessed = candidate.selector !== rawSelector || 
-                          candidate.__derived === true || 
-                          candidate.__autoDerived !== undefined ||
-                          (candidate.reason && (candidate.reason.includes('부모') || candidate.reason.includes('상위') || candidate.reason.includes('경로') || candidate.reason.includes('조합')));
-      
-      // 가공된 셀렉터의 유일성 확인
-      const finalMatchCount = typeof candidate.matchCount === 'number' ? candidate.matchCount : null;
-      const isAlreadyUnique = candidate.unique === true || finalMatchCount === 1;
-
-      // 1. 원본 셀렉터가 유일한 경우: 유일요소 탭에 포함
-      if (rawUnique || (rawMatchCount !== null && rawMatchCount === 1)) {
-        registerUnique(source, candidate, index);
-        // 가공된 셀렉터가 유일한 경우도 처리
-        const derivedCandidate = enforceNthSelectorIfNeeded({ ...candidate }, event);
-        if (derivedCandidate && derivedCandidate.unique === true && derivedCandidate.selector !== candidate.selector) {
-          registerUnique(source, derivedCandidate, index, { derived: true });
-        }
-        return; // 원본이 유일하면 반복요소 탭에 포함하지 않음
-      }
-
-      // 2. 가공된 셀렉터가 유일한 경우: 유일요소 탭에 포함
-      if (isAlreadyUnique && isProcessed) {
-        registerUnique(source, candidate, index);
-        // 조합 XPath가 유일하더라도 원본 셀렉터가 반복되면 반복요소 탭에도 추가
-        if (!rawUnique && rawMatchCount !== null && rawMatchCount > 1) {
-          const rawCandidate = {
-            selector: rawSelector,
-            type: rawType,
-            matchCount: rawMatchCount,
-            unique: false,
-            score: candidate.score,
-            reason: candidate.rawReason || candidate.reason,
-            __isRaw: true,
-            __originalIndex: index
-          };
-          registerRepeat(source, rawCandidate, index);
-        }
-        return; // 가공된 셀렉터가 유일하면 여기서 종료
-      }
-
-      // 3. 반복요소 탭: 원본 셀렉터가 중복되는 경우에만 포함
-      // 원본 셀렉터가 DOM 전체에서 중복되는 경우 (text, class, id 등)
-      // 조건: 원본 셀렉터가 반복되고(rawMatchCount > 1)
-      // 가공되지 않은 원본 셀렉터만 반복요소 탭에 포함 (가공된 셀렉터는 위에서 이미 처리됨)
-      if (!rawUnique && rawMatchCount !== null && rawMatchCount > 1 && !isProcessed) {
-        // 원본 셀렉터 정보로 반복 구조 그룹에 추가
-        const rawCandidate = {
-          selector: rawSelector,
-          type: rawType,
-          matchCount: rawMatchCount,
-          unique: false,
-          score: candidate.score,
-          reason: candidate.rawReason || candidate.reason,
-          __isRaw: true, // 원본 셀렉터임을 표시
-          __originalIndex: index
-        };
-        registerRepeat(source, rawCandidate, index);
-        
-        // 반복요소에서 nth-of-type을 적용하여 유일하게 만든 경우 유일요소 탭에도 추가
-        const derivedCandidate = enforceNthSelectorIfNeeded({ ...candidate }, event);
-        if (derivedCandidate && derivedCandidate.unique === true && derivedCandidate.selector !== candidate.selector) {
-          registerUnique(source, derivedCandidate, index, { derived: true });
-          const auto = {
-            ...derivedCandidate,
-            rawSelector: candidate.selector,
-            rawType: candidate.type || inferSelectorType(candidate.selector),
-            rawMatchCount: candidate.matchCount,
-            rawReason: candidate.reason,
-            __sourceIndex: index,
-            __derived: true
-          };
-          listRef[index] = { ...candidate, __autoDerived: auto };
-        }
-      }
-    });
-  };
-
-  assign(safeBase, 'base');
-  assign(safeAi, 'ai');
-
-  return groups;
-}
-
-/**
- * 그룹 카운트 가져오기
- * popup.js의 getGroupCount 이식
- */
-function getGroupCount(group) {
-  if (!group) return 0;
-  const baseCount = Array.isArray(group.base?.indices) ? group.base.indices.length : 0;
-  const aiCount = Array.isArray(group.ai?.indices) ? group.ai.indices.length : 0;
-  return baseCount + aiCount;
-}
-
-/**
- * 셀렉터 표시 (popup.js의 showSelectors 개선)
- */
-function showSelectors(list, event, eventIndex) {
-  if (!selectorList) return;
-  selectorList.innerHTML = '';
-
-  const hasEventContext = !!event;
-  const resolvedIndex = hasEventContext
-    ? (eventIndex !== undefined && eventIndex !== null ? eventIndex : allEvents.indexOf(event))
-    : -1;
-
-  // AI 요청 컨트롤 렌더링
-  renderAiRequestControls(event, resolvedIndex);
-
-  if (!hasEventContext) {
-    selectorTabState.grouped = null;
-    selectorTabState.contentEl = null;
-    selectorTabState.buttons = null;
-    const baseCandidates = Array.isArray(list) ? list : [];
-    if (!Array.isArray(baseCandidates) || baseCandidates.length === 0) {
-      const emptyMessage = document.createElement('div');
-      emptyMessage.className = 'selector-empty';
-      emptyMessage.textContent = '셀렉터 후보가 없습니다.';
-      selectorList.appendChild(emptyMessage);
-      return;
-    }
-    renderSelectorGroup(baseCandidates, {
-      source: 'base',
-      event: null,
-      resolvedIndex,
-      listRef: baseCandidates,
-      container: selectorList
-    });
-    return;
-  }
-
-  // AI 상태 확인
-  const aiState = getAiState(event);
-  const aiCandidates = Array.isArray(event.aiSelectorCandidates) ? event.aiSelectorCandidates : [];
-  
-  if (aiState.status === 'loading') {
-    appendAiMessage('AI가 추천 셀렉터를 분석하는 중입니다...', 'loading');
-  } else if (aiState.status === 'error') {
-    appendAiMessage(aiState.error || 'AI 추천을 불러오지 못했습니다.', 'error');
-  }
-
-  const baseCandidates = Array.isArray(event.selectorCandidates) ? event.selectorCandidates : [];
-  const grouped = buildSelectorTabGroups(event, baseCandidates, aiCandidates);
-  selectorTabState.grouped = grouped;
-  selectorTabState.event = event;
-  selectorTabState.resolvedIndex = resolvedIndex;
-
-  const uniqueCount = getGroupCount(grouped.unique);
-  const repeatCount = getGroupCount(grouped.repeat);
-
-  let desiredActive = selectorTabState.active;
-  if (desiredActive !== 'unique' && desiredActive !== 'repeat') {
-    desiredActive = 'unique';
-  }
-  if (desiredActive === 'unique' && uniqueCount === 0 && repeatCount > 0) {
-    desiredActive = 'repeat';
-  } else if (desiredActive === 'repeat' && repeatCount === 0 && uniqueCount > 0) {
-    desiredActive = 'unique';
-  }
-  selectorTabState.active = desiredActive;
-
-  const tabsHeader = document.createElement('div');
-  tabsHeader.className = 'selector-tab-header';
-
-  const uniqueBtn = document.createElement('button');
-  uniqueBtn.type = 'button';
-  uniqueBtn.className = 'selector-tab-button';
-  tabsHeader.appendChild(uniqueBtn);
-
-  const repeatBtn = document.createElement('button');
-  repeatBtn.type = 'button';
-  repeatBtn.className = 'selector-tab-button';
-  tabsHeader.appendChild(repeatBtn);
-
-  selectorList.appendChild(tabsHeader);
-
-  const tabContent = document.createElement('div');
-  tabContent.className = 'selector-tab-content';
-  selectorList.appendChild(tabContent);
-
-  selectorTabState.contentEl = tabContent;
-  selectorTabState.buttons = { unique: uniqueBtn, repeat: repeatBtn };
-
-  uniqueBtn.addEventListener('click', () => {
-    if (getGroupCount(selectorTabState.grouped?.unique) === 0) return;
-    if (selectorTabState.active !== 'unique') {
-      selectorTabState.active = 'unique';
-      updateSelectorTabUI();
-    }
-  });
-
-  repeatBtn.addEventListener('click', () => {
-    if (getGroupCount(selectorTabState.grouped?.repeat) === 0) return;
-    if (selectorTabState.active !== 'repeat') {
-      selectorTabState.active = 'repeat';
-      updateSelectorTabUI();
-    }
-  });
-
-  updateSelectorTabUI();
-
-  if (uniqueCount === 0 && repeatCount === 0) {
-    const emptyMessage = document.createElement('div');
-    emptyMessage.className = 'selector-empty';
-    emptyMessage.textContent = '셀렉터 후보가 없습니다.';
-    tabContent.appendChild(emptyMessage);
-  }
-}
-
-/**
- * 셀렉터 아이템 렌더링 (간단한 버전 - 호환성 유지)
- */
-function renderSelectorItems(candidates, container) {
-  const targetContainer = container || selectorList;
-  if (!targetContainer) return;
-  
-  candidates.slice(0, 10).forEach((candidate, index) => {
-    const item = document.createElement('div');
-    item.className = 'selector-item';
-    if (index === 0) {
-      item.classList.add('primary');
-    }
-    
-    const main = document.createElement('div');
-    main.className = 'selector-main';
-    
-    const type = document.createElement('span');
-    type.className = 'type';
-    type.textContent = candidate.type || 'css';
-    
-    const sel = document.createElement('span');
-    sel.className = 'sel';
-    sel.textContent = candidate.selector || '';
-    
-    const score = document.createElement('span');
-    score.className = 'score';
-    score.textContent = candidate.score || 0;
-    
-    main.appendChild(type);
-    main.appendChild(sel);
-    main.appendChild(score);
-    item.appendChild(main);
-    
-    if (candidate.reason) {
-      const reason = document.createElement('div');
-      reason.className = 'reason';
-      reason.textContent = candidate.reason;
-      item.appendChild(reason);
-    }
-    
-    targetContainer.appendChild(item);
-  });
-}
-
-/**
- * 셀렉터 그룹 렌더링
- * popup.js의 renderSelectorGroup 이식 (간소화)
- */
-function renderSelectorGroup(candidates, options = {}) {
-  const {
-    source = 'base',
-    event = null,
-    resolvedIndex = -1,
-    listRef = Array.isArray(candidates) ? candidates : [],
-    container = selectorList,
-    allowNonUnique = false,
-    mode = 'default'
-  } = options;
-
-  // indices가 제공되면 해당 인덱스만 사용, 없으면 전체 리스트 사용
-  const providedIndices = Array.isArray(options.indices) && options.indices.length > 0
-    ? options.indices
-    : null;
-  
-  const iterateIndices = providedIndices !== null
-    ? providedIndices
-    : (Array.isArray(listRef)
-        ? listRef.map((_, idx) => idx)
-        : Array.isArray(candidates)
-          ? candidates.map((_, idx) => idx)
-          : []);
-
-  if (!container || !Array.isArray(iterateIndices) || iterateIndices.length === 0) return;
-
-  iterateIndices.forEach((listIndex) => {
-    const candidateRef = Array.isArray(listRef) && listRef[listIndex]
-      ? listRef[listIndex]
-      : (Array.isArray(candidates) ? candidates[listIndex] : null);
-    if (!candidateRef || !candidateRef.selector) return;
-    
-    const effectiveCandidate = candidateRef;
-    const selectorType = effectiveCandidate.type || inferSelectorType(effectiveCandidate.selector);
-    
-    // 반복요소 탭에서는 원본 셀렉터의 matchCount 사용
-    // 유일요소 탭에서는 가공된 셀렉터의 matchCount 사용
-    const matchCount = allowNonUnique && effectiveCandidate.__isRaw
-      ? (typeof effectiveCandidate.matchCount === 'number' ? effectiveCandidate.matchCount : null)
-      : (typeof effectiveCandidate.matchCount === 'number' ? effectiveCandidate.matchCount : null);
-    
-    const isTextSelector = selectorType === 'text';
-    
-    // 유일요소 탭: 유일하지 않은 셀렉터 제외 (text는 예외)
-    if (!allowNonUnique && !isTextSelector) {
-      if (matchCount !== null && matchCount !== 1) {
-        return;
-      }
-      if (effectiveCandidate.unique === false) {
-        return;
-      }
-    }
-    
-    // 반복요소 탭: 원본 셀렉터가 중복되는 것만 표시
-    if (allowNonUnique) {
-      // 원본 셀렉터가 유일한 경우 제외
-      if (effectiveCandidate.__isRaw && effectiveCandidate.unique === true) {
-        return;
-      }
-      // matchCount가 1이거나 null인 경우 제외 (중복 정보가 없음)
-      // 반복요소 탭은 원본 셀렉터가 2개 이상 일치하는 경우만 표시
-      if (matchCount === null || matchCount === 1) {
-        return; // 중복 정보가 없으면 반복요소 탭에 표시하지 않음
-      }
-      // matchCount가 2 이상인 경우만 반복요소 탭에 표시
-      if (matchCount < 2) {
-        return;
-      }
-    }
-    
-    const item = document.createElement('div');
-    item.className = 'selector-item';
-    
-    const isApplied =
-      !!event &&
-      event.primarySelector === effectiveCandidate.selector &&
-      (event.primarySelectorType ? event.primarySelectorType === selectorType : true);
-    
-    const scoreLabel = typeof effectiveCandidate.score === 'number'
-      ? `${effectiveCandidate.score}%`
-      : '';
-    const typeLabel = (selectorType || 'css').toUpperCase();
-    
-    // 반복요소 탭에서는 matchCount를 명확히 표시
-    let matchCountLabel = '';
-    if (allowNonUnique && matchCount !== null && matchCount !== 1) {
-      matchCountLabel = `<span class="match-count" style="color: #ff6b6b; font-weight: bold;">(${matchCount}개 일치)</span>`;
-    }
-    
-    // 유일요소 탭에서 가공된 셀렉터 표시
-    let derivedLabel = '';
-    if (!allowNonUnique && (effectiveCandidate.__derived === true || effectiveCandidate.__autoDerived)) {
-      derivedLabel = `<span class="derived-badge" style="background: #4CAF50; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; margin-left: 4px;">가공됨</span>`;
-    }
-    
-    item.innerHTML = `
-      <div class="selector-main">
-        <span class="type">${typeLabel}</span>
-        <span class="sel">${effectiveCandidate.selector}</span>
-        ${matchCountLabel}
-        ${derivedLabel}
-        <span class="score">${scoreLabel}</span>
-      </div>
-      <div class="selector-actions">
-        <button class="apply-btn" ${isApplied ? 'style="background: #4CAF50; color: white;"' : ''}>${isApplied ? '✓ 적용됨' : 'Apply'}</button>
-        <button class="highlight-btn">Highlight</button>
-      </div>
-      <div class="reason">${effectiveCandidate.reason || ''}</div>`;
-
-    const applyBtn = item.querySelector('.apply-btn');
-    const highlightBtn = item.querySelector('.highlight-btn');
-    
-    if (applyBtn) {
-      applyBtn.addEventListener('click', () => {
-        applySelector({ ...effectiveCandidate }, resolvedIndex, source, listIndex);
-      });
-    }
-    
-    if (highlightBtn) {
-      highlightBtn.addEventListener('click', () => {
-        highlightSelector(effectiveCandidate);
-      });
-    }
-
-    container.appendChild(item);
-  });
-}
-
-/**
- * 셀렉터 탭 UI 업데이트
- * popup.js의 updateSelectorTabUI 이식
- */
-function updateSelectorTabUI() {
-  const {
-    grouped,
-    active,
-    contentEl,
-    buttons,
+  showSelectors(
+    list,
     event,
-    resolvedIndex
-  } = selectorTabState;
-  
-  if (!grouped || !contentEl) return;
-
-  const uniqueCount = getGroupCount(grouped.unique);
-  const repeatCount = getGroupCount(grouped.repeat);
-
-  if (buttons && buttons.unique) {
-    buttons.unique.textContent = `유일 후보 (${uniqueCount})`;
-    buttons.unique.classList.toggle('active', active === 'unique');
-    buttons.unique.disabled = uniqueCount === 0;
-  }
-  
-  if (buttons && buttons.repeat) {
-    buttons.repeat.textContent = `반복 구조 후보 (${repeatCount})`;
-    buttons.repeat.classList.toggle('active', active === 'repeat');
-    buttons.repeat.disabled = repeatCount === 0;
-  }
-
-  contentEl.innerHTML = '';
-  const currentGroup = grouped[active];
-  
-  if (!currentGroup) {
-    const empty = document.createElement('div');
-    empty.className = 'selector-empty';
-    empty.textContent = '셀렉터 후보가 없습니다.';
-    contentEl.appendChild(empty);
-    return;
-  }
-
-  const allowNonUnique = active === 'repeat';
-  const mode = allowNonUnique ? 'repeat' : 'default';
-
-  if (active === 'repeat') {
-    const info = document.createElement('div');
-    info.className = 'selector-repeat-info';
-    info.style.cssText = 'padding: 8px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; margin-bottom: 12px; color: #856404; font-size: 13px;';
-    info.textContent = '반복 구조 후보: DOM 전체에서 중복되는 원본 셀렉터입니다. 선택 시 위치 기반 :nth-of-type()이 자동 적용되어 유일요소 탭으로 이동합니다.';
-    contentEl.appendChild(info);
-  } else if (active === 'unique') {
-    const info = document.createElement('div');
-    info.className = 'selector-unique-info';
-    info.style.cssText = 'padding: 8px; background: #d4edda; border: 1px solid #28a745; border-radius: 4px; margin-bottom: 12px; color: #155724; font-size: 13px;';
-    info.textContent = '유일 후보: 조합하거나 부모 노드를 통해 유일성을 확보한 가공된 셀렉터입니다.';
-    contentEl.appendChild(info);
-  }
-
-  // Base 셀렉터 렌더링
-  if (currentGroup.base && Array.isArray(currentGroup.base.indices) && currentGroup.base.indices.length > 0) {
-    renderSelectorGroup(currentGroup.base.listRef, {
-      source: 'base',
-      event,
-      resolvedIndex,
-      listRef: currentGroup.base.listRef,
-      container: contentEl,
-      allowNonUnique,
-      mode,
-      indices: currentGroup.base.indices
-    });
-  }
-
-  // AI 셀렉터 렌더링
-  if (currentGroup.ai && Array.isArray(currentGroup.ai.indices) && currentGroup.ai.indices.length > 0) {
-    renderSelectorGroup(currentGroup.ai.listRef, {
-      source: 'ai',
-      event,
-      resolvedIndex,
-      listRef: currentGroup.ai.listRef,
-      container: contentEl,
-      allowNonUnique,
-      mode,
-      indices: currentGroup.ai.indices
-    });
-  }
+    eventIndex,
+    selectorList,
+    allEvents,
+    selectedFramework,
+    selectedLanguage,
+    (ev, idx) => requestAiSelectorsForEvent(ev, idx, allEvents, selectedFramework, selectedLanguage, showSelectorsWrapper),
+    () => updateSelectorTabUI(
+      selectorTabState,
+      allEvents,
+      currentEventIndex,
+      showSelectorsWrapper,
+      applySelectorFn,
+      highlightSelectorFn
+    ),
+    applySelectorFn,
+    highlightSelectorFn
+  );
 }
 
 /**
- * 셀렉터 적용
- * popup.js의 applySelector 이식 (간소화)
+ * 셀렉터 적용 래퍼 함수
  */
-function applySelector(s, eventIndex, source = 'base', listIndex = -1) {
-  const targetIndex = eventIndex !== undefined && eventIndex !== null ? eventIndex : currentEventIndex;
-  if (targetIndex < 0) {
-    alert('먼저 타임라인에서 이벤트를 선택하세요.');
-    return;
-  }
-  
-  if (targetIndex >= 0 && targetIndex < allEvents.length) {
-    const targetEvent = allEvents[targetIndex];
-    const candidateToApply = { ...s };
-    const selectorType = candidateToApply.type || inferSelectorType(candidateToApply.selector);
-
-    // 셀렉터 후보 업데이트
-    if (source === 'ai') {
-      if (!Array.isArray(targetEvent.aiSelectorCandidates)) {
-        targetEvent.aiSelectorCandidates = [];
-      }
-      // mergeCandidateIntoCollection은 나중에 구현
-    } else if (Array.isArray(targetEvent.selectorCandidates)) {
-      // mergeCandidateIntoCollection은 나중에 구현
-    }
-
-    // Primary 셀렉터 설정
-    targetEvent.primarySelector = candidateToApply.selector;
-    targetEvent.primarySelectorType = selectorType;
-    
-    if (selectorType === 'text') {
-      targetEvent.primarySelectorMatchMode = candidateToApply.matchMode || 'exact';
-      if (candidateToApply.textValue) {
-        targetEvent.primarySelectorText = candidateToApply.textValue;
-      }
-    } else {
-      delete targetEvent.primarySelectorMatchMode;
-      delete targetEvent.primarySelectorText;
-    }
-    
-    if (selectorType === 'xpath' && candidateToApply.xpathValue) {
-      targetEvent.primarySelectorXPath = candidateToApply.xpathValue;
-    } else if (selectorType !== 'xpath') {
-      delete targetEvent.primarySelectorXPath;
-    }
-
-    // 이벤트 업데이트
-    allEvents[targetIndex] = targetEvent;
-    
-    // UI 업데이트
-    if (currentEventIndex === targetIndex) {
-      showSelectors(null, targetEvent, targetIndex);
-    }
-    
-    updateTimeline();
-    updateCode({ preloadedEvents: allEvents });
-    
-    logMessage(`셀렉터 적용: ${candidateToApply.selector}`, 'success');
-  }
-}
-
-/**
- * 셀렉터 하이라이트
- * popup.js의 highlightSelector 이식 (간소화)
- */
-function highlightSelector(candidate) {
-  // Electron 환경에서는 외부 브라우저의 요소를 직접 하이라이트할 수 없음
-  // WebSocket을 통해 Content Script에 메시지 전송 (나중에 구현)
-  logMessage(`셀렉터 하이라이트: ${candidate.selector}`, 'info');
-}
-
-// ============================================================================
-// AI 기능 (popup.js 이식) - 5단계
-// ============================================================================
-
-/**
- * AI 상태 키 생성
- */
-function getAiStateKey(event) {
-  if (!event || typeof event !== 'object') return null;
-  if (event.id) return `id:${event.id}`;
-  if (event.manual && event.manual.id) return `manual:${event.manual.id}`;
-  if (event.timestamp) return `ts:${event.timestamp}`;
-  if (event.createdAt) return `created:${event.createdAt}`;
-  return null;
-}
-
-/**
- * AI 상태 가져오기
- */
-function getAiState(event) {
-  const key = getAiStateKey(event);
-  if (!key) return { status: 'idle', error: null };
-  let state = aiSuggestionState.get(key);
-  if (!state) {
-    if (event && Array.isArray(event.aiSelectorCandidates) && event.aiSelectorCandidates.length > 0) {
-      state = { status: 'loaded', error: null, updatedAt: event.aiSelectorsUpdatedAt || null };
-    } else {
-      state = { status: 'idle', error: null };
-    }
-    aiSuggestionState.set(key, state);
-  }
-  return state;
-}
-
-/**
- * AI 상태 설정
- */
-function setAiState(event, patch) {
-  const key = getAiStateKey(event);
-  if (!key) return null;
-  const prev = aiSuggestionState.get(key) || { status: 'idle', error: null };
-  const next = { ...prev, ...patch };
-  aiSuggestionState.set(key, next);
-  return next;
-}
-
-/**
- * AI 상태 시간 포맷팅
- */
-function formatAiStatusTime(timestamp) {
-  if (!timestamp) return '';
-  try {
-    const date = new Date(timestamp);
-    const hours = String(date.getHours()).padStart(2, '0');
-    const minutes = String(date.getMinutes()).padStart(2, '0');
-    return `${hours}:${minutes}`;
-  } catch (err) {
-    return '';
-  }
-}
-
-/**
- * AI 메시지 추가
- */
-function appendAiMessage(text, tone = 'info') {
-  if (!selectorList) return false;
-  const box = document.createElement('div');
-  box.className = `selector-ai-message ${tone}`;
-  box.textContent = text;
-  selectorList.appendChild(box);
-  return true;
-}
-
-/**
- * AI 설정 값 정제
- */
-function sanitizeAiSettingValue(raw) {
-  if (typeof raw !== 'string') return '';
-  return raw.trim();
-}
-
-/**
- * AI 설정 상태 표시
- */
-function setAiSettingsStatus(text, tone) {
-  if (!aiSettingsStatusEl) return;
-  aiSettingsStatusEl.className = 'ai-settings-status';
-  if (tone === 'error') {
-    aiSettingsStatusEl.classList.add('error');
-  } else if (tone === 'pending') {
-    aiSettingsStatusEl.classList.add('pending');
-  } else if (tone === 'success') {
-    aiSettingsStatusEl.classList.add('success');
-  }
-  aiSettingsStatusEl.textContent = text || '';
-}
-
-/**
- * AI 설정을 입력 필드에 적용
- */
-function applyAiSettingsToInputs(settings = {}) {
-  if (aiEndpointInput) {
-    aiEndpointInput.value = settings.endpoint || '';
-  }
-  if (aiApiKeyInput) {
-    aiApiKeyInput.value = settings.apiKey || '';
-  }
-  if (aiModelInput) {
-    aiModelInput.value = settings.model || '';
-  }
-}
-
-/**
- * AI 설정 확인
- */
-function isAiConfigured() {
-  return !!(aiSettings && typeof aiSettings === 'object' && aiSettings.endpoint && aiSettings.endpoint.trim());
-}
-
-/**
- * AI 설정 로드 (Electron 환경용 - 간소화)
- */
-function loadAiSettingsFromStorage() {
-  try {
-    // localStorage에서 로드 (chrome.storage 대신)
-    const stored = JSON.parse(localStorage.getItem('aiSettings') || '{}');
-    aiSettings = {
-      endpoint: sanitizeAiSettingValue(stored.endpoint),
-      apiKey: sanitizeAiSettingValue(stored.apiKey),
-      model: sanitizeAiSettingValue(stored.model)
-    };
-    aiSettingsLoaded = true;
-    const shouldSyncInputs = !aiSettingsDirty;
-    if (shouldSyncInputs) {
-      applyAiSettingsToInputs(aiSettings);
-      if (!isAiConfigured()) {
-        setAiSettingsStatus('AI API 엔드포인트를 설정하세요.', 'pending');
-      } else {
-        setAiSettingsStatus('AI 설정이 로드되었습니다.', 'success');
-      }
-    }
-    refreshSelectorListForCurrentEvent();
-  } catch (err) {
-    console.error('[Recorder] AI 설정 로드 오류:', err);
-    aiSettings = { ...aiSettingsDefaults };
-    aiSettingsLoaded = true;
-  }
-}
-
-/**
- * AI 설정 변경 표시
- */
-function markAiSettingsDirty() {
-  aiSettingsDirty = true;
-  setAiSettingsStatus('저장되지 않은 변경 사항이 있습니다.', 'pending');
-}
-
-/**
- * AI 설정 저장
- */
-function saveAiSettings() {
-  const nextSettings = {
-    endpoint: sanitizeAiSettingValue(aiEndpointInput ? aiEndpointInput.value : ''),
-    apiKey: sanitizeAiSettingValue(aiApiKeyInput ? aiApiKeyInput.value : ''),
-    model: sanitizeAiSettingValue(aiModelInput ? aiModelInput.value : '')
-  };
-  setAiSettingsStatus('저장 중...', 'pending');
-  
-  try {
-    // localStorage에 저장 (chrome.storage.local 대신)
-    localStorage.setItem('aiSettings', JSON.stringify(nextSettings));
-    aiSettings = nextSettings;
-    aiSettingsDirty = false;
-    setAiSettingsStatus('AI 설정이 저장되었습니다.', 'success');
-    refreshSelectorListForCurrentEvent();
-  } catch (err) {
-    console.error('[Recorder] AI 설정 저장 오류:', err);
-    setAiSettingsStatus(`AI 설정 저장에 실패했습니다: ${err.message}`, 'error');
-  }
+function applySelectorWrapper(s, eventIndex, source = 'base', listIndex = -1) {
+  applySelector(
+    s,
+    eventIndex,
+    source,
+    listIndex,
+    allEvents,
+    currentEventIndex,
+    inferSelectorType,
+    showSelectorsWrapper,
+    updateTimeline,
+    updateCode,
+    logMessage
+  );
 }
 
 /**
@@ -2473,2197 +856,360 @@ function saveAiSettings() {
 function refreshSelectorListForCurrentEvent() {
   if (currentEventIndex >= 0 && allEvents[currentEventIndex]) {
     const currentEvent = allEvents[currentEventIndex];
-    showSelectors(currentEvent.selectorCandidates || [], currentEvent, currentEventIndex);
+    showSelectorsWrapper(currentEvent.selectorCandidates || [], currentEvent, currentEventIndex);
   }
-}
-
-/**
- * AI 셀렉터 후보 정규화
- */
-function normalizeAiCandidates(candidates) {
-  if (!Array.isArray(candidates)) return [];
-  const seen = new Set();
-  return candidates
-    .map((candidate) => {
-      if (!candidate || typeof candidate !== 'object') return null;
-      const selector = typeof candidate.selector === 'string' ? candidate.selector.trim() : '';
-      if (!selector) return null;
-      if (seen.has(selector)) {
-        return null;
-      }
-      seen.add(selector);
-      const normalized = { ...candidate, selector };
-      normalized.type = normalized.type || inferSelectorType(selector);
-      normalized.reason = normalized.reason || 'AI 추천';
-      if (normalized.rawSelector === undefined) {
-        normalized.rawSelector = candidate.rawSelector || selector;
-      }
-      if (normalized.rawType === undefined) {
-        normalized.rawType = candidate.rawType || normalized.type;
-      }
-      if (normalized.rawMatchCount === undefined && typeof normalized.matchCount === 'number') {
-        normalized.rawMatchCount = normalized.matchCount;
-      }
-      if (normalized.rawUnique === undefined && typeof normalized.unique === 'boolean') {
-        normalized.rawUnique = normalized.unique;
-      }
-      if (normalized.rawReason === undefined && normalized.reason) {
-        normalized.rawReason = normalized.reason;
-      }
-      if (normalized.type !== 'text') {
-        delete normalized.matchMode;
-        delete normalized.textValue;
-      } else {
-        normalized.matchMode = normalized.matchMode || 'exact';
-      }
-      normalized.source = 'ai';
-      return normalized;
-    })
-    .filter(Boolean)
-    .slice(0, 12);
-}
-
-/**
- * AI 요청 페이로드 생성 (간소화)
- */
-function buildAiRequestPayload(event) {
-  if (!event || typeof event !== 'object') return null;
-  const iframeContext = event.iframeContext || (event.frame && event.frame.iframeContext) || null;
-  const domPayload = event.domContext ? { root: event.domContext } : null;
-  
-  return {
-    action: event.action || null,
-    value: event.value !== undefined ? event.value : null,
-    timestamp: event.timestamp || null,
-    iframeContext,
-    dom: domPayload,
-    target: event.target || null,
-    page: event.page ? { url: event.page.url || null, title: event.page.title || null } : null,
-    clientRect: event.clientRect || null,
-    metadata: event.metadata && typeof event.metadata === 'object'
-      ? {
-          schemaVersion: event.metadata.schemaVersion || 2,
-          userAgent: event.metadata.userAgent || null,
-          domEvent: event.metadata.domEvent || null
-        }
-      : null,
-    prompt: {
-      goal: '주어진 이벤트와 DOM 스냅샷을 분석해 안정적인 셀렉터 후보를 찾는다',
-      constraints: [
-        '출력은 JSON 객체만 허용하며, 최상위 키는 "candidates" 하나여야 한다',
-        '변동성이 있는 상품명이나 숫자는 지양한다',
-        '"candidates" 값은 최대 5개의 항목을 가진 배열이어야 한다',
-        '각 배열 항목은 { "selector": string, "reason": string } 형태여야 한다',
-        '추가 설명, 예시 코드, 텍스트 문단 등은 금지한다'
-      ]
-    }
-  };
-}
-
-/**
- * AI 셀렉터 요청
- */
-async function requestAiSelectorsForEvent(event, eventIndex) {
-  const targetEvent = eventIndex >= 0 && allEvents[eventIndex] ? allEvents[eventIndex] : event;
-  if (!targetEvent) return;
-  
-  if (!isAiConfigured()) {
-    setAiState(targetEvent, {
-      status: 'error',
-      error: 'AI API 설정이 필요합니다. 상단에서 엔드포인트와 (필요 시) API 키를 저장하세요.'
-    });
-    showSelectors(null, targetEvent, eventIndex);
-    return;
-  }
-  
-  setAiState(targetEvent, { status: 'loading', error: null });
-  showSelectors(null, targetEvent, eventIndex);
-  
-  const payload = buildAiRequestPayload(targetEvent);
-  if (!payload) {
-    setAiState(targetEvent, { status: 'error', error: '요청에 필요한 정보가 부족합니다.' });
-    showSelectors(null, targetEvent, eventIndex);
-    return;
-  }
-  
-  const requestContext = {
-    testCase: document.getElementById('test-purpose') ? (document.getElementById('test-purpose').value || '') : '',
-    testUrl: document.getElementById('test-url') ? (document.getElementById('test-url').value || '') : '',
-    framework: selectedFramework,
-    language: selectedLanguage,
-    aiModel: aiSettings.model || ''
-  };
-  
-  try {
-    const response = await getAiSelectorSuggestions(payload, requestContext, aiSettings);
-    
-    if (!response || response.success === false) {
-      const message = response && (response.reason || response.error || response.message)
-        ? response.reason || response.error || response.message
-        : 'AI 추천을 불러오지 못했습니다.';
-      setAiState(targetEvent, { status: 'error', error: message });
-      showSelectors(null, targetEvent, eventIndex);
-      return;
-    }
-    
-    const normalizedCandidates = normalizeAiCandidates(response.candidates || []);
-    const updatedAt = Date.now();
-    targetEvent.aiSelectorCandidates = normalizedCandidates;
-    targetEvent.aiSelectorsUpdatedAt = updatedAt;
-    
-    if (eventIndex >= 0 && allEvents[eventIndex]) {
-      allEvents[eventIndex] = targetEvent;
-    }
-    
-    setAiState(targetEvent, { status: 'loaded', error: null, updatedAt });
-    showSelectors(null, targetEvent, eventIndex);
-  } catch (error) {
-    console.error('[Recorder] AI 셀렉터 요청 오류:', error);
-    setAiState(targetEvent, {
-      status: 'error',
-      error: error.message || 'AI 추천 요청 중 오류가 발생했습니다.'
-    });
-    showSelectors(null, targetEvent, eventIndex);
-  }
-}
-
-/**
- * AI 요청 컨트롤 렌더링
- */
-function renderAiRequestControls(event, resolvedIndex) {
-  if (!selectorList) return;
-  
-  const header = document.createElement('div');
-  header.className = 'selector-ai-control';
-
-  const title = document.createElement('span');
-  title.className = 'selector-ai-title';
-  title.textContent = 'AI 추천 셀렉터';
-  header.appendChild(title);
-
-  const actions = document.createElement('div');
-  actions.className = 'selector-ai-actions';
-
-  const hasEvent = !!event && resolvedIndex !== undefined && resolvedIndex !== null && resolvedIndex >= 0;
-  const aiConfigured = isAiConfigured();
-  const state = hasEvent ? getAiState(event) : { status: 'idle', error: null };
-  const canRequest = hasEvent && aiConfigured;
-
-  const button = document.createElement('button');
-  button.className = 'selector-ai-button';
-  if (!aiConfigured) {
-    button.textContent = 'AI 설정 필요';
-    button.disabled = true;
-  } else if (!hasEvent) {
-    button.textContent = 'AI 추천 요청';
-    button.disabled = true;
-  } else if (state.status === 'loading') {
-    button.textContent = '요청 중...';
-    button.disabled = true;
-  } else if (state.status === 'error') {
-    button.textContent = '다시 시도';
-  } else if (state.status === 'loaded') {
-    button.textContent = 'AI 다시 요청';
-  } else {
-    button.textContent = 'AI 추천 요청';
-  }
-  if (!canRequest) {
-    button.disabled = true;
-  }
-  button.addEventListener('click', () => {
-    if (!canRequest || getAiState(event).status === 'loading') {
-      return;
-    }
-    requestAiSelectorsForEvent(event, resolvedIndex);
-  });
-
-  const statusEl = document.createElement('span');
-  statusEl.className = 'selector-ai-status';
-  if (!aiConfigured) {
-    statusEl.textContent = '상단 AI 설정을 저장하면 추천을 요청할 수 있습니다.';
-    statusEl.classList.add('error');
-  } else if (!canRequest) {
-    statusEl.textContent = '타임라인에서 이벤트를 선택하면 AI 추천을 요청할 수 있습니다.';
-    statusEl.classList.add('muted');
-  } else if (state.status === 'loading') {
-    statusEl.textContent = 'AI가 분석 중입니다...';
-    statusEl.classList.add('info');
-  } else if (state.status === 'error') {
-    statusEl.textContent = state.error || 'AI 추천을 불러오지 못했습니다.';
-    statusEl.classList.add('error');
-  } else if (state.status === 'loaded') {
-    const timeText = state.updatedAt ? ` (업데이트 ${formatAiStatusTime(state.updatedAt)})` : '';
-    statusEl.textContent = `AI 추천 결과가 준비되었습니다${timeText}`;
-    statusEl.classList.add('success');
-  } else {
-    statusEl.textContent = '필요할 때 AI 추천을 받아보세요.';
-    statusEl.classList.add('muted');
-  }
-
-  const buttonWrapper = document.createElement('div');
-  buttonWrapper.className = 'selector-ai-button-wrapper';
-  buttonWrapper.setAttribute(
-    'data-tooltip',
-    'AI가 이벤트 컨텍스트와 테스트 목적을 분석해 안정적인 셀렉터를 추천합니다.'
-  );
-  buttonWrapper.appendChild(button);
-  actions.appendChild(buttonWrapper);
-  actions.appendChild(statusEl);
-  header.appendChild(actions);
-  selectorList.appendChild(header);
 }
 
 // iframe 표시
+// iframe 배너 표시/숨김 (래퍼 함수)
 function showIframe(ctx) {
-  if (!iframeBanner) return;
-  if (ctx) {
-    iframeBanner.classList.remove('hidden');
-  } else {
-    iframeBanner.classList.add('hidden');
-  }
+  showIframeModule(ctx, iframeBanner);
 }
 
 // ============================================================================
 // 요소 선택 워크플로우 (popup.js 이식) - 6단계
 // ============================================================================
 
-/**
- * 요소 상태 메시지 설정
- */
-function setElementStatus(message, tone = 'info') {
-  if (!elementStatusEl) return;
-  elementStatusEl.textContent = message || '';
-  elementStatusEl.setAttribute('data-tone', tone || 'info');
-  elementStatusEl.style.display = message ? 'block' : 'none';
-}
+// setElementStatus, updateElementButtonState, ensureElementPanelVisibility, resetSelectionUI, resetSelectionState, getCurrentSelectionNode, renderSelectionPath, createSelectionCandidateItem, renderSelectionCandidates, updateSelectionActionsVisibility, buildSelectionPathArray, updateSelectionCodePreview, applyCandidateToNode, startSelectionWorkflow, cancelSelectionWorkflow, sendSelectionMessage, requestElementPick, startSimpleElementSelection, handleSimpleElementSelectionPicked, cancelSimpleElementSelection, handleElementSelectionPicked, handleElementSelectionError, handleElementSelectionCancelled, handleElementAction, startChildSelection, startParentSelection, applySelectionAction, buildSelectionPreviewLines 함수들이 recorder-selection.js로 이동됨
 
 /**
- * 요소 선택 버튼 상태 업데이트
+ * 요소 선택 워크플로우 래퍼 함수들
  */
-function updateElementButtonState() {
-  if (!elementSelectBtn) return;
-  if (selectionState.active) {
-    elementSelectBtn.classList.add('active');
-    elementSelectBtn.textContent = '선택 중단';
-  } else {
-    elementSelectBtn.classList.remove('active');
-    elementSelectBtn.textContent = '요소 선택';
-  }
+function setElementStatusWrapper(message, tone = 'info') {
+  setElementStatus(message, tone, elementStatusEl);
 }
 
-/**
- * 요소 패널 표시 여부 확인
- */
-function ensureElementPanelVisibility() {
-  if (!elementPanel) return;
-  if (selectionState.active || selectionState.stack.length > 0) {
-    elementPanel.classList.remove('hidden');
-  } else {
-    elementPanel.classList.add('hidden');
-  }
+function updateElementButtonStateWrapper() {
+  updateElementButtonState(selectionState, elementSelectBtn);
 }
 
-/**
- * 선택 UI 초기화
- */
-function resetSelectionUI() {
-  if (elementPathItems) elementPathItems.innerHTML = '';
-  if (elementPathContainer) elementPathContainer.classList.add('hidden');
-  if (elementCandidatesContainer) elementCandidatesContainer.innerHTML = '';
-  if (elementActionsContainer) elementActionsContainer.classList.add('hidden');
-  if (elementAttrPanel) elementAttrPanel.classList.add('hidden');
-  if (elementAttrNameInput) elementAttrNameInput.value = '';
-  if (elementCodePreview) elementCodePreview.classList.add('hidden');
-  if (elementCodeEl) elementCodeEl.textContent = '';
+function ensureElementPanelVisibilityWrapper() {
+  ensureElementPanelVisibility(selectionState, elementPanel);
 }
 
-/**
- * 선택 상태 초기화
- */
-function resetSelectionState(options = {}) {
-  selectionState.active = false;
-  selectionState.stage = 'idle';
-  selectionState.stack = [];
-  selectionState.pendingAction = null;
-  selectionState.pendingAttribute = '';
-  selectionState.codePreview = '';
-  if (!options.keepStatus) {
-    setElementStatus('');
-  }
-  resetSelectionUI();
-  updateElementButtonState();
-  ensureElementPanelVisibility();
+function resetSelectionUIWrapper() {
+  resetSelectionUI(
+    elementPathItems,
+    elementPathContainer,
+    elementCandidatesContainer,
+    elementActionsContainer,
+    elementAttrPanel,
+    elementAttrNameInput,
+    elementCodePreview,
+    elementCodeEl
+  );
 }
 
-/**
- * 현재 선택 노드 가져오기
- */
-function getCurrentSelectionNode() {
-  if (!selectionState.stack.length) return null;
-  return selectionState.stack[selectionState.stack.length - 1];
+function resetSelectionStateWrapper(options = {}) {
+  resetSelectionState(
+    selectionState,
+    options,
+    setElementStatusWrapper,
+    resetSelectionUIWrapper,
+    updateElementButtonStateWrapper,
+    ensureElementPanelVisibilityWrapper
+  );
 }
 
-/**
- * 선택 경로 렌더링
- */
-function renderSelectionPath() {
-  if (!elementPathItems || !elementPathContainer) return;
-  elementPathItems.innerHTML = '';
-  if (selectionState.stack.length === 0) {
-    elementPathContainer.classList.add('hidden');
-    return;
-  }
-  elementPathContainer.classList.remove('hidden');
-  selectionState.stack.forEach((node, index) => {
-    const item = document.createElement('div');
-    item.className = 'element-path-item';
-    const label = index === 0 ? 'ROOT' : `CHILD ${index}`;
-    const selected = node.selectedCandidate ? node.selectedCandidate.selector : '(미선택)';
-    item.innerHTML = `<span class="label">${label}</span><span class="value">${selected}</span>`;
-    elementPathItems.appendChild(item);
-  });
+function getCurrentSelectionNodeWrapper() {
+  return getCurrentSelectionNode(selectionState);
 }
 
-/**
- * 선택 후보 아이템 생성
- */
-function createSelectionCandidateItem(node, candidate) {
-  const item = document.createElement('div');
-  item.className = 'selector-item';
-  const selectorType = candidate.type || inferSelectorType(candidate.selector);
-  const relationLabel = candidate.relation === 'relative' ? ' (REL)' : '';
-  const scoreLabel = typeof candidate.score === 'number' ? `${candidate.score}%` : '';
-  const badges = [];
-  if (candidate.unique === true) badges.push('유일');
-  if (typeof candidate.matchCount === 'number' && candidate.matchCount > 1) {
-    badges.push(`${candidate.matchCount}개 일치`);
-  }
-  if (candidate.relation === 'relative' && typeof candidate.contextMatchCount === 'number') {
-    badges.push(`부모 내 ${candidate.contextMatchCount}개`);
-  }
-  const badgeLine = badges.filter(Boolean).join(' • ');
-  const isSelected = node.selectedCandidate && node.selectedCandidate.selector === candidate.selector && (node.selectedCandidate.type || inferSelectorType(node.selectedCandidate.selector)) === (candidate.type || inferSelectorType(candidate.selector));
-  
-  item.innerHTML = `
-    <div class="selector-main">
-      <span class="type">${(selectorType || 'css').toUpperCase()}${relationLabel}</span>
-      <span class="sel">${candidate.selector}</span>
-      <span class="score">${scoreLabel}</span>
-    </div>
-    ${badgeLine ? `<div class="selector-badges">${badgeLine}</div>` : ''}
-    ${candidate.reason ? `<div class="selector-reason">${candidate.reason}</div>` : ''}
-    <div class="selector-actions">
-      <button class="apply-btn" ${isSelected ? 'style="background: #4CAF50; color: white;"' : ''}>${isSelected ? '✓ 선택됨' : '선택'}</button>
-      <button class="highlight-btn">하이라이트</button>
-    </div>
-  `;
-  
-  const applyBtn = item.querySelector('.apply-btn');
-  const highlightBtn = item.querySelector('.highlight-btn');
-  
-  if (applyBtn) {
-    applyBtn.addEventListener('click', () => {
-      applyCandidateToNode(node, candidate);
-    });
-  }
-  
-  if (highlightBtn) {
-    highlightBtn.addEventListener('click', () => {
-      highlightSelector(candidate);
-    });
-  }
-  
-  return item;
+function renderSelectionPathWrapper() {
+  renderSelectionPath(selectionState, elementPathItems, elementPathContainer);
 }
 
-/**
- * 선택 후보 렌더링
- */
-function renderSelectionCandidates(node) {
-  if (!elementCandidatesContainer || !node) return;
-  elementCandidatesContainer.innerHTML = '';
-  const candidates = node.candidates || [];
-  if (!candidates.length) {
-    const empty = document.createElement('div');
-    empty.style.padding = '8px';
-    empty.style.color = '#777';
-    empty.textContent = '후보가 없습니다.';
-    elementCandidatesContainer.appendChild(empty);
-    return;
-  }
-  candidates.forEach((candidate) => {
-    elementCandidatesContainer.appendChild(createSelectionCandidateItem(node, candidate));
-  });
+function createSelectionCandidateItemWrapper(node, candidate) {
+  return createSelectionCandidateItem(
+    node,
+    candidate,
+    inferSelectorType,
+    applyCandidateToNodeWrapper,
+    (c) => highlightSelector(c, logMessage),
+    logMessage
+  );
 }
 
-/**
- * 선택 액션 표시 여부 업데이트
- */
-function updateSelectionActionsVisibility() {
-  if (!elementActionsContainer) return;
-  const currentNode = getCurrentSelectionNode();
-  if (currentNode && currentNode.selectedCandidate) {
-    elementActionsContainer.classList.remove('hidden');
-  } else {
-    elementActionsContainer.classList.add('hidden');
-  }
-  if (elementAttrPanel) elementAttrPanel.classList.add('hidden');
-  if (elementAttrNameInput) elementAttrNameInput.value = '';
+function renderSelectionCandidatesWrapper(node) {
+  renderSelectionCandidates(node, elementCandidatesContainer, createSelectionCandidateItemWrapper);
 }
 
-/**
- * 선택 경로 배열 생성
- */
-function buildSelectionPathArray() {
-  return selectionState.stack
-    .map((node) => {
-      if (!node.selectedCandidate) return null;
-      const candidate = node.selectedCandidate;
-      return {
-        selector: candidate.selector,
-        type: candidate.type || inferSelectorType(candidate.selector),
-        textValue: candidate.textValue || null,
-        xpathValue: candidate.xpathValue || null,
-        relation: candidate.relation || null,
-        reason: candidate.reason || '',
-        matchMode: candidate.matchMode || null,
-        iframeContext: (node.element && node.element.iframeContext) || null
-      };
-    })
-    .filter(Boolean);
+function updateSelectionActionsVisibilityWrapper() {
+  updateSelectionActionsVisibility(
+    selectionState,
+    elementActionsContainer,
+    elementAttrPanel,
+    elementAttrNameInput,
+    getCurrentSelectionNodeWrapper
+  );
 }
 
-/**
- * 선택 코드 미리보기 업데이트
- */
-function updateSelectionCodePreview() {
-  if (!elementCodePreview || !elementCodeEl) return;
-  const path = buildSelectionPathArray();
-  if (!path.length) {
-    elementCodePreview.classList.add('hidden');
-    elementCodeEl.textContent = '';
-    return;
-  }
-  const previewLines = buildSelectionPreviewLines(path, selectedFramework, selectedLanguage);
-  elementCodeEl.textContent = previewLines.join('\n');
-  elementCodePreview.classList.remove('hidden');
+function buildSelectionPathArrayWrapper() {
+  return buildSelectionPathArray(selectionState, inferSelectorType);
 }
 
-/**
- * 후보를 노드에 적용
- */
-function applyCandidateToNode(node, candidate) {
-  if (!node) return;
-  node.selectedCandidate = {
-    ...candidate,
-    type: candidate.type || inferSelectorType(candidate.selector)
-  };
-  renderSelectionCandidates(node);
-  renderSelectionPath();
-  selectionState.stage = 'await-action';
-  updateSelectionActionsVisibility();
-  updateSelectionCodePreview();
-  setElementStatus('동작을 선택하세요.', 'info');
+function buildSelectionPreviewLinesWrapper(path, framework, language) {
+  return buildSelectionPreviewLines(path, framework, language, inferSelectorType);
 }
 
-/**
- * 선택 워크플로우 시작
- */
-function startSelectionWorkflow() {
-  resetSelectionState({keepStatus: true});
-  selectionState.active = true;
-  selectionState.stage = 'await-root';
-  setElementStatus('페이지에서 요소를 클릭하세요.', 'info');
-  ensureElementPanelVisibility();
-  updateElementButtonState();
-  requestElementPick('root');
+function updateSelectionCodePreviewWrapper() {
+  updateSelectionCodePreview(
+    selectionState,
+    selectedFramework,
+    selectedLanguage,
+    elementCodePreview,
+    elementCodeEl,
+    buildSelectionPathArrayWrapper,
+    buildSelectionPreviewLinesWrapper
+  );
 }
 
-/**
- * 선택 워크플로우 취소
- */
-function cancelSelectionWorkflow(message = '', tone = 'info') {
-  if (selectionState.active || selectionState.stage !== 'idle') {
-    sendSelectionMessage({type: 'ELEMENT_SELECTION_CANCEL'}, () => {});
-  }
-  resetSelectionState({keepStatus: true});
-  if (message) {
-    setElementStatus(message, tone);
-  } else {
-    setElementStatus('');
-  }
+function applyCandidateToNodeWrapper(node, candidate) {
+  applyCandidateToNode(
+    node,
+    candidate,
+    selectionState,
+    inferSelectorType,
+    renderSelectionCandidatesWrapper,
+    renderSelectionPathWrapper,
+    updateSelectionActionsVisibilityWrapper,
+    updateSelectionCodePreviewWrapper,
+    setElementStatusWrapper
+  );
 }
 
-/**
- * 선택 메시지 전송 (Electron 환경용 - 간소화)
- */
-function sendSelectionMessage(payload, callback) {
-  // Electron 환경에서는 WebSocket을 통해 Content Script에 메시지 전송
-  if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-    // payload에 type이 있으면 그대로 사용, 없으면 element-selection으로 래핑
-    const message = payload.type ? payload : { type: 'element-selection', ...payload };
-    console.log('[Recorder] sendSelectionMessage 전송:', JSON.stringify(message, null, 2));
-    wsConnection.send(JSON.stringify(message));
-    if (callback) callback({ok: true});
-  } else {
-    if (callback) callback({ok: false, reason: 'WebSocket not connected'});
-  }
+function sendSelectionMessageWrapper(payload, callback) {
+  sendSelectionMessage(payload, callback, wsConnection);
 }
 
-/**
- * 요소 선택 요청
- */
-function requestElementPick(mode) {
-  const message = mode === 'child' ? {type: 'ELEMENT_SELECTION_PICK_CHILD'} : {type: 'ELEMENT_SELECTION_START'};
-  sendSelectionMessage(message, (resp) => {
-    if (resp && resp.ok === false && resp.reason) {
-      setElementStatus(`요소 선택을 시작할 수 없습니다: ${resp.reason}`, 'error');
-      if (mode === 'root') {
-        cancelSelectionWorkflow('', 'info');
-      }
-    }
-  });
+function requestElementPickWrapper(mode) {
+  requestElementPick(
+    mode,
+    sendSelectionMessageWrapper,
+    setElementStatusWrapper,
+    cancelSelectionWorkflowWrapper
+  );
 }
 
-/**
- * 심플 요소 선택 시작 (Add assertion/wait 전용)
- * @param {Function} callback - (path, elementInfo, pendingAction, pendingStepIndex) => void
- * @param {string} pendingAction - 'verifyText' | 'verifyElementPresent' | 'waitForElement' 등
- * @param {number|null} pendingStepIndex - assertion을 추가할 스텝 인덱스 (있는 경우)
- */
-function startSimpleElementSelection(callback, pendingAction, pendingStepIndex = null) {
-  // 기존 요소 선택 모드가 활성화되어 있으면 먼저 취소
-  if (selectionState.active) {
-    cancelSelectionWorkflow('', 'info');
-  }
-  
-  // 상태 초기화
-  simpleSelectionState.active = true;
-  simpleSelectionState.callback = callback;
-  simpleSelectionState.pendingAction = pendingAction;
-  simpleSelectionState.pendingStepIndex = pendingStepIndex;
-  
-  // 상태 메시지 표시
-  let message = '요소를 선택하세요.';
-  if (pendingAction === 'verifyText') {
-    message = '텍스트를 검증할 요소를 선택하세요.';
-  } else if (pendingAction === 'verifyElementPresent' || pendingAction === 'verifyElementNotPresent') {
-    message = '검증할 요소를 선택하세요.';
-  } else if (pendingAction === 'waitForElement') {
-    message = '대기할 요소를 선택하세요.';
-  }
-  
-  if (elementStatusEl) {
-    elementStatusEl.textContent = message;
-    elementStatusEl.className = 'element-status info';
-  }
-  
-  // 요소 선택 시작
-  console.log('[Recorder] 심플 요소 선택 시작:', { 
-    pendingAction, 
-    pendingStepIndex,
-    active: simpleSelectionState.active,
-    hasCallback: !!simpleSelectionState.callback
-  });
-  sendSelectionMessage({type: 'ELEMENT_SELECTION_START'}, (resp) => {
-    console.log('[Recorder] 요소 선택 시작 응답:', resp, '현재 active:', simpleSelectionState.active);
-    if (resp && resp.ok === false && resp.reason) {
-      simpleSelectionState.active = false;
-      simpleSelectionState.callback = null;
-      simpleSelectionState.pendingAction = null;
-      simpleSelectionState.pendingStepIndex = null;
-      if (elementStatusEl) {
-        elementStatusEl.textContent = `요소 선택을 시작할 수 없습니다: ${resp.reason}`;
-        elementStatusEl.className = 'element-status error';
-      }
-    } else {
-      console.log('[Recorder] 요소 선택 모드 활성화됨, 브라우저에서 요소를 클릭하세요. active:', simpleSelectionState.active);
-    }
-  });
+function startSelectionWorkflowWrapper() {
+  startSelectionWorkflow(
+    selectionState,
+    resetSelectionStateWrapper,
+    setElementStatusWrapper,
+    ensureElementPanelVisibilityWrapper,
+    updateElementButtonStateWrapper,
+    requestElementPickWrapper
+  );
 }
 
-/**
- * 심플 요소 선택 완료 처리
- */
-function handleSimpleElementSelectionPicked(msg) {
-  console.log('[Recorder] handleSimpleElementSelectionPicked 호출:', {
-    active: simpleSelectionState.active,
-    hasCallback: !!simpleSelectionState.callback,
-    pendingAction: simpleSelectionState.pendingAction,
-    selectorsCount: msg.selectors?.length || 0
-  });
-  
-  // 상태 확인 및 콜백 백업 (상태 초기화 전에)
-  const wasActive = simpleSelectionState.active;
-  const callback = simpleSelectionState.callback;
-  const pendingAction = simpleSelectionState.pendingAction;
-  const pendingStepIndex = simpleSelectionState.pendingStepIndex;
-  
-  if (!wasActive || !callback) {
-    console.warn('[Recorder] handleSimpleElementSelectionPicked: 상태가 활성화되지 않았거나 콜백이 없음');
-    // 상태가 활성화되지 않았어도 ELEMENT_SELECTION_CANCEL 전송하여 Content Script 해제
-    sendSelectionMessage({type: 'ELEMENT_SELECTION_CANCEL'}, () => {});
-    return;
-  }
-  
-  const candidates = (msg.selectors || []).map((cand) => ({
-    ...cand,
-    type: cand.type || inferSelectorType(cand.selector)
-  }));
-  
-  if (candidates.length === 0) {
-    // 후보가 없으면 오류 처리
-    console.warn('[Recorder] handleSimpleElementSelectionPicked: 셀렉터 후보가 없음');
-    simpleSelectionState.active = false;
-    simpleSelectionState.callback = null;
-    simpleSelectionState.pendingAction = null;
-    simpleSelectionState.pendingStepIndex = null;
-    if (elementStatusEl) {
-      elementStatusEl.textContent = '요소를 선택할 수 없습니다.';
-      elementStatusEl.className = 'element-status error';
-    }
-    return;
-  }
-  
-  // 첫 번째 후보를 사용하여 path 생성
-  const firstCandidate = candidates[0];
-  const path = [{
-    selector: firstCandidate.selector,
-    type: firstCandidate.type || inferSelectorType(firstCandidate.selector),
-    textValue: firstCandidate.textValue || null,
-    xpathValue: firstCandidate.xpathValue || null,
-    matchMode: firstCandidate.matchMode || null,
-    iframeContext: msg.element?.iframeContext || null
-  }];
-  
-  const elementInfo = {
-    text: msg.element?.text || firstCandidate.textValue || '',
-    iframeContext: msg.element?.iframeContext || null,
-    tag: msg.element?.tag || null,
-    id: msg.element?.id || null,
-    className: msg.element?.className || null,
-    value: msg.element?.value || null,
-    clientRect: msg.clientRect || null,
-    page: msg.page || null,
-    selectorCandidates: msg.selectors || candidates || []
-  };
-  
-  console.log('[Recorder] handleSimpleElementSelectionPicked: 콜백 호출 준비:', {
+function cancelSelectionWorkflowWrapper(message = '', tone = 'info') {
+  cancelSelectionWorkflow(
+    message,
+    tone,
+    selectionState,
+    sendSelectionMessageWrapper,
+    resetSelectionStateWrapper,
+    setElementStatusWrapper
+  );
+}
+
+function startSimpleElementSelectionWrapper(callback, pendingAction, pendingStepIndex = null) {
+  startSimpleElementSelection(
+    callback,
     pendingAction,
     pendingStepIndex,
-    pathSelector: path[0]?.selector
-  });
-  
-  // 상태 초기화 (콜백 호출 전에 초기화하여 중복 호출 방지)
-  simpleSelectionState.active = false;
-  simpleSelectionState.callback = null;
-  simpleSelectionState.pendingAction = null;
-  simpleSelectionState.pendingStepIndex = null;
-  
-  // 요소 선택 종료를 먼저 전송하여 Content Script의 isElementSelectionMode를 즉시 해제
-  // (콜백 호출 전에 전송하여 이후 클릭 이벤트가 무시되도록 함)
-  sendSelectionMessage({type: 'ELEMENT_SELECTION_CANCEL'}, () => {});
-  
-  // 콜백 호출
-  try {
-    callback(path, elementInfo, pendingAction, pendingStepIndex);
-    console.log('[Recorder] handleSimpleElementSelectionPicked: 콜백 호출 완료');
-  } catch (error) {
-    console.error('[Recorder] handleSimpleElementSelectionPicked: 콜백 호출 오류:', error);
-  }
+    selectionState,
+    simpleSelectionState,
+    cancelSelectionWorkflowWrapper,
+    elementStatusEl,
+    sendSelectionMessageWrapper
+  );
 }
 
-/**
- * 심플 요소 선택 취소
- */
-function cancelSimpleElementSelection() {
-  if (simpleSelectionState.active) {
-    sendSelectionMessage({type: 'ELEMENT_SELECTION_CANCEL'}, () => {});
-    simpleSelectionState.active = false;
-    simpleSelectionState.callback = null;
-    simpleSelectionState.pendingAction = null;
-    simpleSelectionState.pendingStepIndex = null;
-    if (elementStatusEl) {
-      elementStatusEl.textContent = '';
-    }
-  }
+function handleSimpleElementSelectionPickedWrapper(msg) {
+  handleSimpleElementSelectionPicked(
+    msg,
+    simpleSelectionState,
+    inferSelectorType,
+    elementStatusEl,
+    sendSelectionMessageWrapper
+  );
 }
 
-/**
- * 요소 선택 완료 처리
- */
-async function handleElementSelectionPicked(msg) {
-  if (!selectionState.active) {
-    selectionState.active = true;
-    updateElementButtonState();
-  }
-  const candidates = (msg.selectors || []).map((cand) => ({
-    ...cand,
-    type: cand.type || inferSelectorType(cand.selector)
-  }));
-  
-  // pendingAction이 있고 후보가 있으면 바로 이벤트 추가 (UI 표시 없이)
-  if (selectionState.pendingAction && candidates.length > 0) {
-    const firstCandidate = candidates[0];
-    
-    // path 생성
-    const path = [{
-      selector: firstCandidate.selector,
-      type: firstCandidate.type || inferSelectorType(firstCandidate.selector),
-      textValue: firstCandidate.textValue || null,
-      xpathValue: firstCandidate.xpathValue || null,
-      matchMode: firstCandidate.matchMode || null,
-      iframeContext: msg.element?.iframeContext || null
-    }];
-    
-    const pending = selectionState.pendingAction;
-    const pendingStepIndex = selectionState.pendingStepIndex;
-    
-    // pendingAction에 따라 이벤트 추가
-    if (pending.startsWith('verify')) {
-      let value = null;
-      if (pending === 'verifyText') {
-        // 요소의 텍스트를 기본값으로 사용
-        const elementText = msg.element?.text || firstCandidate.textValue || '';
-        const textValue = prompt('검증할 텍스트를 입력하세요:', elementText);
-        if (textValue === null) {
-          // 취소 시 워크플로우 종료
-          selectionState.pendingAction = null;
-          selectionState.pendingStepIndex = null;
-          cancelSelectionWorkflow('요소 선택이 취소되었습니다.', 'info');
-          return;
-        }
-        value = textValue || elementText;
-      } else if (pending === 'verifyElementPresent' || pending === 'verifyElementNotPresent') {
-        // 요소 존재/부재 검증은 value 불필요
-        value = null;
-      }
-      
-      // pendingStepIndex가 있으면 addAssertionAfterStep 사용, 없으면 addVerifyAction 사용
-      if (pendingStepIndex !== null && pendingStepIndex !== undefined) {
-        addAssertionAfterStep(pendingStepIndex, pending, path, value);
-        selectionState.pendingStepIndex = null;
-      } else {
-        await addVerifyAction(pending, path, value);
-      }
-      selectionState.pendingAction = null;
-      cancelSelectionWorkflow('', 'info');
-      return;
-    } else if (pending === 'waitForElement') {
-      addWaitAction('waitForElement', null, path);
-      selectionState.pendingAction = null;
-      cancelSelectionWorkflow('', 'info');
-      return;
-    }
-  }
-  
-  // pendingAction이 없거나 후보가 없는 경우 기존 로직 유지
-  const node = {
-    element: msg.element || {},
-    candidates,
-    selectedCandidate: null,
-    stage: msg.stage || (selectionState.stack.length === 0 ? 'root' : 'child')
-  };
-  selectionState.stack.push(node);
-  selectionState.stage = 'await-candidate';
-  renderSelectionPath();
-  renderSelectionCandidates(node);
-  updateSelectionActionsVisibility();
-  updateSelectionCodePreview();
-  ensureElementPanelVisibility();
-  
-  // pendingAction에 따라 다른 메시지 표시
-  if (selectionState.pendingAction) {
-    if (selectionState.pendingAction === 'verifyText') {
-      setElementStatus('후보를 선택한 후 텍스트를 입력하세요.', 'info');
-    } else if (selectionState.pendingAction === 'verifyElementPresent' || 
-               selectionState.pendingAction === 'verifyElementNotPresent') {
-      setElementStatus('후보를 선택하면 검증이 완료됩니다.', 'info');
-    } else {
-      setElementStatus('후보 중 하나를 선택하세요.', 'info');
-    }
-  } else {
-    setElementStatus('후보 중 하나를 선택하세요.', 'info');
-  }
+function cancelSimpleElementSelectionWrapper() {
+  cancelSimpleElementSelection(
+    simpleSelectionState,
+    elementStatusEl,
+    sendSelectionMessageWrapper
+  );
 }
 
-/**
- * 요소 선택 오류 처리
- */
-function handleElementSelectionError(msg) {
-  const reason = msg && msg.reason ? msg.reason : '요소를 선택할 수 없습니다.';
-  setElementStatus(reason, 'error');
-  const stage = msg && msg.stage ? msg.stage : 'root';
-  if (selectionState.active) {
-    requestElementPick(stage === 'child' ? 'child' : 'root');
-  }
+function handleElementSelectionPickedWrapper(msg) {
+  handleElementSelectionPicked(
+    msg,
+    selectionState,
+    inferSelectorType,
+    updateElementButtonStateWrapper,
+    addAssertionAfterStep,
+    addVerifyAction,
+    addWaitAction,
+    normalizeEventRecord,
+    allEvents,
+    updateCode,
+    syncTimelineFromEvents,
+    saveEventAsStep,
+    setElementStatusWrapper,
+    captureVerifyImageScreenshot,
+    electronAPI,
+    initElectronAPI,
+    cancelSelectionWorkflowWrapper,
+    renderSelectionPathWrapper,
+    renderSelectionCandidatesWrapper,
+    updateSelectionActionsVisibilityWrapper,
+    updateSelectionCodePreviewWrapper,
+    ensureElementPanelVisibilityWrapper,
+    getCurrentSelectionNodeWrapper
+  );
 }
 
-/**
- * 요소 선택 취소 처리
- */
-function handleElementSelectionCancelled() {
-  if (!selectionState.active && selectionState.stack.length === 0) return;
-  cancelSelectionWorkflow('페이지에서 요소 선택이 취소되었습니다.', 'info');
+function handleElementSelectionErrorWrapper(msg) {
+  handleElementSelectionError(
+    msg,
+    selectionState,
+    setElementStatusWrapper,
+    requestElementPickWrapper
+  );
 }
 
-/**
- * 요소 액션 처리
- */
-async function handleElementAction(action) {
-  if (!action) return;
-  const currentNode = getCurrentSelectionNode();
-  if (!currentNode || !currentNode.selectedCandidate) {
-    setElementStatus('먼저 후보를 선택하세요.', 'error');
-    return;
-  }
-  switch (action) {
-    case 'click':
-      await applySelectionAction('click');
-      break;
-    case 'text':
-      await applySelectionAction('extract_text');
-      break;
-    case 'value':
-      await applySelectionAction('get_attribute', {attributeName: 'value'});
-      break;
-    case 'attribute':
-      if (elementAttrPanel) {
-        elementAttrPanel.classList.remove('hidden');
-      }
-      if (elementAttrNameInput) {
-        elementAttrNameInput.value = '';
-        elementAttrNameInput.focus();
-      }
-      selectionState.pendingAction = 'attribute';
-      setElementStatus('추출할 속성명을 입력하고 적용을 누르세요.', 'info');
-      break;
-    case 'child':
-      startChildSelection();
-      break;
-    case 'parent':
-      startParentSelection();
-      break;
-    case 'commit':
-      await applySelectionAction('commit');
-      break;
-    case 'finish':
-      cancelSelectionWorkflow('요소 선택을 종료했습니다.');
-      break;
-    default:
-      break;
-  }
+function handleElementSelectionCancelledWrapper() {
+  handleElementSelectionCancelled(
+    selectionState,
+    cancelSelectionWorkflowWrapper
+  );
 }
 
-/**
- * 자식 선택 시작
- */
-function startChildSelection() {
-  const currentNode = getCurrentSelectionNode();
-  if (!currentNode || !currentNode.selectedCandidate) {
-    setElementStatus('먼저 후보를 선택하세요.', 'error');
-    return;
-  }
-  selectionState.stage = 'await-child';
-  updateSelectionActionsVisibility();
-  setElementStatus('부모 요소 내부에서 자식 요소를 클릭하세요.', 'info');
-  requestElementPick('child');
+function startChildSelectionWrapper() {
+  startChildSelection(
+    selectionState,
+    getCurrentSelectionNodeWrapper,
+    setElementStatusWrapper,
+    updateSelectionActionsVisibilityWrapper,
+    requestElementPickWrapper
+  );
 }
 
-/**
- * 부모 선택 시작
- */
-function startParentSelection() {
-  const currentNode = getCurrentSelectionNode();
-  if (!currentNode || !currentNode.selectedCandidate) {
-    setElementStatus('먼저 후보를 선택하세요.', 'error');
-    return;
-  }
-  selectionState.stage = 'await-parent';
-  updateSelectionActionsVisibility();
-  setElementStatus('상위 요소 정보를 가져오는 중입니다...', 'info');
-  sendSelectionMessage({type: 'ELEMENT_SELECTION_PICK_PARENT'}, (resp) => {
-    if (resp && resp.ok === false) {
-      selectionState.stage = 'await-action';
-      updateSelectionActionsVisibility();
-      let message = '상위 요소를 찾을 수 없습니다.';
-      if (resp.reason === 'no_parent') {
-        message = '더 이상 상위 요소가 없습니다.';
-      } else if (resp.reason === 'current_not_selected') {
-        message = '먼저 요소를 선택하세요.';
-      }
-      setElementStatus(message, 'error');
-    }
-  });
+function startParentSelectionWrapper() {
+  startParentSelection(
+    selectionState,
+    getCurrentSelectionNodeWrapper,
+    setElementStatusWrapper,
+    updateSelectionActionsVisibilityWrapper,
+    sendSelectionMessageWrapper
+  );
 }
 
-/**
- * 선택 액션 적용 (8단계 완성)
- */
-async function applySelectionAction(actionType, options = {}) {
-  const path = buildSelectionPathArray();
-  if (!path.length) {
-    setElementStatus('먼저 요소를 선택하세요.', 'error');
-    return;
-  }
-  
-  // pendingAction이 verify, wait, interaction인 경우 처리
-  if (selectionState.pendingAction) {
-    const pending = selectionState.pendingAction;
-    if (pending.startsWith('verify')) {
-      let value = null;
-      if (pending === 'verifyText') {
-        // 요소의 텍스트를 기본값으로 사용
-        const currentNode = getCurrentSelectionNode();
-        const elementText = currentNode?.element?.text || 
-                           path[path.length - 1]?.textValue || 
-                           '';
-        const textValue = prompt('검증할 텍스트를 입력하세요:', elementText);
-        if (textValue === null) {
-          selectionState.pendingAction = null;
-          selectionState.pendingStepIndex = null;
-          return;
-        }
-        value = textValue || elementText;
-      } else if (pending === 'verifyElementPresent' || pending === 'verifyElementNotPresent') {
-        // 요소 존재/부재 검증은 value 불필요
-        value = null;
-      }
-      
-      // pendingStepIndex가 있으면 addAssertionAfterStep 사용, 없으면 addVerifyAction 사용
-      if (selectionState.pendingStepIndex !== null) {
-        addAssertionAfterStep(selectionState.pendingStepIndex, pending, path, value);
-        selectionState.pendingStepIndex = null;
-      } else {
-        await addVerifyAction(pending, path, value);
-      }
-      selectionState.pendingAction = null;
-      cancelSelectionWorkflow('', 'info');
-      return;
-    } else if (pending === 'waitForElement') {
-      addWaitAction('waitForElement', null, path);
-      selectionState.pendingAction = null;
-      cancelSelectionWorkflow('', 'info');
-      return;
-    } else if (['click', 'doubleClick', 'rightClick', 'hover', 'clear', 'type', 'select'].includes(pending)) {
-      let value = null;
-      if (pending === 'type') {
-        const inputValue = prompt('입력할 텍스트를 입력하세요:');
-        if (inputValue === null) {
-          selectionState.pendingAction = null;
-          return;
-        }
-        value = inputValue;
-      } else if (pending === 'select') {
-        const selectValue = prompt('선택할 옵션의 텍스트 또는 값을 입력하세요:');
-        if (selectValue === null) {
-          selectionState.pendingAction = null;
-          return;
-        }
-        value = selectValue;
-      }
-      addInteractionAction(pending, path, value);
-      selectionState.pendingAction = null;
-      cancelSelectionWorkflow('', 'info');
-      return;
-    }
-  }
-  
-  // 일반 액션 처리
-  if (actionType === 'click') {
-    addInteractionAction('click', path, null);
-  } else if (actionType === 'extract_text') {
-    const entry = buildManualActionEntry('extract_text', path, { resultName: `text_result_${manualActionSerial}` });
-    if (entry) {
-      addManualAction(entry, () => {
-        updateCode();
-        cancelSelectionWorkflow('텍스트 추출 액션을 추가했습니다.', 'success');
-      });
-    }
-  } else if (actionType === 'get_attribute') {
-    const attrName = options.attributeName || selectionState.pendingAttribute || '';
-    if (!attrName) {
-      setElementStatus('속성명을 입력하세요.', 'error');
-      return;
-    }
-    const entry = buildManualActionEntry('get_attribute', path, {
-      attributeName: attrName,
-      resultName: `${attrName}_value_${manualActionSerial}`
-    });
-    if (entry) {
-      addManualAction(entry, () => {
-        updateCode();
-        cancelSelectionWorkflow('속성 추출 액션을 추가했습니다.', 'success');
-      });
-    }
-  } else if (actionType === 'commit') {
-    cancelSelectionWorkflow('요소 선택이 완료되었습니다.', 'success');
-  } else {
-    logMessage(`선택 액션 적용: ${actionType}`, 'info');
-    cancelSelectionWorkflow('요소 선택이 완료되었습니다.', 'success');
-  }
+function applySelectionActionWrapper(actionType, options = {}) {
+  return applySelectionAction(
+    actionType,
+    options,
+    selectionState,
+    buildSelectionPathArrayWrapper,
+    setElementStatusWrapper,
+    getCurrentSelectionNodeWrapper,
+    addAssertionAfterStep,
+    addVerifyAction,
+    addWaitAction,
+    addInteractionAction,
+    buildManualActionEntry,
+    addManualAction,
+    normalizeEventRecord,
+    allEvents,
+    updateCode,
+    syncTimelineFromEvents,
+    saveEventAsStep,
+    captureVerifyImageScreenshot,
+    electronAPI,
+    initElectronAPI,
+    cancelSelectionWorkflowWrapper,
+    logMessage,
+    manualActions,
+    manualActionSerial,
+    selectedFramework,
+    selectedLanguage
+  );
+}
+
+function handleElementActionWrapper(action) {
+  return handleElementAction(
+    action,
+    selectionState,
+    getCurrentSelectionNodeWrapper,
+    setElementStatusWrapper,
+    applySelectionActionWrapper,
+    startChildSelectionWrapper,
+    startParentSelectionWrapper,
+    cancelSelectionWorkflowWrapper,
+    elementAttrPanel,
+    elementAttrNameInput
+  );
 }
 
 // ============================================================================
 // 수동 액션 추가 기능 (popup.js 이식) - 8단계
 // ============================================================================
+// 함수들이 recorder-actions.js로 이동됨
 
-/**
- * 수동 액션 엔트리 생성
- */
-function buildManualActionEntry(actionType, path, options = {}) {
-  if (!path || !path.length) return null;
-  const serial = manualActionSerial++;
-  const entry = {
-    id: `manual-${Date.now()}-${serial}`,
-    serial,
-    actionType,
-    path,
-    createdAt: Date.now(),
-    iframeContext: path[path.length - 1] && path[path.length - 1].iframeContext ? path[path.length - 1].iframeContext : null
-  };
-  if (actionType === 'extract_text') {
-    entry.resultName = options.resultName || `text_result_${serial}`;
-  }
-  if (actionType === 'get_attribute') {
-    const attrName = (options.attributeName || selectionState.pendingAttribute || '').trim();
-    if (!attrName) return null;
-    entry.attributeName = attrName;
-    entry.resultName = options.resultName || `${attrName}_value_${serial}`;
-  }
-  return entry;
-}
-
-/**
- * 수동 액션 추가
- */
-function addManualAction(entry, callback) {
-  if (!entry) return;
-  const next = [...manualActions, entry];
-  manualActions = next;
-  if (callback) callback();
-  updateCode();
-}
-
-/**
- * 검증 액션 처리
- */
-async function handleVerifyAction(verifyType) {
-  if (verifyType === 'verifyTitle' || verifyType === 'verifyUrl') {
-    // 타이틀/URL 검증은 요소 선택 불필요
-    let initialValue = null;
-    
-    if (verifyType === 'verifyUrl') {
-      // 중간 처리 페이지 필터링 함수
-      function shouldFilterIntermediateUrl(url) {
-        if (!url) return false;
-        const urlLower = url.toLowerCase();
-        const intermediatePatterns = [
-          /loginproc/i, /logoutproc/i, /redirect/i, /processing/i, /intermediate/i,
-          /callback/i, /verify/i,
-          /token/i, /oauth/i, /handshake/i, /sso/i, /saml/i,
-          /loading/i, /wait/i, /waiting/i, /transit/i,
-          /session/i, /signin/i, /signout/i, /logout/i, /jump/i
-        ];
-        return intermediatePatterns.some(pattern => pattern.test(urlLower));
-      }
-      
-      // 현재 URL 가져오기
-      let currentUrl = window.location.href || '';
-      
-      // 중간 처리 페이지인 경우 최종 목적지 페이지로 이동할 때까지 대기
-      if (shouldFilterIntermediateUrl(currentUrl)) {
-        console.log('[Recorder] verifyUrl: 중간 처리 페이지 감지, 최종 목적지 페이지로 이동 대기...');
-        
-        // 최대 3초 동안 최종 목적지 페이지로 이동 대기
-        const maxWaitTime = 3000;
-        const checkInterval = 200;
-        let waitedTime = 0;
-        
-        const waitForFinalPage = () => {
-          return new Promise((resolveWait) => {
-            const checkUrl = () => {
-              const checkCurrentUrl = window.location.href || '';
-              if (!shouldFilterIntermediateUrl(checkCurrentUrl)) {
-                console.log('[Recorder] verifyUrl: 최종 목적지 페이지 도달:', checkCurrentUrl);
-                currentUrl = checkCurrentUrl;
-                resolveWait(true);
-                return;
-              }
-              
-              waitedTime += checkInterval;
-              if (waitedTime >= maxWaitTime) {
-                console.warn('[Recorder] verifyUrl: 최종 목적지 페이지 대기 타임아웃, 중간 URL 필터링');
-                // 타임아웃 시 중간 URL 사용하지 않음 (null로 설정하여 addVerifyAction에서 다시 체크)
-                currentUrl = null;
-                resolveWait(false);
-                return;
-              }
-              
-              setTimeout(checkUrl, checkInterval);
-            };
-            
-            checkUrl();
-          });
-        };
-        
-        // 최종 목적지 페이지로 이동 대기
-        const waitResult = await waitForFinalPage();
-        
-        // 타임아웃으로 인해 currentUrl이 여전히 중간 URL인 경우 이벤트 추가 취소
-        if (!waitResult && shouldFilterIntermediateUrl(currentUrl)) {
-          console.warn('[Recorder] verifyUrl: 중간 URL 필터링으로 인해 이벤트 추가 취소');
-          setElementStatus('중간 처리 페이지가 감지되었습니다. 최종 목적지 페이지에서 다시 시도해주세요.', 'error');
-          return;
-        }
-      }
-      
-      // 필터링된 URL 사용 (중간 URL이 아닌 경우만)
-      if (currentUrl && !shouldFilterIntermediateUrl(currentUrl)) {
-        initialValue = currentUrl;
-      } else if (currentUrl && shouldFilterIntermediateUrl(currentUrl)) {
-        // 여전히 중간 URL인 경우 이벤트 추가 취소
-        console.warn('[Recorder] verifyUrl: 중간 URL 필터링으로 인해 이벤트 추가 취소');
-        setElementStatus('중간 처리 페이지가 감지되었습니다. 최종 목적지 페이지에서 다시 시도해주세요.', 'error');
-        return;
-      }
-    }
-    
-    await addVerifyAction(verifyType, null, initialValue);
-    return;
-  }
-  
-  // 요소 검증은 심플 요소 선택 사용 (waitForElement와 동일한 방식)
-  startSimpleElementSelection(async (path, elementInfo, pendingAction, pendingStepIndex) => {
-    let value = null;
-    if (pendingAction === 'verifyText') {
-      // 요소의 텍스트를 자동으로 사용 (prompt 없이)
-      value = elementInfo.text || path[0]?.textValue || '';
-      console.log('[Recorder] verifyText: 요소 텍스트 자동 사용:', value);
-    } else if (pendingAction === 'verifyElementPresent' || pendingAction === 'verifyElementNotPresent') {
-      // 요소 존재/부재 검증은 value 불필요
-      value = null;
-    }
-    
-    await addVerifyAction(pendingAction, path, value, elementInfo);
-  }, verifyType, null);
-}
-
-/**
- * 대기 액션 처리
- */
-function handleWaitAction(waitType) {
-  if (waitType === 'wait') {
-    // 시간 대기는 입력 패널 표시
-    const waitInputPanel = document.getElementById('wait-input-panel');
-    if (waitInputPanel) {
-      waitInputPanel.classList.remove('hidden');
-    }
-    const waitTimeInput = document.getElementById('wait-time-input');
-    if (waitTimeInput) {
-      waitTimeInput.focus();
-    }
-    return;
-  }
-  
-  if (waitType === 'waitForElement') {
-    const path = buildSelectionPathArray();
-    if (!path.length) {
-      if (!selectionState.active) {
-        startSelectionWorkflow();
-      }
-      setElementStatus('대기할 요소를 선택하세요.', 'info');
-      selectionState.pendingAction = 'waitForElement';
-      return;
-    }
-    
-    addWaitAction('waitForElement', null, path);
-  }
-}
-
-/**
- * 상호작용 액션 처리
- */
-function handleInteractionAction(interactionType) {
-  const path = buildSelectionPathArray();
-  
-  if (interactionType === 'type') {
-    if (!path.length) {
-      if (!selectionState.active) {
-        startSelectionWorkflow();
-      }
-      setElementStatus('입력할 요소를 선택하세요.', 'info');
-      selectionState.pendingAction = 'type';
-      return;
-    }
-    const inputValue = prompt('입력할 텍스트를 입력하세요:');
-    if (inputValue === null) return;
-    addInteractionAction('type', path, inputValue);
-    return;
-  }
-  
-  if (interactionType === 'select') {
-    if (!path.length) {
-      if (!selectionState.active) {
-        startSelectionWorkflow();
-      }
-      setElementStatus('선택할 드롭다운 요소를 선택하세요.', 'info');
-      selectionState.pendingAction = 'select';
-      return;
-    }
-    const selectValue = prompt('선택할 옵션의 텍스트 또는 값을 입력하세요:');
-    if (selectValue === null) return;
-    addInteractionAction('select', path, selectValue);
-    return;
-  }
-  
-  // click, doubleClick, rightClick, hover, clear는 요소만 필요
-  if (!path.length) {
-    if (!selectionState.active) {
-      startSelectionWorkflow();
-    }
-    setElementStatus(`${interactionType}할 요소를 선택하세요.`, 'info');
-    selectionState.pendingAction = interactionType;
-    return;
-  }
-  
-  addInteractionAction(interactionType, path, null);
-}
-
-/**
- * 검증 액션을 이벤트로 추가
- */
-async function addVerifyAction(verifyType, path, value, elementInfo = null) {
-  console.log('[Recorder] addVerifyAction 호출:', {
-    verifyType,
-    pathLength: path?.length || 0,
-    value,
-    path: path ? path.map(p => p.selector) : null,
-    hasElementInfo: !!elementInfo
-  });
-  
-  const timestamp = Date.now();
-  const currentUrl = window.location.href || '';
-  const currentTitle = document.title || '';
-  let eventRecord = null;
-  
-  if (path && path.length > 0) {
-    // 요소 기반 검증
-    const selectors = path.map((item, idx) => {
-      if (!item || !item.selector) return null;
-      const type = item.type || inferSelectorType(item.selector);
-      return {
-        selector: item.selector,
-        type,
-        textValue: item.textValue || null,
-        xpathValue: item.xpathValue || null,
-        matchMode: item.matchMode || null,
-        score: idx === path.length - 1 ? 100 : 80
-      };
-    }).filter(Boolean);
-    
-    if (!selectors.length) {
-      alert('셀렉터를 찾을 수 없습니다.');
-      return;
-    }
-    
-    const targetEntry = selectors[selectors.length - 1];
-    const iframeContext = path[path.length - 1]?.iframeContext || elementInfo?.iframeContext || null;
-    
-    // elementInfo에서 추가 정보 가져오기
-    const targetTag = elementInfo?.tag || null;
-    const clientRect = elementInfo?.clientRect || null;
-    const pageInfo = elementInfo?.page || { url: currentUrl, title: currentTitle };
-    
-    eventRecord = {
-      version: 2,
-      timestamp,
-      action: verifyType,
-      value: value || null,
-      tag: targetTag,
-      selectorCandidates: elementInfo?.selectorCandidates || selectors,
-      iframeContext,
-      page: pageInfo,
-      frame: { iframeContext },
-      target: targetTag ? { tag: targetTag, id: elementInfo?.id || null, className: elementInfo?.className || null } : null,
-      clientRect: clientRect,
-      elementImageData: null, // 스크린샷 캡처 후 채워짐
-      metadata: {
-        schemaVersion: 2,
-        userAgent: navigator.userAgent
-      },
-      manual: {
-        id: `verify-${timestamp}`,
-        type: verifyType,
-        resultName: null,
-        attributeName: null
-      },
-      primarySelector: targetEntry.selector,
-      primarySelectorType: targetEntry.type,
-      primarySelectorText: targetEntry.textValue,
-      primarySelectorXPath: targetEntry.xpathValue,
-      primarySelectorMatchMode: targetEntry.matchMode
-    };
-    
-    // verifyImage 액션인 경우 실시간 스크린샷 캡처
-    if (verifyType === 'verifyImage' && clientRect) {
-      console.log('[Recorder] verifyImage 액션 감지, 스크린샷 캡처 시작...');
-      
-      // 이벤트 추가 (이미지 없이 먼저 추가)
-      const normalized = normalizeEventRecord(eventRecord);
-      console.log('[Recorder] addVerifyAction: 정규화된 이벤트:', normalized);
-      allEvents.push(normalized);
-      console.log('[Recorder] addVerifyAction: allEvents에 추가됨, 총 이벤트 수:', allEvents.length);
-      updateCode({ preloadedEvents: allEvents });
-      syncTimelineFromEvents(allEvents, { selectLast: true });
-      console.log('[Recorder] addVerifyAction: 코드 및 타임라인 업데이트 완료');
-      
-      // 이미지 캡처 후 저장
-      captureVerifyImageScreenshot(clientRect).then(imageData => {
-        if (imageData) {
-          // 이벤트에 이미지 데이터 추가
-          eventRecord.elementImageData = imageData;
-          
-          // 이미 추가된 이벤트 업데이트
-          const lastEvent = allEvents[allEvents.length - 1];
-          if (lastEvent && lastEvent.timestamp === timestamp) {
-            lastEvent.elementImageData = imageData;
-            // 타임라인 새로고침하여 이미지 표시
-            syncTimelineFromEvents(allEvents, { selectLast: false });
-            console.log('[Recorder] ✅ verifyImage 이미지 데이터 추가 완료');
-            
-            // 이미지가 추가된 후에 TC step으로 저장
-            console.log('[Recorder] addVerifyAction: saveEventAsStep 호출 시작 (이미지 포함)');
-            saveEventAsStep(lastEvent);
-            console.log('[Recorder] addVerifyAction: saveEventAsStep 호출 완료');
-          }
-        } else {
-          // 이미지 캡처 실패해도 이벤트는 저장
-          console.log('[Recorder] addVerifyAction: saveEventAsStep 호출 시작 (이미지 없음)');
-          saveEventAsStep(normalized);
-          console.log('[Recorder] addVerifyAction: saveEventAsStep 호출 완료');
-        }
-      }).catch(error => {
-        console.warn('[Recorder] verifyImage 스크린샷 캡처 실패:', error);
-        // 이미지 캡처 실패해도 이벤트는 저장
-        console.log('[Recorder] addVerifyAction: saveEventAsStep 호출 시작 (이미지 캡처 실패)');
-        saveEventAsStep(normalized);
-        console.log('[Recorder] addVerifyAction: saveEventAsStep 호출 완료');
-      });
-      
-      // verifyImage인 경우 여기서 종료 (이미지 캡처 완료 후 저장)
-      const verifyActionsContainer = document.getElementById('verify-actions');
-      if (verifyActionsContainer) {
-        verifyActionsContainer.classList.add('hidden');
-      }
-      setElementStatus(`${verifyType} 액션을 추가했습니다.`, 'success');
-      return;
-    }
-  } else {
-    // 타이틀/URL 검증 (요소 불필요)
-    if (verifyType === 'verifyTitle') {
-      value = value || currentTitle;
-    } else if (verifyType === 'verifyUrl') {
-      // 중간 처리 페이지 필터링 함수
-      function shouldFilterIntermediateUrl(url) {
-        if (!url) return false;
-        const urlLower = url.toLowerCase();
-        const intermediatePatterns = [
-          /loginproc/i, /logoutproc/i, /redirect/i, /processing/i, /intermediate/i,
-          /callback/i, /verify/i,
-          /token/i, /oauth/i, /handshake/i, /sso/i, /saml/i,
-          /loading/i, /wait/i, /waiting/i, /transit/i,
-          /session/i, /signin/i, /signout/i, /logout/i, /jump/i
-        ];
-        return intermediatePatterns.some(pattern => pattern.test(urlLower));
-      }
-      
-      // URL 정규화 적용 (쿼리 파라미터 제거)
-      let rawUrl = value || currentUrl;
-      
-      // 중간 처리 페이지인 경우 최종 목적지 페이지로 이동할 때까지 대기
-      if (shouldFilterIntermediateUrl(rawUrl)) {
-        console.log('[Recorder] verifyUrl: 중간 처리 페이지 감지, 최종 목적지 페이지로 이동 대기...');
-        
-        // 최대 3초 동안 최종 목적지 페이지로 이동 대기
-        const maxWaitTime = 3000;
-        const checkInterval = 200;
-        let waitedTime = 0;
-        
-        const waitForFinalPage = () => {
-          return new Promise((resolveWait) => {
-            const checkUrl = () => {
-              const checkCurrentUrl = window.location.href || '';
-              if (!shouldFilterIntermediateUrl(checkCurrentUrl)) {
-                console.log('[Recorder] verifyUrl: 최종 목적지 페이지 도달:', checkCurrentUrl);
-                rawUrl = checkCurrentUrl;
-                resolveWait(true);
-                return;
-              }
-              
-              waitedTime += checkInterval;
-              if (waitedTime >= maxWaitTime) {
-                console.warn('[Recorder] verifyUrl: 최종 목적지 페이지 대기 타임아웃, 중간 URL 필터링');
-                // 타임아웃 시 중간 URL 사용하지 않음 (null로 설정하여 스킵)
-                rawUrl = null;
-                resolveWait(false);
-                return;
-              }
-              
-              setTimeout(checkUrl, checkInterval);
-            };
-            
-            checkUrl();
-          });
-        };
-        
-        // 최종 목적지 페이지로 이동 대기
-        const waitResult = await waitForFinalPage();
-        
-        // 타임아웃으로 인해 rawUrl이 null이 된 경우 이벤트 추가 취소
-        if (!waitResult && !rawUrl) {
-          console.warn('[Recorder] verifyUrl: 중간 URL 필터링으로 인해 이벤트 추가 취소');
-          setElementStatus('중간 처리 페이지가 감지되었습니다. 최종 목적지 페이지에서 다시 시도해주세요.', 'error');
-          return;
-        }
-      } else {
-        // 중간 처리 페이지가 아닌 경우 즉시 진행
-      }
-      
-      // rawUrl이 null이 아니고 중간 URL이 아닌 경우에만 처리
-      if (rawUrl && !shouldFilterIntermediateUrl(rawUrl)) {
-        try {
-          const urlObj = new URL(rawUrl);
-          value = `${urlObj.protocol}//${urlObj.host}${urlObj.pathname}`;
-        } catch (e) {
-          // URL 파싱 실패 시 쿼리 스트링만 제거
-          const queryIndex = rawUrl.indexOf('?');
-          value = queryIndex !== -1 ? rawUrl.substring(0, queryIndex) : rawUrl;
-        }
-      } else if (!rawUrl || shouldFilterIntermediateUrl(rawUrl)) {
-        // 중간 URL이거나 rawUrl이 null인 경우 이벤트 추가 취소
-        console.warn('[Recorder] verifyUrl: 중간 URL 필터링으로 인해 이벤트 추가 취소');
-        setElementStatus('중간 처리 페이지가 감지되었습니다. 최종 목적지 페이지에서 다시 시도해주세요.', 'error');
-        return;
-      }
-    }
-    
-    eventRecord = {
-      version: 2,
-      timestamp,
-      action: verifyType,
-      value: value,
-      tag: null,
-      selectorCandidates: [],
-      iframeContext: null,
-      page: {
-        url: currentUrl,
-        title: currentTitle
-      },
-      frame: { iframeContext: null },
-      target: null,
-      clientRect: null,
-      metadata: {
-        schemaVersion: 2,
-        userAgent: navigator.userAgent
-      },
-      manual: {
-        id: `verify-${timestamp}`,
-        type: verifyType,
-        resultName: null,
-        attributeName: null
-      },
-      primarySelector: null,
-      primarySelectorType: null
-    };
-  }
-  
-  // 이벤트 추가
-  const normalized = normalizeEventRecord(eventRecord);
-  console.log('[Recorder] addVerifyAction: 정규화된 이벤트:', normalized);
-  allEvents.push(normalized);
-  console.log('[Recorder] addVerifyAction: allEvents에 추가됨, 총 이벤트 수:', allEvents.length);
-  updateCode({ preloadedEvents: allEvents });
-  syncTimelineFromEvents(allEvents, { selectLast: true });
-  console.log('[Recorder] addVerifyAction: 코드 및 타임라인 업데이트 완료');
-  
-  // 실시간으로 TC step으로 저장
-  console.log('[Recorder] addVerifyAction: saveEventAsStep 호출 시작');
-  saveEventAsStep(normalized);
-  console.log('[Recorder] addVerifyAction: saveEventAsStep 호출 완료');
-  
-  const verifyActionsContainer = document.getElementById('verify-actions');
-  if (verifyActionsContainer) {
-    verifyActionsContainer.classList.add('hidden');
-  }
-  setElementStatus(`${verifyType} 액션을 추가했습니다.`, 'success');
-}
-
-/**
- * verifyImage 요소 스크린샷 캡처 헬퍼 함수
- * @param {Object} clientRect - { x, y, w, h }
- * @returns {Promise<string|null>} base64 이미지 데이터 또는 null
- */
-async function captureVerifyImageScreenshot(clientRect) {
-  try {
-    // electronAPI 초기화 확인
-    if (!electronAPI) {
-      initElectronAPI();
-    }
-    
-    if (!electronAPI || !electronAPI.captureVerifyImage) {
-      console.warn('[Recorder] electronAPI.captureVerifyImage를 사용할 수 없습니다.');
-      return null;
-    }
-    
-    // clientRect 형식 통일: { x, y, width, height } 형식으로 변환
-    // recorder.js에서는 { x, y, w, h } 또는 { x, y, width, height } 형식일 수 있음
-    const normalizedClientRect = {
-      x: clientRect.x,
-      y: clientRect.y,
-      width: clientRect.width || clientRect.w,
-      height: clientRect.height || clientRect.h
-    };
-    
-    if (!normalizedClientRect.x || !normalizedClientRect.y || !normalizedClientRect.width || !normalizedClientRect.height) {
-      console.warn('[Recorder] 유효하지 않은 clientRect 정보:', clientRect);
-      return null;
-    }
-    
-    const result = await electronAPI.captureVerifyImage({ clientRect: normalizedClientRect });
-    if (result.success && result.imageData) {
-      console.log('[Recorder] ✅ verifyImage 스크린샷 캡처 성공');
-      return result.imageData;
-    } else {
-      console.warn('[Recorder] 스크린샷 캡처 실패:', result.error);
-      return null;
-    }
-  } catch (error) {
-    console.error('[Recorder] 스크린샷 캡처 중 오류:', error);
-    return null;
-  }
-}
-
-/**
- * 대기 액션을 이벤트로 추가
- */
-function addWaitAction(waitType, timeValue, path, elementInfo = null) {
-  const timestamp = Date.now();
-  let eventRecord = null;
-  
-  if (waitType === 'wait') {
-    // 시간 대기
-    eventRecord = {
-      version: 2,
-      timestamp,
-      action: 'wait',
-      value: String(timeValue || 1000),
-      tag: null,
-      selectorCandidates: [],
-      iframeContext: null,
-      page: { url: '', title: '' },
-      frame: { iframeContext: null },
-      target: null,
-      clientRect: null,
-      metadata: {
-        schemaVersion: 2,
-        userAgent: navigator.userAgent
-      },
-      manual: {
-        id: `wait-${timestamp}`,
-        type: 'wait',
-        resultName: null,
-        attributeName: null
-      },
-      primarySelector: null,
-      primarySelectorType: null
-    };
-  } else if (waitType === 'waitForElement' && path && path.length > 0) {
-    // 요소 대기
-    const selectors = path.map((item, idx) => {
-      if (!item || !item.selector) return null;
-      const type = item.type || inferSelectorType(item.selector);
-      return {
-        selector: item.selector,
-        type,
-        textValue: item.textValue || null,
-        xpathValue: item.xpathValue || null,
-        matchMode: item.matchMode || null,
-        score: idx === path.length - 1 ? 100 : 80
-      };
-    }).filter(Boolean);
-    
-    if (!selectors.length) {
-      alert('셀렉터를 찾을 수 없습니다.');
-      return;
-    }
-    
-    const targetEntry = selectors[selectors.length - 1];
-    const iframeContext = path[path.length - 1]?.iframeContext || elementInfo?.iframeContext || null;
-    
-    // elementInfo에서 추가 정보 가져오기
-    const targetTag = elementInfo?.tag || null;
-    const clientRect = elementInfo?.clientRect || null;
-    const currentUrl = window.location.href || '';
-    const currentTitle = document.title || '';
-    const pageInfo = elementInfo?.page || { url: currentUrl, title: currentTitle };
-    
-    eventRecord = {
-      version: 2,
-      timestamp,
-      action: 'waitForElement',
-      value: null, // waitForElement는 요소 대기이므로 value는 null
-      tag: targetTag,
-      selectorCandidates: elementInfo?.selectorCandidates || selectors,
-      iframeContext,
-      page: pageInfo,
-      frame: { iframeContext },
-      target: targetTag ? { tag: targetTag, id: elementInfo?.id || null, className: elementInfo?.className || null } : null,
-      clientRect: clientRect,
-      metadata: {
-        schemaVersion: 2,
-        userAgent: navigator.userAgent
-      },
-      manual: {
-        id: `wait-${timestamp}`,
-        type: 'waitForElement',
-        resultName: null,
-        attributeName: null
-      },
-      primarySelector: targetEntry.selector,
-      primarySelectorType: targetEntry.type,
-      primarySelectorText: targetEntry.textValue,
-      primarySelectorXPath: targetEntry.xpathValue,
-      primarySelectorMatchMode: targetEntry.matchMode
-    };
-  } else {
-    alert('대기 액션을 생성할 수 없습니다.');
-    return;
-  }
-  
-  // 이벤트 추가
-  const normalized = normalizeEventRecord(eventRecord);
-  allEvents.push(normalized);
-  updateCode({ preloadedEvents: allEvents });
-  syncTimelineFromEvents(allEvents, { selectLast: true });
-  
-  // 실시간으로 TC step으로 저장
-  saveEventAsStep(normalized);
-  
-  logMessage(`${waitType} 액션을 추가했습니다.`, 'success');
-}
-
-/**
- * 상호작용 액션을 이벤트로 추가
- */
-function addInteractionAction(interactionType, path, value) {
-  const timestamp = Date.now();
-  
-  if (!path || !path.length) {
-    alert('요소를 선택하세요.');
-    return;
-  }
-  
-  const selectors = path.map((item, idx) => {
-    if (!item || !item.selector) return null;
-    const type = item.type || inferSelectorType(item.selector);
-    return {
-      selector: item.selector,
-      type,
-      textValue: item.textValue || null,
-      xpathValue: item.xpathValue || null,
-      matchMode: item.matchMode || null,
-      score: idx === path.length - 1 ? 100 : 80
-    };
-  }).filter(Boolean);
-  
-  if (!selectors.length) {
-    alert('셀렉터를 찾을 수 없습니다.');
-    return;
-  }
-  
-  const targetEntry = selectors[selectors.length - 1];
-  const iframeContext = path[path.length - 1]?.iframeContext || null;
-  
-  const eventRecord = {
-    version: 2,
-    timestamp,
-    action: interactionType,
-    value: value || null,
-    tag: null,
-    selectorCandidates: selectors,
-    iframeContext,
-    page: { url: '', title: '' },
-    frame: { iframeContext },
-    target: null,
-    clientRect: null,
-    metadata: {
-      schemaVersion: 2,
-      userAgent: navigator.userAgent
-    },
-    manual: {
-      id: `interaction-${timestamp}`,
-      type: interactionType,
-      resultName: null,
-      attributeName: null
-    },
-    primarySelector: targetEntry.selector,
-    primarySelectorType: targetEntry.type,
-    primarySelectorText: targetEntry.textValue,
-    primarySelectorXPath: targetEntry.xpathValue,
-    primarySelectorMatchMode: targetEntry.matchMode
-  };
-  
-  // 이벤트 추가
-  const normalized = normalizeEventRecord(eventRecord);
-  allEvents.push(normalized);
-  updateCode({ preloadedEvents: allEvents });
-  syncTimelineFromEvents(allEvents, { selectLast: true });
-  
-  // 실시간으로 TC step으로 저장
-  saveEventAsStep(normalized);
-  
-  logMessage(`${interactionType} 액션을 추가했습니다.`, 'success');
-}
-
-/**
- * 선택 미리보기 라인 생성
- */
-function buildSelectionPreviewLines(path, framework, language) {
-  if (!path || !path.length) return [];
-  
-  const lines = [];
-  const lastItem = path[path.length - 1];
-  if (!lastItem || !lastItem.selector) return [];
-  
-  const selector = lastItem.selector;
-  const selectorType = lastItem.type || inferSelectorType(selector);
-  
-  if (framework === 'playwright') {
-    if (language === 'python' || language === 'python-class') {
-      if (selectorType === 'css' || selectorType === 'xpath') {
-        lines.push(`page.locator("${selector}")`);
-      } else if (selectorType === 'id') {
-        lines.push(`page.locator("#${selector.replace(/^#/, '')}")`);
-      } else {
-        lines.push(`page.locator("${selector}")`);
-      }
-    } else if (language === 'javascript' || language === 'typescript') {
-      if (selectorType === 'css' || selectorType === 'xpath') {
-        lines.push(`page.locator("${selector}")`);
-      } else {
-        lines.push(`page.locator("${selector}")`);
-      }
-    }
-  } else if (framework === 'selenium') {
-    if (language === 'python' || language === 'python-class') {
-      if (selectorType === 'id') {
-        lines.push(`driver.find_element(By.ID, "${selector.replace(/^#/, '')}")`);
-      } else if (selectorType === 'css') {
-        lines.push(`driver.find_element(By.CSS_SELECTOR, "${selector}")`);
-      } else if (selectorType === 'xpath') {
-        lines.push(`driver.find_element(By.XPATH, "${selector}")`);
-      } else {
-        lines.push(`driver.find_element(By.CSS_SELECTOR, "${selector}")`);
-      }
-    }
-  } else if (framework === 'cypress') {
-    if (selectorType === 'css' || selectorType === 'id') {
-      lines.push(`cy.get("${selector}")`);
-    } else {
-      lines.push(`cy.get("${selector}")`);
-    }
-  }
-  
-  return lines.length > 0 ? lines : [`// 선택 경로: ${path.length}개 요소`];
-}
+// handleVerifyAction, handleWaitAction, handleInteractionAction 함수들이 recorder-actions.js로 이동됨
+// addVerifyAction, captureVerifyImageScreenshot, addWaitAction, addInteractionAction 함수들이 recorder-actions.js로 이동됨
 
 // ============================================================================
-// 리플레이 기능 (popup.js 이식) - 7단계
+// 리플레이 기능 (recorder-replay.js 모듈로 이동됨)
 // ============================================================================
 
 /**
- * 리플레이 상태 초기화
- */
-function resetReplayState() {
-  if (replayState.navigationGuard) {
-    clearTimeout(replayState.navigationGuard);
-  }
-  if (replayState.scheduledTimer) {
-    clearTimeout(replayState.scheduledTimer);
-  }
-  replayState = {
-    running: false,
-    events: [],
-    index: 0,
-    sessionId: null,
-    pending: false,
-    awaitingNavigation: false,
-    awaitingContent: false,
-    navigationGuard: null,
-    scheduledTimer: null
-  };
-}
-
-/**
- * 다음 스텝 스케줄링
- */
-function scheduleNextStep(delayMs) {
-  if (!replayState.running) return;
-  if (replayState.scheduledTimer) {
-    clearTimeout(replayState.scheduledTimer);
-  }
-  replayState.scheduledTimer = setTimeout(() => {
-    replayState.scheduledTimer = null;
-    sendReplayStep();
-  }, Math.max(0, delayMs || 0));
-}
-
-/**
- * 리플레이 완료
- */
-function finishReplay() {
-  const wasRunning = replayState.running;
-  resetReplayState();
-  if (wasRunning) {
-    logMessage('✓ 리플레이 완료', 'success');
-  }
-}
-
-/**
- * 리플레이 중단
- */
-function abortReplay(reason) {
-  const message = reason || '알 수 없는 오류로 리플레이가 중단되었습니다.';
-  logMessage(`✗ 리플레이 종료 - ${message}`, 'error');
-  resetReplayState();
-}
-
-/**
- * 리플레이 스텝 전송
- */
-function sendReplayStep() {
-  if (!replayState.running) return;
-  if (replayState.pending) return;
-  if (replayState.index >= replayState.events.length) {
-    finishReplay();
-    return;
-  }
-  
-  const currentEvent = replayState.events[replayState.index];
-  if (!replayState.sessionId) {
-    abortReplay('대상 세션을 찾을 수 없습니다.');
-    return;
-  }
-  
-  replayState.pending = true;
-  if (replayState.navigationGuard) {
-    clearTimeout(replayState.navigationGuard);
-    replayState.navigationGuard = null;
-  }
-  
-  // WebSocket을 통해 Content Script에 리플레이 스텝 전송
-  if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-    wsConnection.send(JSON.stringify({
-      type: 'replay-execute-step',
-      sessionId: replayState.sessionId,
-      event: currentEvent,
-      index: replayState.index,
-      total: replayState.events.length,
-      timeoutMs: 10000
-    }));
-    
-    // 타임아웃 설정 (응답이 없으면 다음 스텝으로 진행)
-    setTimeout(() => {
-      if (replayState.pending && replayState.running) {
-        replayState.pending = false;
-        replayState.index++;
-        if (replayState.index >= replayState.events.length) {
-          finishReplay();
-        } else {
-          scheduleNextStep(STEP_DELAY_MS);
-        }
-      }
-    }, 10000);
-  } else {
-    abortReplay('WebSocket 연결이 끊어졌습니다.');
-  }
-}
-
-/**
- * 리플레이 스텝 결과 처리
- */
-function handleReplayStepResult(msg) {
-  if (!replayState.running) return;
-  const expectedIndex = replayState.index;
-  const msgIndex = msg.stepIndex !== undefined ? msg.stepIndex : (msg.step !== undefined ? (msg.step - 1) : expectedIndex);
-
-  if (msgIndex !== expectedIndex) {
-    // 다른 스텝의 응답이면 무시
-    return;
-  }
-
-  replayState.pending = false;
-
-  if (!msg.ok) {
-    abortReplay(msg.reason || 'step failed');
-    return;
-  }
-
-  replayState.index = msgIndex + 1;
-
-  if (replayState.index >= replayState.events.length) {
-    finishReplay();
-    return;
-  }
-
-  if (msg.navigation) {
-    replayState.awaitingNavigation = true;
-    replayState.awaitingContent = true;
-    if (replayState.navigationGuard) {
-      clearTimeout(replayState.navigationGuard);
-    }
-    replayState.navigationGuard = setTimeout(() => {
-      replayState.navigationGuard = null;
-      abortReplay('페이지 로딩이 너무 오래 걸립니다.');
-    }, MAX_NAVIGATION_WAIT_MS);
-    return;
-  }
-
-  scheduleNextStep(STEP_DELAY_MS);
-}
-
-/**
- * 액션 타임라인 빌드
- */
-function buildActionTimeline(events, manualList) {
-  const timeline = [];
-  let sequence = 0;
-  let maxEventTimestamp = 0;
-  
-  if (Array.isArray(events)) {
-    events.forEach((event) => {
-      const normalizedEvent = normalizeEventRecord(event);
-      const timestamp = typeof normalizedEvent.timestamp === 'number' ? normalizedEvent.timestamp : 0;
-      if (timestamp > maxEventTimestamp) {
-        maxEventTimestamp = timestamp;
-      }
-      timeline.push({
-        kind: 'event',
-        time: timestamp,
-        event: normalizedEvent,
-        sequence: sequence++
-      });
-    });
-  }
-  
-  if (Array.isArray(manualList)) {
-    manualList.forEach((action) => {
-      if (!action || typeof action !== 'object') return;
-      const actionTime = typeof action.createdAt === 'number' ? action.createdAt : maxEventTimestamp + (sequence * 100);
-      timeline.push({
-        kind: 'manual',
-        time: actionTime,
-        action: action,
-        sequence: sequence++
-      });
-    });
-  }
-  
-  timeline.sort((a, b) => {
-    if (a.time !== b.time) return a.time - b.time;
-    return a.sequence - b.sequence;
-  });
-  
-  return timeline;
-}
-
-/**
- * 수동 액션을 이벤트로 변환
- */
-function convertManualActionToEvent(action) {
-  if (!action || typeof action !== 'object') return null;
-  // 간단한 구현 - 나중에 8단계에서 완성
-  return {
-    action: action.actionType || 'click',
-    target: action.path && action.path.length > 0 ? action.path[action.path.length - 1] : null,
-    value: action.value || null,
-    timestamp: action.createdAt || Date.now(),
-    manual: true
-  };
-}
-
-/**
- * 리플레이 큐 빌드
- */
-function buildReplayQueue(events, manualList) {
-  const timeline = buildActionTimeline(events, manualList);
-  const queue = [];
-  timeline.forEach((entry) => {
-    if (entry.kind === 'event' && entry.event) {
-      queue.push(entry.event);
-    } else if (entry.kind === 'manual' && entry.action) {
-      const manualEvent = convertManualActionToEvent(entry.action);
-      if (manualEvent) {
-        queue.push(manualEvent);
-      }
-    }
-  });
-  return queue;
-}
-
-/**
- * 리플레이 시작
+ * 리플레이 시작 (래퍼 함수)
  */
 function startReplay() {
-  if (replayState.running) {
-    alert('리플레이가 이미 진행 중입니다. 잠시 후 다시 시도하세요.');
-    return;
-  }
+  const sendReplayStepWrapper = () => {
+    sendReplayStep(
+      wsConnection,
+      () => finishReplay(logMessage),
+      (reason) => abortReplay(reason, logMessage),
+      (delayMs) => scheduleReplayNextStep(delayMs, sendReplayStepWrapper)
+    );
+  };
   
-  const replayQueue = buildReplayQueue(allEvents, manualActions);
-  const normalizedQueue = replayQueue.map((item) => normalizeEventRecord(item));
-  
-  if (normalizedQueue.length === 0) {
-    alert('재생할 이벤트가 없습니다.');
-    return;
+  const result = startReplayModule(allEvents, manualActions, normalizeEventRecord, wsConnection, logMessage);
+  if (result) {
+    // 첫 스텝 실행
+    scheduleReplayNextStep(500, sendReplayStepWrapper);
   }
-
-  // 테스트 URL 가져오기
-  const testUrlInput = document.getElementById('test-url');
-  const startUrl = testUrlInput ? testUrlInput.value.trim() : '';
-  
-  if (!startUrl) {
-    alert('테스트 URL을 입력하세요.');
-    return;
-  }
-
-  // 로그 초기화
-  if (logEntries) {
-    logEntries.innerHTML = '';
-  }
-  logMessage(`리플레이 시작 준비 중… (총 ${normalizedQueue.length}개 스텝)`, 'info');
-
-  // WebSocket 연결 확인
-  if (!wsConnection || wsConnection.readyState !== WebSocket.OPEN) {
-    alert('WebSocket 연결이 필요합니다. 먼저 녹화를 시작하세요.');
-    return;
-  }
-
-  // 세션 ID 생성 (또는 기존 세션 사용)
-  const sessionId = `replay-${Date.now()}`;
-  
-  // 리플레이 상태 초기화
-  resetReplayState();
-  replayState.running = true;
-  replayState.events = normalizedQueue;
-  replayState.index = 0;
-  replayState.sessionId = sessionId;
-  replayState.pending = false;
-  replayState.awaitingNavigation = false;
-  replayState.awaitingContent = false;
-
-  // 리플레이 시작 메시지 전송
-  wsConnection.send(JSON.stringify({
-    type: 'replay-start',
-    sessionId: sessionId,
-    url: startUrl,
-    events: normalizedQueue
-  }));
-
-  // 첫 스텝 실행
-  scheduleNextStep(500); // 초기 지연
 }
 
-// 요소 하이라이트 처리 (마우스 오버 시)
+// 요소 하이라이트 처리 (래퍼 함수)
 function handleElementHover(data) {
-  if (!selectorList) return;
-  
-  const element = data.element || {};
-  const selectors = data.selectors || [];
-  
-  // 요소 정보 표시
-  const elementInfo = document.createElement('div');
-  elementInfo.className = 'element-hover-info';
-  elementInfo.style.cssText = 'padding: 12px; margin-bottom: 12px; background: var(--vscode-input-bg); border: 1px solid var(--vscode-border); border-radius: 6px;';
-  
-  const tagEl = document.createElement('div');
-  tagEl.style.cssText = 'font-weight: 600; color: var(--vscode-text); margin-bottom: 4px;';
-  tagEl.textContent = `<${element.tag || 'unknown'}>`;
-  
-  if (element.id) {
-    const idEl = document.createElement('div');
-    idEl.style.cssText = 'font-size: 12px; color: var(--vscode-text-secondary); margin-bottom: 2px;';
-    idEl.textContent = `#${element.id}`;
-    elementInfo.appendChild(idEl);
-  }
-  
-  if (element.classes && element.classes.length > 0) {
-    const classEl = document.createElement('div');
-    classEl.style.cssText = 'font-size: 12px; color: var(--vscode-text-secondary); margin-bottom: 2px;';
-    classEl.textContent = `.${element.classes.slice(0, 3).join('.')}`;
-    elementInfo.appendChild(classEl);
-  }
-  
-  if (element.text) {
-    const textEl = document.createElement('div');
-    textEl.style.cssText = 'font-size: 11px; color: var(--vscode-text-secondary); margin-top: 4px; font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;';
-    textEl.textContent = `"${element.text}"`;
-    elementInfo.appendChild(textEl);
-  }
-  
-  elementInfo.insertBefore(tagEl, elementInfo.firstChild);
-  
-  // 셀렉터 리스트 표시
-  const tempContainer = document.createElement('div');
-  tempContainer.appendChild(elementInfo);
-  
-  if (selectors.length > 0) {
-    renderSelectorItems(selectors, tempContainer);
-  } else {
-    const emptyMsg = document.createElement('div');
-    emptyMsg.className = 'selector-empty';
-    emptyMsg.textContent = '셀렉터 후보가 없습니다.';
-    tempContainer.appendChild(emptyMsg);
-  }
-  
-  // 기존 내용 교체
-  selectorList.innerHTML = '';
-  selectorList.appendChild(tempContainer);
-  
-  // iframe 경고 표시
-  if (element.iframeContext) {
-    showIframe(element.iframeContext);
-  } else {
-    showIframe(null);
-  }
+  handleElementHoverModule(
+    data,
+    selectorList,
+    renderSelectorItems,
+    (ctx) => showIframeModule(ctx, iframeBanner)
+  );
 }
 
-// 요소 하이라이트 해제
+// 원래 함수 정의는 recorder-ui.js로 이동됨
+
+// 요소 하이라이트 해제 (래퍼 함수)
 function clearElementHover() {
-  if (!selectorList) return;
-  
-  // 하이라이트 정보만 제거하고, 선택된 이벤트의 셀렉터는 유지
-  const hoverInfo = selectorList.querySelector('.element-hover-info');
-  if (hoverInfo) {
-    hoverInfo.remove();
-  }
-  
-  // 선택된 이벤트가 있으면 해당 셀렉터 표시
-  if (currentEventIndex >= 0 && currentEventIndex < allEvents.length) {
-    const selectedEvent = allEvents[currentEventIndex];
-    showSelectors(selectedEvent.selectorCandidates || [], selectedEvent, currentEventIndex);
-  } else {
-    // 선택된 이벤트가 없으면 빈 상태
-    selectorList.innerHTML = '';
-    const emptyMsg = document.createElement('div');
-    emptyMsg.className = 'selector-empty';
-    emptyMsg.textContent = '요소에 마우스를 올려보세요.';
-    selectorList.appendChild(emptyMsg);
-  }
-  
-  showIframe(null);
+  clearElementHoverModule(
+    selectorList,
+    currentEventIndex,
+    allEvents,
+    showSelectors,
+    (ctx) => showIframeModule(ctx, iframeBanner)
+  );
 }
+
+// 원래 함수 정의는 recorder-ui.js로 이동됨
 
 // 코드 업데이트
 /**
@@ -4748,194 +1294,83 @@ function initCodeEditor() {
 }
 
 // 녹화 시작
+// 녹화 시작 (래퍼 함수)
 async function startRecording() {
-  if (recording) return;
-
-  // TC ID가 있을 때 steps 초기화/추가 선택
-  const tcId = tcIdInput?.value;
-  if (tcId) {
-    // electronAPI 재확인
-    if (!electronAPI) {
-      initElectronAPI();
-    }
-    
-    if (electronAPI) {
-      try {
-        // TC 정보 조회하여 실제로 steps가 있는지 확인
-        const tcResponse = await electronAPI.invoke('api-get-test-case', parseInt(tcId, 10));
-        
-        if (tcResponse && tcResponse.success && tcResponse.data) {
-          const tc = tcResponse.data;
-          let steps = [];
-          
-          // steps 파싱
-          if (tc.steps) {
-            try {
-              steps = typeof tc.steps === 'string' ? JSON.parse(tc.steps) : tc.steps;
-            } catch (e) {
-              steps = [];
-            }
-          }
-          
-          // steps가 실제로 있는 경우에만 확인 팝업 표시
-          if (Array.isArray(steps) && steps.length > 0) {
-            const choice = await new Promise((resolve) => {
-              const shouldClear = confirm(
-                'TC에 기존 steps가 있습니다.\n\n' +
-                '확인: 기존 steps를 초기화하고 새로 시작\n' +
-                '취소: 기존 steps 뒤에 추가하여 이어서 녹화'
-              );
-              resolve(shouldClear);
-            });
-
-            if (choice) {
-              // 기존 steps 초기화
-              const result = await electronAPI.invoke('clear-tc-steps', parseInt(tcId, 10));
-              if (result && result.success) {
-                console.log('[Recorder] ✅ TC steps 초기화 완료');
-                logMessage('TC steps 초기화 완료', 'info');
-              } else {
-                console.warn('[Recorder] ⚠️ TC steps 초기화 실패:', result?.error);
-                logMessage('TC steps 초기화 실패: ' + (result?.error || '알 수 없는 오류'), 'error');
-              }
-            } else {
-              console.log('[Recorder] 기존 steps 유지하고 이어서 녹화');
-              logMessage('기존 steps 뒤에 추가하여 녹화', 'info');
-            }
-          } else {
-            console.log('[Recorder] TC에 기존 steps가 없음 - 바로 녹화 시작');
-          }
-        } else {
-          console.warn('[Recorder] ⚠️ TC 정보 조회 실패:', tcResponse?.error);
-        }
-      } catch (error) {
-        console.error('[Recorder] ❌ TC steps 확인 중 오류:', error);
-        // 오류가 발생해도 녹화는 계속 진행
-      }
-    }
-  }
-
-  recording = true;
-  allEvents = [];
-  currentEventIndex = -1;
-
-  if (startBtn) startBtn.disabled = true;
-  if (stopBtn) stopBtn.disabled = false;
-  if (timeline) timeline.innerHTML = '';
-  if (selectorList) selectorList.innerHTML = '';
-  if (logEntries) logEntries.innerHTML = '';
-
-  setCodeText('');
-  updateDeleteButtonState();
-  
-  // 빈 상태 메시지 표시
-  updateStepsEmptyState();
-
-  // WebSocket 연결 확인 및 재시도
-  if (!wsConnection || wsConnection.readyState !== WebSocket.OPEN) {
-    console.warn('[Recorder] WebSocket이 연결되지 않았습니다. 연결을 시도합니다...');
-    logMessage('WebSocket 연결 시도 중...', 'info');
-    
-    // WebSocket 연결 시도
-    connectWebSocket();
-    
-    // 연결 대기 (최대 2초)
-    let waitCount = 0;
-    const maxWait = 20; // 2초 (100ms * 20)
-    
-    while ((!wsConnection || wsConnection.readyState !== WebSocket.OPEN) && waitCount < maxWait) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-      waitCount++;
-    }
-    
-    if (!wsConnection || wsConnection.readyState !== WebSocket.OPEN) {
-      console.warn('[Recorder] WebSocket 연결 실패. 녹화를 시작할 수 없습니다.');
-      logMessage('WebSocket 연결이 필요합니다. 브라우저를 먼저 열어주세요.', 'error');
-      recording = false;
-      if (startBtn) startBtn.disabled = false;
-      if (stopBtn) stopBtn.disabled = true;
-      return;
-    }
-  }
-  
-  // WebSocket으로 녹화 시작 신호 전송
-  const projectId = projectIdInput?.value;
   try {
-    wsConnection.send(JSON.stringify({
-      type: 'recording-start',
-      tcId: tcId ? parseInt(tcId, 10) : null,
-      projectId: projectId ? parseInt(projectId, 10) : null,
-      timestamp: Date.now()
-    }));
-    console.log('[Recorder] WebSocket으로 녹화 시작 신호 전송');
+    console.log('[Recorder] startRecording 함수 호출됨');
+    const stateRefs = {
+      recording,
+      allEvents,
+      currentEventIndex,
+      wsConnection,
+      startBtn,
+      stopBtn,
+      timeline,
+      selectorList,
+      logEntries
+    };
+    
+    const tcId = tcIdInput?.value;
+    const projectId = projectIdInput?.value;
+    
+    console.log('[Recorder] startRecordingModule 호출 전:', { tcId, projectId });
+    
+    await startRecordingModule(
+      stateRefs,
+      logMessage,
+      connectWebSocket,
+      setCodeText,
+      updateDeleteButtonState,
+      updateStepsEmptyState,
+      tcId,
+      projectId,
+      electronAPI,
+      initElectronAPI
+    );
+    
+    // 상태 동기화
+    recording = stateRefs.recording;
+    allEvents = stateRefs.allEvents;
+    currentEventIndex = stateRefs.currentEventIndex;
+    wsConnection = stateRefs.wsConnection;
+    
+    console.log('[Recorder] startRecording 완료:', { recording, allEventsLength: allEvents.length });
   } catch (error) {
-    console.error('[Recorder] WebSocket 메시지 전송 실패:', error);
-    logMessage('녹화 시작 신호 전송 실패: ' + error.message, 'error');
+    console.error('[Recorder] startRecording 오류:', error);
+    if (logMessage) {
+      logMessage('녹화 시작 중 오류: ' + error.message, 'error');
+    }
+    // 에러 발생 시 상태 복구
     recording = false;
     if (startBtn) startBtn.disabled = false;
     if (stopBtn) stopBtn.disabled = true;
-    return;
+    throw error;
   }
-
-  logMessage('녹화 시작', 'success');
 }
 
-// 녹화 중지
+// 원래 함수 정의는 recorder-core.js로 이동됨
+
+// 녹화 중지 (래퍼 함수)
 async function stopRecording() {
-  if (!recording) return;
-
-  // 녹화 중지 전에 코드 저장을 위해 recording 상태를 유지한 채로 updateCode 호출
-  // updateCode 내부에서 코드 저장 후 recording을 false로 설정
-  const wasRecording = recording;
+  const stateRefs = {
+    recording,
+    wsConnection,
+    startBtn,
+    stopBtn
+  };
   
-  if (startBtn) startBtn.disabled = false;
-  if (stopBtn) stopBtn.disabled = true;
-
-  // WebSocket으로 녹화 중지 신호 전송
-  if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-    wsConnection.send(JSON.stringify({
-      type: 'recording-stop',
-      timestamp: Date.now()
-    }));
-    console.log('[Recorder] WebSocket으로 녹화 중지 신호 전송');
-  }
-
-  // 코드 업데이트 및 저장 (recording이 true인 상태에서 호출하여 저장되도록 함)
-  updateCode();
+  await stopRecordingModule(
+    stateRefs,
+    logMessage,
+    updateCode
+  );
   
-  // 실시간 저장이 이미 활성화되어 있으므로, Stop 시에는 동기화를 건너뜀
-  // (실시간으로 이미 저장된 steps가 있으면 중복 저장을 방지)
-  // 실시간 저장이 실패한 경우를 대비하여 동기화는 유지하되, 서버 측에서 중복 체크 수행
-  if (allEvents.length > 0) {
-    try {
-      // 실시간 저장이 이미 완료되었는지 확인하기 위해 동기화 시도
-      // 서버 측에서 이미 저장된 steps가 있으면 건너뛰도록 처리됨
-      logMessage('녹화된 이벤트를 TC에 저장 중...', 'info');
-      const syncResult = await syncAllEventsToTC();
-      if (syncResult && syncResult.success) {
-        console.log(`[Recorder] ✅ 녹화 중지: ${syncResult.stepCount}개의 steps가 TC에 저장되었습니다`);
-        logMessage(`녹화 완료: ${syncResult.stepCount}개의 steps 저장됨`, 'success');
-      } else {
-        // 실시간 저장이 이미 완료되어 sync가 건너뛴 경우
-        console.log('[Recorder] 실시간 저장이 이미 완료되었습니다.');
-        logMessage('녹화 완료 (이미 저장됨)', 'success');
-      }
-    } catch (error) {
-      console.error('[Recorder] ❌ 녹화 중지 시 TC 동기화 중 오류:', error);
-      logMessage('TC 저장 중 오류: ' + error.message, 'error');
-    }
-  } else {
-    console.log('[Recorder] 저장할 이벤트가 없습니다.');
-    logMessage('녹화된 이벤트가 없습니다', 'info');
-  }
-  
-  // 코드 저장 후 recording 상태 변경
-  recording = false;
-  
-  logMessage('녹화 중지', 'info');
-  
-  // allEvents는 초기화하지 않음 (사용자가 다시 확인할 수 있도록 유지)
+  // 상태 동기화
+  recording = stateRefs.recording;
+  wsConnection = stateRefs.wsConnection;
 }
+
+// 원래 함수 정의는 recorder-core.js로 이동됨
 
 // 초기화
 function reset() {
@@ -5024,15 +1459,9 @@ async function deleteCurrentEvent() {
 const deleteSelectedEvent = deleteCurrentEvent;
 
 // 로그 메시지 표시
+// 로그 메시지 출력 (래퍼 함수)
 function logMessage(message, type = 'info') {
-  if (!logEntries) return;
-
-  const entry = document.createElement('div');
-  entry.className = `log-entry log-${type}`;
-  entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
-  
-  logEntries.appendChild(entry);
-  logEntries.scrollTop = logEntries.scrollHeight;
+  logMessageModule(message, type, logEntries);
 }
 
 // 녹화 데이터 전송
@@ -5094,573 +1523,157 @@ async function sendRecordingData() {
 
 // AI 코드 리뷰
 async function performAiCodeReview() {
-  if (!aiReviewBtn || !codeOutput) return;
-
-  const code = codeEditor ? codeEditor.getValue() : codeOutput.value;
-  if (!code || code.trim().length === 0) {
-    alert('리뷰할 코드가 없습니다.');
-    return;
-  }
-
-  // AI 설정 확인 (간단한 구현)
-  const aiSettings = {
-    endpoint: document.getElementById('ai-endpoint')?.value || '',
-    apiKey: document.getElementById('ai-api-key')?.value || '',
-    model: document.getElementById('ai-model')?.value || ''
-  };
-
-  if (!aiSettings.endpoint || !aiSettings.apiKey) {
-    alert('AI 설정을 먼저 입력하세요.');
-    return;
-  }
-
-  if (aiReviewStatusEl) {
-    aiReviewStatusEl.textContent = '리뷰 중...';
-    aiReviewStatusEl.className = 'code-review-status info';
-  }
-
-  try {
-    const result = await getAiCodeReview(
-      code,
-      selectedFramework,
-      selectedLanguage,
-      '',
-      allEvents,
-      aiSettings
-    );
-
-    if (result.success && result.data) {
-      if (aiReviewStatusEl) {
-        aiReviewStatusEl.textContent = '리뷰 완료';
-        aiReviewStatusEl.className = 'code-review-status success';
-      }
-
-      // 리뷰 결과 표시 (간단한 구현)
-      if (result.data.updatedCode) {
-        setCodeText(result.data.updatedCode);
-      }
-
-      if (result.data.summary) {
-        logMessage(`AI 리뷰: ${result.data.summary}`, 'info');
-      }
-    } else {
-      if (aiReviewStatusEl) {
-        aiReviewStatusEl.textContent = `오류: ${result.error || '알 수 없는 오류'}`;
-        aiReviewStatusEl.className = 'code-review-status error';
-      }
-    }
-  } catch (error) {
-    console.error('[Recorder] AI 리뷰 오류:', error);
-    if (aiReviewStatusEl) {
-      aiReviewStatusEl.textContent = `오류: ${error.message}`;
-      aiReviewStatusEl.className = 'code-review-status error';
-    }
-  }
+  await performAiCodeReviewModule(
+    codeEditor,
+    codeOutput,
+    aiReviewBtn,
+    aiReviewStatusEl,
+    selectedFramework,
+    selectedLanguage,
+    allEvents,
+    setCodeText,
+    logMessage
+  );
 }
 
 // Action 메뉴 토글
+// Action 메뉴 설정 (래퍼 함수)
 function setupActionMenu() {
-  const actionBtn = document.getElementById('action-btn');
-  const actionMenu = document.getElementById('action-menu');
-  
-  if (!actionBtn || !actionMenu) return;
-
-  actionBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    actionMenu.classList.toggle('hidden');
-  });
-
-  // 메뉴 외부 클릭 시 닫기
-  document.addEventListener('click', (e) => {
-    if (!actionMenu.contains(e.target) && !actionBtn.contains(e.target)) {
-      actionMenu.classList.add('hidden');
-    }
-  });
-
-  // Action 메뉴 항목 클릭 처리
-  actionMenu.addEventListener('click', (e) => {
-    const button = e.target.closest('button[data-action-type]');
-    if (!button) return;
-
-    const actionType = button.dataset.actionType;
-    const action = button.dataset.action;
-    
-    if (actionType === 'interaction') {
-      handleInteractionAction(action);
-    } else if (actionType === 'verify') {
-      handleVerifyAction(action);
-    } else if (actionType === 'wait') {
-      handleWaitAction(action);
-    }
-
-    actionMenu.classList.add('hidden');
+  setupActionMenuModule({
+    handleInteractionAction,
+    handleVerifyAction,
+    handleWaitAction,
+    buildSelectionPathArrayWrapper,
+    startSelectionWorkflowWrapper,
+    startSimpleElementSelectionWrapper,
+    selectionState,
+    setElementStatusWrapper,
+    addInteractionAction,
+    addVerifyAction,
+    addWaitAction,
+    normalizeEventRecord,
+    allEvents,
+    updateCode,
+    syncTimelineFromEvents,
+    saveEventAsStep,
+    logMessage,
+    electronAPI,
+    initElectronAPI,
+    captureVerifyImageScreenshot
   });
 }
 
-// 오버레이 토글
+// 오버레이 토글 (래퍼 함수)
 function setupOverlayToggle() {
-  const overlayToggleBtn = document.getElementById('overlay-toggle-btn');
-  
-  if (!overlayToggleBtn) return;
-
-  let overlayVisible = false;
-
-  overlayToggleBtn.addEventListener('click', () => {
-    overlayVisible = !overlayVisible;
-    overlayToggleBtn.setAttribute('aria-pressed', overlayVisible.toString());
-    
-    // WebSocket으로 오버레이 토글 신호 전송
-    if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-      wsConnection.send(JSON.stringify({
-        type: 'toggle-overlay',
-        visible: overlayVisible,
-        timestamp: Date.now()
-      }));
-    }
-
-    logMessage(`오버레이 ${overlayVisible ? '표시' : '숨김'}`, 'info');
+  setupOverlayToggleModule({
+    wsConnection,
+    logMessage
   });
 }
 
-// 이벤트 리스너 등록
-/**
- * AI 설정 이벤트 리스너 설정
- */
+// AI 설정 이벤트 리스너 설정 (래퍼 함수)
 function setupAiSettings() {
-  // AI 설정 저장 버튼
-  if (aiSettingsSaveBtn) {
-    aiSettingsSaveBtn.addEventListener('click', () => {
-      if (!aiSettingsLoaded && !aiSettingsDirty) {
-        loadAiSettingsFromStorage();
-        return;
-      }
-      saveAiSettings();
-    });
-  }
-
-  // AI 설정 입력 필드 변경 감지
-  [aiEndpointInput, aiApiKeyInput, aiModelInput].forEach((input) => {
-    if (!input) return;
-    input.addEventListener('input', markAiSettingsDirty);
+  setupAiSettingsModule({
+    aiSettingsSaveBtn,
+    aiEndpointInput,
+    aiApiKeyInput,
+    aiModelInput,
+    aiSettingsStatusEl,
+    aiSettingsLoaded,
+    aiSettingsDirty,
+    loadAiSettingsFromStorage,
+    saveAiSettings,
+    markAiSettingsDirty,
+    refreshSelectorListForCurrentEvent
   });
-
-  // 초기 로드
-  loadAiSettingsFromStorage();
 }
 
+// 이벤트 리스너 설정 (래퍼 함수)
 function setupEventListeners() {
-  console.log('[Recorder] 이벤트 리스너 설정 시작');
-  console.log('[Recorder] startBtn:', startBtn);
-  console.log('[Recorder] stopBtn:', stopBtn);
-  
-  if (startBtn) {
-    startBtn.addEventListener('click', () => {
-      console.log('[Recorder] Record Start 버튼 클릭됨');
-      startRecording();
-    });
-  } else {
-    console.error('[Recorder] startBtn이 null입니다. DOM 요소를 찾을 수 없습니다.');
-  }
-
-  if (stopBtn) {
-    stopBtn.addEventListener('click', () => {
-      console.log('[Recorder] Stop 버튼 클릭됨');
-      stopRecording();
-    });
-  } else {
-    console.error('[Recorder] stopBtn이 null입니다. DOM 요소를 찾을 수 없습니다.');
-  }
-
-  if (resetBtn) {
-    resetBtn.addEventListener('click', reset);
-  }
-
-  if (deleteEventBtn) {
-    deleteEventBtn.addEventListener('click', deleteSelectedEvent);
-  }
-
-  if (sendRecordingBtn) {
-    sendRecordingBtn.addEventListener('click', sendRecordingData);
-  }
-
-  if (frameworkSelect) {
-    frameworkSelect.addEventListener('change', (e) => {
-      selectedFramework = e.target.value;
-      updateCode();
-    });
-  }
-
-  if (languageSelect) {
-    languageSelect.addEventListener('change', (e) => {
-      selectedLanguage = e.target.value;
-      if (codeEditor) {
-        codeEditor.setOption('mode', getCodeMirrorMode(selectedLanguage));
-      }
-      updateCode();
-    });
-  }
-
-  if (aiReviewBtn) {
-    aiReviewBtn.addEventListener('click', performAiCodeReview);
-  }
-
-  // TC 동기화 버튼
-  if (syncToTcBtn) {
-    syncToTcBtn.addEventListener('click', async () => {
-      await syncCodeToTC();
-    });
-  }
-
-  // 속성 추출 적용 버튼
-  if (elementAttrApplyBtn) {
-    elementAttrApplyBtn.addEventListener('click', async () => {
-      const attrName = elementAttrNameInput ? elementAttrNameInput.value.trim() : '';
-      if (!attrName) {
-        setElementStatus('속성명을 입력하세요.', 'error');
-        return;
-      }
-      if (selectionState.pendingAction === 'attribute') {
-        selectionState.pendingAttribute = attrName;
-        await applySelectionAction('get_attribute', {attributeName: attrName});
-        selectionState.pendingAction = null;
-        selectionState.pendingAttribute = '';
-      }
-    });
-  }
-
-  // 상호작용 액션 버튼들
-  const interactionActionsContainer = document.getElementById('interaction-actions');
-  if (interactionActionsContainer) {
-    interactionActionsContainer.addEventListener('click', (e) => {
-      const button = e.target.closest('button[data-interaction]');
-      if (!button) return;
-      const interactionType = button.dataset.interaction;
-      handleInteractionAction(interactionType);
-    });
-  }
-
-  // 검증 액션 버튼들
-  const verifyActionsContainer = document.getElementById('verify-actions');
-  if (verifyActionsContainer) {
-    verifyActionsContainer.addEventListener('click', (e) => {
-      const button = e.target.closest('button[data-verify]');
-      if (!button) return;
-      const verifyType = button.dataset.verify;
-      handleVerifyAction(verifyType);
-    });
-  }
-
-  // 대기 액션 버튼들
-  const waitActionsContainer = document.getElementById('wait-actions');
-  if (waitActionsContainer) {
-    waitActionsContainer.addEventListener('click', (e) => {
-      const button = e.target.closest('button[data-wait]');
-      if (!button) return;
-      const waitType = button.dataset.wait;
-      handleWaitAction(waitType);
-    });
-  }
-
-  // 대기 시간 적용 버튼
-  const waitTimeApplyBtn = document.getElementById('wait-time-apply');
-  const waitTimeInput = document.getElementById('wait-time-input');
-  
-  const applyWaitTime = () => {
-    if (!waitTimeInput) return;
-    const timeValue = parseInt(waitTimeInput.value);
-    if (isNaN(timeValue) || timeValue < 0) {
-      alert('올바른 대기 시간을 입력하세요.');
-      return;
+  // selectedFramework와 selectedLanguage는 전역 변수이므로 getter/setter를 사용
+  const stateRefs = {
+    selectedFramework: {
+      get value() { return selectedFramework; },
+      set value(v) { selectedFramework = v; }
+    },
+    selectedLanguage: {
+      get value() { return selectedLanguage; },
+      set value(v) { selectedLanguage = v; }
+    },
+    currentEventIndex: {
+      get value() { return currentEventIndex; },
+      set value(v) { currentEventIndex = v; }
     }
-    addWaitAction('wait', timeValue, null);
-    const waitInputPanel = document.getElementById('wait-input-panel');
-    if (waitInputPanel) {
-      waitInputPanel.classList.add('hidden');
-    }
-    waitTimeInput.value = '';
   };
   
-  if (waitTimeApplyBtn) {
-    waitTimeApplyBtn.addEventListener('click', applyWaitTime);
-  }
-  
-  if (waitTimeInput) {
-    // Enter 키로도 적용
-    waitTimeInput.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') {
-        applyWaitTime();
-      }
-    });
-  }
-
-  // Action 메뉴 및 오버레이 토글 설정
-  setupActionMenu();
-  setupOverlayToggle();
-  
-  // 설정 패널 토글
-  const settingsToggleBtn = document.getElementById('settings-toggle-btn');
-  const settingsPanel = document.getElementById('settings-panel');
-  if (settingsToggleBtn && settingsPanel) {
-    settingsToggleBtn.addEventListener('click', () => {
-      settingsPanel.classList.toggle('hidden');
-    });
-  }
-  
-  // 단계 상세 정보 닫기
-  const stepDetailsClose = document.getElementById('step-details-close');
-  const stepDetailsPanel = document.getElementById('step-details-panel');
-  if (stepDetailsClose && stepDetailsPanel) {
-    stepDetailsClose.addEventListener('click', () => {
-      stepDetailsPanel.classList.add('hidden');
-      // 선택 해제
-      document.querySelectorAll('.recorder-step').forEach(item => item.classList.remove('selected'));
-      currentEventIndex = -1;
-      updateDeleteButtonState();
-    });
-  }
-  
-  // try 문 체크박스 이벤트 리스너
-  const wrapInTryCheckbox = document.getElementById('wrap-in-try-checkbox');
-  if (wrapInTryCheckbox) {
-    wrapInTryCheckbox.addEventListener('change', (e) => {
-      if (currentEventIndex >= 0 && currentEventIndex < allEvents.length) {
-        allEvents[currentEventIndex].wrapInTry = e.target.checked;
-        // 코드 재생성
-        const normalizedEvents = allEvents.map(ev => normalizeEventRecord(ev));
-        const code = generateCode(normalizedEvents, manualActions, selectedFramework, selectedLanguage);
-        setCodeText(code);
-        // 코드를 TC에 실시간 저장
-        if (recording || normalizedEvents.length > 0) {
-          saveCodeToTCWithDebounce(code);
-        }
-      }
-    });
-  }
-  
-  // 패널 리사이즈 초기화
-  initPanelResize();
-  
-  // 코드 미리보기 접기/펼치기
-  const codeAreaToggle = document.getElementById('code-area-toggle');
-  const codeAreaContent = document.getElementById('code-area-content');
-  const codeArea = document.getElementById('code-area');
-  const codeAreaHeader = codeArea?.querySelector('.code-area-header');
-  
-  if (codeAreaToggle && codeAreaContent && codeArea) {
-    const toggleCodeArea = () => {
-      codeArea.classList.toggle('collapsed');
-      codeAreaToggle.classList.toggle('collapsed');
-      codeAreaToggle.textContent = codeArea.classList.contains('collapsed') ? '▶' : '▼';
-      
-      // 접힐 때 패널 높이를 헤더만큼으로 설정 (위아래로 접기)
-      if (codeArea.classList.contains('collapsed')) {
-        // 헤더 높이 측정 (약간의 지연을 두어 DOM 업데이트 대기)
-        setTimeout(() => {
-          const header = codeArea.querySelector('.code-area-header');
-          const headerHeight = header ? header.offsetHeight : 40;
-          
-          // 패널 높이를 헤더만큼으로 강제 설정
-          codeArea.style.setProperty('height', `${headerHeight}px`, 'important');
-          codeArea.style.setProperty('min-height', `${headerHeight}px`, 'important');
-          codeArea.style.setProperty('max-height', `${headerHeight}px`, 'important');
-          codeArea.style.setProperty('overflow', 'hidden', 'important');
-        }, 10);
-      } else {
-        // 펼칠 때 높이 제한 해제
-        codeArea.style.removeProperty('height');
-        codeArea.style.removeProperty('min-height');
-        codeArea.style.removeProperty('max-height');
-        codeArea.style.removeProperty('overflow');
-        codeArea.style.minHeight = '300px';
-      }
-    };
-    
-    // 토글 버튼 클릭
-    codeAreaToggle.addEventListener('click', (e) => {
-      e.stopPropagation();
-      toggleCodeArea();
-    });
-    
-    // 헤더 클릭도 토글 가능
-    if (codeAreaHeader) {
-      codeAreaHeader.addEventListener('click', (e) => {
-        // 토글 버튼을 클릭한 경우는 제외
-        if (!e.target.closest('.code-area-toggle')) {
-          toggleCodeArea();
-        }
-      });
-    }
-  }
-  
-  // Replay Log 접기/펼치기
-  const replayLogToggle = document.getElementById('replay-log-toggle');
-  const replayLogContent = document.getElementById('replay-log-content');
-  const replayLog = document.getElementById('replay-log');
-  const replayLogHeader = replayLog?.querySelector('.replay-log-header');
-  
-  if (replayLogToggle && replayLogContent && replayLog) {
-    const toggleReplayLog = () => {
-      replayLog.classList.toggle('collapsed');
-      replayLogContent.classList.toggle('collapsed');
-      replayLogToggle.classList.toggle('collapsed');
-      replayLogToggle.textContent = replayLogContent.classList.contains('collapsed') ? '▶' : '▼';
-      
-      // 접힐 때 패널 높이를 헤더만큼으로 설정 (위아래로 접기)
-      if (replayLog.classList.contains('collapsed')) {
-        // 헤더 높이 측정 (약간의 지연을 두어 DOM 업데이트 대기)
-        setTimeout(() => {
-          const header = replayLog.querySelector('.replay-log-header');
-          const headerHeight = header ? header.offsetHeight : 50;
-          
-          // 패널 높이를 헤더만큼으로 강제 설정
-          replayLog.style.setProperty('height', `${headerHeight}px`, 'important');
-          replayLog.style.setProperty('min-height', `${headerHeight}px`, 'important');
-          replayLog.style.setProperty('max-height', `${headerHeight}px`, 'important');
-          replayLog.style.setProperty('overflow', 'hidden', 'important');
-        }, 10);
-      } else {
-        // 펼칠 때 높이 제한 해제
-        replayLog.style.removeProperty('height');
-        replayLog.style.removeProperty('min-height');
-        replayLog.style.removeProperty('max-height');
-        replayLog.style.removeProperty('overflow');
-        replayLog.style.minHeight = '180px';
-      }
-    };
-    
-    // 토글 버튼 클릭
-    replayLogToggle.addEventListener('click', (e) => {
-      e.stopPropagation();
-      toggleReplayLog();
-    });
-    
-    // 헤더 클릭도 토글 가능
-    if (replayLogHeader) {
-      replayLogHeader.addEventListener('click', (e) => {
-        // 토글 버튼을 클릭한 경우는 제외
-        if (!e.target.closest('.replay-log-toggle')) {
-          toggleReplayLog();
-        }
-      });
-    }
-  }
-  
-  // Global assertion 버튼 이벤트 핸들러
-  const globalAddAssertionBtn = document.getElementById('global-add-assertion-btn');
-  const globalAssertionMenu = document.getElementById('global-assertion-menu');
-  console.log('[Recorder] Global assertion 버튼 찾기:', {
-    button: !!globalAddAssertionBtn,
-    menu: !!globalAssertionMenu
+  setupEventListenersModule({
+    // DOM 요소
+    startBtn,
+    stopBtn,
+    resetBtn,
+    deleteEventBtn,
+    sendRecordingBtn,
+    frameworkSelect,
+    languageSelect,
+    aiReviewBtn,
+    syncToTcBtn,
+    elementAttrApplyBtn,
+    elementAttrNameInput,
+    elementSelectBtn,
+    tcIdInput,
+    projectIdInput,
+    // 상태
+    selectedFramework: stateRefs.selectedFramework,
+    selectedLanguage: stateRefs.selectedLanguage,
+    codeEditor,
+    allEvents,
+    currentEventIndex: stateRefs.currentEventIndex,
+    recording,
+    selectionState,
+    // 함수들
+    startRecording,
+    stopRecording,
+    reset,
+    deleteSelectedEvent,
+    sendRecordingData,
+    updateCode,
+    getCodeMirrorMode,
+    performAiCodeReview,
+    syncCodeToTC,
+    setElementStatusWrapper,
+    applySelectionActionWrapper,
+    handleInteractionAction,
+    handleVerifyAction,
+    handleWaitAction,
+    buildSelectionPathArrayWrapper,
+    startSelectionWorkflowWrapper,
+    startSimpleElementSelectionWrapper,
+    addInteractionAction,
+    addVerifyAction,
+    addWaitAction,
+    normalizeEventRecord,
+    syncTimelineFromEvents,
+    saveEventAsStep,
+    logMessage,
+    generateCode,
+    manualActions,
+    setCodeText,
+    saveCodeToTCWithDebounce,
+    updateDeleteButtonState,
+    initPanelResize,
+    handleGlobalAssertion,
+    handleGlobalWait,
+    startConditionalActionWorkflow,
+    startReplay,
+    cancelSelectionWorkflowWrapper,
+    addAssertionAfterStep,
+    updateTimeline,
+    highlightSelector,
+    requestAiSelectorsForEvent,
+    electronAPI,
+    initElectronAPI,
+    captureVerifyImageScreenshot
   });
-  
-  if (globalAddAssertionBtn && globalAssertionMenu) {
-    console.log('[Recorder] ✅ Global assertion 버튼 이벤트 리스너 등록');
-    globalAddAssertionBtn.addEventListener('click', (e) => {
-      console.log('[Recorder] Global assertion 버튼 클릭됨', e.target, e.currentTarget);
-      e.preventDefault();
-      e.stopPropagation();
-      globalAssertionMenu.classList.toggle('hidden');
-      console.log('[Recorder] Assertion 메뉴 토글:', !globalAssertionMenu.classList.contains('hidden'));
-      // 다른 메뉴 닫기
-      const actionMenu = document.getElementById('action-menu');
-      if (actionMenu) actionMenu.classList.add('hidden');
-    });
-    
-    // Global assertion 메뉴 외부 클릭 시 닫기
-    document.addEventListener('click', (e) => {
-      if (globalAddAssertionBtn && globalAssertionMenu && 
-          !globalAddAssertionBtn.contains(e.target) && 
-          !globalAssertionMenu.contains(e.target)) {
-        globalAssertionMenu.classList.add('hidden');
-      }
-    });
-    
-    // Global assertion 타입 선택 처리
-    globalAssertionMenu.addEventListener('click', (e) => {
-      const button = e.target.closest('button[data-assertion]');
-      if (!button) return;
-      
-      const assertionType = button.getAttribute('data-assertion');
-      console.log('[Recorder] Assertion 타입 선택:', assertionType);
-      globalAssertionMenu.classList.add('hidden');
-      
-      // 독립적인 assertion 추가 (맨 끝에 추가)
-      handleGlobalAssertion(assertionType);
-    });
-  } else {
-    console.warn('[Recorder] Global assertion 버튼 또는 메뉴를 찾을 수 없습니다.');
-  }
-  
-  // Global wait 버튼 이벤트 핸들러
-  const globalAddWaitBtn = document.getElementById('global-add-wait-btn');
-  const globalWaitMenu = document.getElementById('global-wait-menu');
-  console.log('[Recorder] Global wait 버튼 찾기:', {
-    button: !!globalAddWaitBtn,
-    menu: !!globalWaitMenu
-  });
-  
-  if (globalAddWaitBtn && globalWaitMenu) {
-    console.log('[Recorder] ✅ Global wait 버튼 이벤트 리스너 등록');
-    globalAddWaitBtn.addEventListener('click', (e) => {
-      console.log('[Recorder] Global wait 버튼 클릭됨', e.target, e.currentTarget);
-      e.preventDefault();
-      e.stopPropagation();
-      globalWaitMenu.classList.toggle('hidden');
-      console.log('[Recorder] Wait 메뉴 토글:', !globalWaitMenu.classList.contains('hidden'));
-      // 다른 메뉴 닫기
-      const actionMenu = document.getElementById('action-menu');
-      if (actionMenu) actionMenu.classList.add('hidden');
-      if (globalAssertionMenu) globalAssertionMenu.classList.add('hidden');
-    });
-    
-    // Global wait 메뉴 외부 클릭 시 닫기
-    document.addEventListener('click', (e) => {
-      if (globalAddWaitBtn && globalWaitMenu && 
-          !globalAddWaitBtn.contains(e.target) && 
-          !globalWaitMenu.contains(e.target)) {
-        globalWaitMenu.classList.add('hidden');
-      }
-    });
-    
-    // Global wait 타입 선택 처리
-    globalWaitMenu.addEventListener('click', (e) => {
-      const button = e.target.closest('button[data-wait]');
-      if (!button) return;
-      
-      const waitType = button.getAttribute('data-wait');
-      console.log('[Recorder] Wait 타입 선택:', waitType);
-      globalWaitMenu.classList.add('hidden');
-      
-      // 독립적인 wait 추가 (맨 끝에 추가)
-      handleGlobalWait(waitType);
-    });
-  } else {
-    console.warn('[Recorder] Global wait 버튼 또는 메뉴를 찾을 수 없습니다.');
-  }
-  
-  // Global 조건부 액션 추가 버튼 이벤트 핸들러
-  const globalAddConditionalActionBtn = document.getElementById('global-add-conditional-action-btn');
-  console.log('[Recorder] Global 조건부 액션 버튼 찾기:', {
-    button: !!globalAddConditionalActionBtn
-  });
-  
-  if (globalAddConditionalActionBtn) {
-    console.log('[Recorder] ✅ Global 조건부 액션 버튼 이벤트 리스너 등록');
-    globalAddConditionalActionBtn.addEventListener('click', (e) => {
-      console.log('[Recorder] Global 조건부 액션 버튼 클릭됨');
-      e.preventDefault();
-      e.stopPropagation();
-      // 다른 메뉴 닫기
-      const actionMenu = document.getElementById('action-menu');
-      if (actionMenu) actionMenu.classList.add('hidden');
-      if (globalAssertionMenu) globalAssertionMenu.classList.add('hidden');
-      if (globalWaitMenu) globalWaitMenu.classList.add('hidden');
-      // 조건부 액션 단계별 워크플로우 시작
-      startConditionalActionWorkflow(-1, null);
-    });
-  } else {
-    console.warn('[Recorder] Global 조건부 액션 버튼을 찾을 수 없습니다.');
-  }
 }
 
 /**
@@ -5672,158 +1685,102 @@ function setupEventListeners() {
  * @param {string} assertionType - assertion 타입 (verifyText, verifyElementPresent, verifyElementNotPresent, verifyTitle, verifyUrl)
  * @param {Object} stepEvent - 기반 스텝의 이벤트 데이터
  */
+// 스텝 assertion 처리 (래퍼 함수)
 function handleStepAssertion(stepIndex, assertionType, stepEvent) {
-  switch (assertionType) {
-    case 'verifyTitle': {
-      // 타이틀 검증: 다이얼로그로 값 입력 받기
-      const currentValue = document.title;
-      const inputValue = prompt('검증할 타이틀을 입력하세요:', currentValue);
-      if (inputValue === null) return; // 취소
-      addAssertionAfterStep(stepIndex, assertionType, null, inputValue || currentValue);
-      break;
-    }
-    
-    case 'verifyUrl': {
-      // URL 검증: 다이얼로그로 값 입력 받기 및 matchMode 선택
-      const currentValue = window.location.href;
-      const inputValue = prompt('검증할 URL을 입력하세요:', currentValue);
-      if (inputValue === null) return; // 취소
-      
-      // matchMode 선택 (완전일치/포함)
-      const matchMode = confirm('완전일치 검증을 사용하시겠습니까?\n\n확인: 완전일치\n취소: 포함 검증');
-      const matchModeValue = matchMode ? 'exact' : 'contains';
-      
-      addAssertionAfterStep(stepIndex, assertionType, null, inputValue || currentValue, matchModeValue);
-      break;
-    }
-    
-    case 'verifyText': {
-      // 텍스트 검증: 요소 선택 필요
-      if (stepEvent && stepEvent.selectorCandidates && stepEvent.selectorCandidates.length > 0) {
-        // 기반 스텝의 셀렉터 재사용
-        const selectors = stepEvent.selectorCandidates;
-        const path = selectors.map(sel => ({
-          selector: sel.selector || sel,
-          type: sel.type,
-          textValue: sel.textValue,
-          xpathValue: sel.xpathValue,
-          matchMode: sel.matchMode,
-          iframeContext: stepEvent.iframeContext
-        }));
+  const stateRefs = {
+    allEvents
+  };
+  
+  const verifyActionsContainer = document.getElementById('verify-actions');
+  
+  handleStepAssertionModule(
+    stepIndex,
+    assertionType,
+    stepEvent,
+    (stepIdx, type, path, val, matchMode) => {
+      return addAssertionAfterStepModule(
+        stepIdx,
+        type,
+        path,
+        val,
+        matchMode,
+        stateRefs,
+        inferSelectorType,
+        syncTimelineFromEvents,
+        updateCode,
+        logMessage
+      );
+    },
+    (stepIdx, type) => {
+      // activateElementSelectionForAssertionModule이 존재하지 않으므로 직접 처리
+      startSimpleElementSelectionWrapper((path, elementInfo) => {
+        if (!path || path.length === 0) {
+          alert('요소를 선택할 수 없습니다.');
+          return;
+        }
         
-        // 텍스트 입력 다이얼로그
-        const elementText = stepEvent.target?.text || stepEvent.value || '';
-        const textValue = prompt('검증할 텍스트를 입력하세요:', elementText);
-        if (textValue === null) return; // 취소
-        addAssertionAfterStep(stepIndex, assertionType, path, textValue || elementText);
-      } else {
-        // 요소 선택 모드로 전환
-        activateElementSelectionForAssertion(stepIndex, assertionType);
-      }
-      break;
-    }
-    
-    case 'verifyTextContains': {
-      // 텍스트 부분일치 검증: 요소 선택 필요
-      if (stepEvent && stepEvent.selectorCandidates && stepEvent.selectorCandidates.length > 0) {
-        // 기반 스텝의 셀렉터 재사용
-        const selectors = stepEvent.selectorCandidates;
-        const path = selectors.map(sel => ({
-          selector: sel.selector || sel,
-          type: sel.type,
-          textValue: sel.textValue,
-          xpathValue: sel.xpathValue,
-          matchMode: sel.matchMode,
-          iframeContext: stepEvent.iframeContext
-        }));
+        const result = addAssertionAfterStepModule(
+          stepIdx,
+          type,
+          path,
+          null,
+          null,
+          stateRefs,
+          inferSelectorType,
+          syncTimelineFromEvents,
+          updateCode,
+          logMessage
+        );
         
-        // 텍스트 입력 다이얼로그
-        const elementText = stepEvent.target?.text || stepEvent.value || '';
-        const textValue = prompt('검증할 텍스트(부분일치)를 입력하세요:', elementText);
-        if (textValue === null) return; // 취소
-        addAssertionAfterStep(stepIndex, assertionType, path, textValue || elementText);
-      } else {
-        // 요소 선택 모드로 전환
-        activateElementSelectionForAssertion(stepIndex, assertionType);
-      }
-      break;
+        if (result && verifyActionsContainer) {
+          verifyActionsContainer.classList.add('hidden');
+        }
+      }, null, stepIdx);
     }
-    
-    case 'verifyImage': {
-      // 이미지 비교: 요소 선택 필요
-      if (stepEvent && stepEvent.selectorCandidates && stepEvent.selectorCandidates.length > 0) {
-        // 기반 스텝의 셀렉터 재사용
-        const selectors = stepEvent.selectorCandidates;
-        const path = selectors.map(sel => ({
-          selector: sel.selector || sel,
-          type: sel.type,
-          textValue: sel.textValue,
-          xpathValue: sel.xpathValue,
-          matchMode: sel.matchMode,
-          iframeContext: stepEvent.iframeContext
-        }));
-        addAssertionAfterStep(stepIndex, assertionType, path, null);
-      } else {
-        // 요소 선택 모드로 전환
-        activateElementSelectionForAssertion(stepIndex, assertionType);
-      }
-      break;
-    }
-    
-    case 'verifyElementPresent':
-    case 'verifyElementNotPresent': {
-      // 요소 존재/부재 검증: 요소 선택만 필요
-      if (stepEvent && stepEvent.selectorCandidates && stepEvent.selectorCandidates.length > 0) {
-        // 기반 스텝의 셀렉터 재사용
-        const selectors = stepEvent.selectorCandidates;
-        const path = selectors.map(sel => ({
-          selector: sel.selector || sel,
-          type: sel.type,
-          textValue: sel.textValue,
-          xpathValue: sel.xpathValue,
-          matchMode: sel.matchMode,
-          iframeContext: stepEvent.iframeContext
-        }));
-        addAssertionAfterStep(stepIndex, assertionType, path, null);
-      } else {
-        // 요소 선택 모드로 전환
-        activateElementSelectionForAssertion(stepIndex, assertionType);
-      }
-      break;
-    }
-  }
+  );
 }
 
+// 원래 함수 정의는 recorder-conditional.js로 이동됨
+
 /**
- * Assertion을 위한 요소 선택 모드 활성화 (심플 요소 선택 사용)
+ * Assertion을 위한 요소 선택 모드 활성화 (래퍼 함수)
  */
 function activateElementSelectionForAssertion(stepIndex, assertionType) {
-  startSimpleElementSelection(async (path, elementInfo, pendingAction, pendingStepIndex) => {
-    let value = null;
-    if (pendingAction === 'verifyText' || pendingAction === 'verifyTextContains') {
-      // 요소의 텍스트를 자동으로 사용 (prompt 없이)
-      value = elementInfo.text || path[0]?.textValue || '';
-      console.log(`[Recorder] ${pendingAction}: 요소 텍스트 자동 사용:`, value);
-    } else if (pendingAction === 'verifyElementPresent' || pendingAction === 'verifyElementNotPresent' || pendingAction === 'verifyImage') {
-      // 요소 존재/부재/이미지 검증은 value 불필요
-      value = null;
+  const stateRefs = {
+    allEvents
+  };
+  
+  const verifyActionsContainer = document.getElementById('verify-actions');
+  
+  startSimpleElementSelectionWrapper((path, elementInfo) => {
+    if (!path || path.length === 0) {
+      alert('요소를 선택할 수 없습니다.');
+      return;
     }
     
-    // pendingStepIndex가 있으면 addAssertionAfterStep 사용
-    if (pendingStepIndex !== null && pendingStepIndex !== undefined) {
-      addAssertionAfterStep(pendingStepIndex, pendingAction, path, value);
-    } else {
-      await addVerifyAction(pendingAction, path, value);
+    const result = addAssertionAfterStepModule(
+      stepIndex,
+      assertionType,
+      path,
+      null,
+      null,
+      stateRefs,
+      inferSelectorType,
+      syncTimelineFromEvents,
+      updateCode,
+      logMessage
+    );
+    
+    if (result && verifyActionsContainer) {
+      verifyActionsContainer.classList.add('hidden');
     }
-  }, assertionType, stepIndex);
-  
-  if (verifyActionsContainer) {
-    verifyActionsContainer.classList.add('hidden');
-  }
+  }, null, stepIndex);
 }
 
+// 원래 함수 정의는 recorder-conditional.js로 이동됨
+
 /**
- * 스텝 다음에 assertion 추가
+ * 스텝 다음에 assertion 추가 (래퍼 함수)
  * @param {number} stepIndex - assertion을 추가할 스텝의 인덱스
  * @param {string} assertionType - assertion 타입
  * @param {Array} path - 요소 선택 경로 (있는 경우)
@@ -5831,121 +1788,25 @@ function activateElementSelectionForAssertion(stepIndex, assertionType) {
  * @param {string} matchMode - 매칭 모드 (verifyUrl의 경우 'exact' | 'contains')
  */
 function addAssertionAfterStep(stepIndex, assertionType, path, value, matchMode = null) {
-  const timestamp = Date.now();
-  const currentUrl = window.location.href || '';
-  const currentTitle = document.title || '';
-  let eventRecord = null;
+  const stateRefs = {
+    allEvents
+  };
   
-  if (path && path.length > 0) {
-    // 요소 기반 검증
-    const selectors = path.map((item, idx) => {
-      if (!item || !item.selector) return null;
-      const type = item.type || inferSelectorType(item.selector);
-      return {
-        selector: item.selector,
-        type,
-        textValue: item.textValue || null,
-        xpathValue: item.xpathValue || null,
-        matchMode: item.matchMode || null,
-        score: idx === path.length - 1 ? 100 : 80
-      };
-    }).filter(Boolean);
-    
-    if (!selectors.length) {
-      alert('셀렉터를 찾을 수 없습니다.');
-      return;
-    }
-    
-    const targetEntry = selectors[selectors.length - 1];
-    const iframeContext = path[path.length - 1]?.iframeContext || null;
-    
-    eventRecord = {
-      version: 2,
-      timestamp,
-      action: assertionType,
-      value: value || null,
-      tag: null,
-      selectorCandidates: selectors,
-      iframeContext,
-      page: {
-        url: currentUrl,
-        title: currentTitle
-      },
-      frame: { iframeContext },
-      target: null,
-      clientRect: null,
-      metadata: {
-        schemaVersion: 2,
-        userAgent: navigator.userAgent
-      },
-      manual: {
-        id: `verify-${timestamp}`,
-        type: assertionType,
-        resultName: null,
-        attributeName: null
-      },
-      primarySelector: targetEntry.selector,
-      primarySelectorType: targetEntry.type,
-      primarySelectorText: targetEntry.textValue,
-      primarySelectorXPath: targetEntry.xpathValue,
-      primarySelectorMatchMode: targetEntry.matchMode,
-      matchMode: matchMode || null
-    };
-  } else {
-    // 타이틀/URL 검증 (요소 불필요)
-    if (assertionType === 'verifyTitle') {
-      value = value || currentTitle;
-    } else if (assertionType === 'verifyUrl') {
-      value = value || currentUrl;
-    }
-    
-    eventRecord = {
-      version: 2,
-      timestamp,
-      action: assertionType,
-      value: value,
-      tag: null,
-      selectorCandidates: [],
-      iframeContext: null,
-      page: {
-        url: currentUrl,
-        title: currentTitle
-      },
-      frame: { iframeContext: null },
-      target: null,
-      clientRect: null,
-      metadata: {
-        schemaVersion: 2,
-        userAgent: navigator.userAgent
-      },
-      manual: {
-        id: `verify-${timestamp}`,
-        type: assertionType,
-        resultName: null,
-        attributeName: null
-      },
-      primarySelector: null,
-      primarySelectorType: null,
-      matchMode: matchMode || null
-    };
-  }
-  
-  // 현재 이벤트 배열에 삽입 (stepIndex 다음에)
-  const insertIndex = stepIndex + 1;
-  const updatedEvents = [...allEvents];
-  updatedEvents.splice(insertIndex, 0, eventRecord);
-  
-  // 타임라인 업데이트 및 코드 갱신
-  const normalized = syncTimelineFromEvents(updatedEvents, {
-    preserveSelection: false,
-    selectLast: false,
-    resetAiState: false
-  });
-  // allEvents가 syncTimelineFromEvents에서 업데이트되므로 normalized를 사용
-  updateCode({ preloadedEvents: normalized });
-  
-  logMessage(`Assertion 추가: ${assertionType}`, 'success');
+  return addAssertionAfterStepModule(
+    stepIndex,
+    assertionType,
+    path,
+    value,
+    matchMode,
+    stateRefs,
+    inferSelectorType,
+    syncTimelineFromEvents,
+    updateCode,
+    logMessage
+  );
 }
+
+// 원래 함수 정의는 recorder-conditional.js로 이동됨
 
 /**
  * 조건부 액션 추가 핸들러
@@ -5962,1871 +1823,373 @@ function handleAddConditionalAction(stepIndex, stepEvent) {
  * @param {number} stepIndex - 조건부 액션을 추가할 스텝의 인덱스
  * @param {Object} stepEvent - 스텝 이벤트 정보
  */
+// 조건부 액션 단계별 워크플로우 시작 (래퍼 함수)
 function startConditionalActionWorkflow(stepIndex, stepEvent) {
-  // 상태 초기화
-  conditionalActionStep = 1;
-  conditionalActionData = {
-    actionType: null,
-    conditionElement: null,
-    childElement: null,
-    siblingElement: null,
-    ancestorElement: null,
-    conditionType: null,
-    conditionValue: null,
-    targetRelation: null,
-    targetSelector: null,
-    loopMode: null,
-    loopSelector: null,
-    actionTypeValue: null,
-    actionValue: null,
-    stepIndex: stepIndex
+  const stateRefs = {
+    conditionalActionStep,
+    conditionalActionData
   };
   
-  // 메뉴 표시
-  const menu = document.getElementById('global-conditional-action-menu');
-  if (menu) {
-    menu.classList.remove('hidden');
-    // 네비게이션 표시 (첫 단계에서도 취소 버튼 표시)
-    const navigation = document.getElementById('conditional-action-navigation');
-    const backBtn = document.getElementById('conditional-action-back-btn');
-    if (navigation) {
-      navigation.style.display = 'flex';
-      if (backBtn) {
-        backBtn.style.display = 'none'; // 첫 단계에서는 이전 버튼 숨김
-      }
-    }
-    updateConditionalActionStep(1);
-  }
+  startConditionalActionWorkflowModule(stepIndex, stepEvent, stateRefs, {
+    updateConditionalActionStep
+  });
+  
+  // stateRefs의 변경사항을 전역 변수에 반영
+  conditionalActionStep = stateRefs.conditionalActionStep;
+  conditionalActionData = stateRefs.conditionalActionData;
 }
 
 /**
  * 조건부 액션 단계별 UI 업데이트
  * @param {number} step - 현재 단계 번호
  */
+// 조건부 액션 단계별 UI 업데이트 (래퍼 함수)
 function updateConditionalActionStep(step) {
-  const menu = document.getElementById('global-conditional-action-menu');
-  const header = document.getElementById('conditional-action-header');
-  const buttonsContainer = document.getElementById('conditional-action-buttons');
-  const navigation = document.getElementById('conditional-action-navigation');
-  const backBtn = document.getElementById('conditional-action-back-btn');
-  const cancelBtn = document.getElementById('conditional-action-cancel-btn');
+  const stateRefs = {
+    conditionalActionStep,
+    conditionalActionData
+  };
   
-  if (!menu || !header || !buttonsContainer) return;
+  updateConditionalActionStepModule(step, stateRefs, {
+    startSimpleElementSelection: startSimpleElementSelectionWrapper,
+    validateBySelector: validateBySelectorWrapper,
+    validateSiblingRelation: validateSiblingRelationWrapper,
+    validateAncestorRelation: validateAncestorRelationWrapper
+  });
   
-  // 취소 버튼 이벤트 리스너
-  if (cancelBtn) {
-    cancelBtn.onclick = () => cancelConditionalAction();
-  }
-  
-  // 이전 버튼 표시/숨김
-  if (navigation && backBtn) {
-    if (step > 1) {
-      navigation.style.display = 'flex';
-      backBtn.style.display = 'block';
-      backBtn.onclick = () => goToConditionalActionStep(step - 1);
-    } else {
-      // 첫 번째 단계에서도 취소 버튼은 표시
-      navigation.style.display = 'flex';
-      backBtn.style.display = 'none'; // 이전 버튼만 숨김
-    }
-  }
-  
-  // 단계별 UI 업데이트
-  buttonsContainer.innerHTML = '';
-  
-  if (step === 1) {
-    // 첫 번째 단계: 액션 타입 선택
-    header.textContent = '액션 타입 선택';
-    const actionTypes = [
-      { value: 'conditionalAction', label: '조건부 액션 (if 문)' },
-      { value: 'relativeAction', label: '상대 노드 탐색 (부모/형제/자식)' },
-      { value: 'loopAction', label: '반복 액션 (for 문)' }
-    ];
-    
-    actionTypes.forEach(type => {
-      const btn = document.createElement('button');
-      btn.className = 'assertion-menu-btn';
-      btn.textContent = type.label;
-      btn.onclick = () => {
-        conditionalActionData.actionType = type.value;
-        conditionalActionStep = 2;
-        updateConditionalActionStep(2);
-      };
-      buttonsContainer.appendChild(btn);
-    });
-  } else if (step === 2) {
-    // 두 번째 단계: 액션 타입에 따른 다음 선택지
-    if (conditionalActionData.actionType === 'conditionalAction') {
-      header.textContent = '조건 요소 선택';
-      const btn = document.createElement('button');
-      btn.className = 'assertion-menu-btn';
-      btn.textContent = '요소 선택하기';
-      btn.onclick = () => {
-        activateElementSelectionForConditionalActionStep();
-      };
-      buttonsContainer.appendChild(btn);
-    } else if (conditionalActionData.actionType === 'relativeAction') {
-      header.textContent = '액션 대상 선택';
-      const relations = [
-        { value: 'parent', label: '부모 노드' },
-        { value: 'ancestor', label: '조상 노드 (closest)' },
-        { value: 'sibling', label: '형제 노드' },
-        { value: 'child', label: '자식 노드' }
-      ];
-      
-      relations.forEach(rel => {
-        const btn = document.createElement('button');
-        btn.className = 'assertion-menu-btn';
-        btn.textContent = rel.label;
-        btn.onclick = () => {
-          conditionalActionData.targetRelation = rel.value;
-          conditionalActionStep = 3;
-          updateConditionalActionStep(3);
-        };
-        buttonsContainer.appendChild(btn);
-      });
-    } else if (conditionalActionData.actionType === 'loopAction') {
-      header.textContent = '반복 모드 선택';
-      const modes = [
-        { value: 'single', label: '단일 액션' },
-        { value: 'loop', label: '반복 액션 (리스트 순회)' }
-      ];
-      
-      modes.forEach(mode => {
-        const btn = document.createElement('button');
-        btn.className = 'assertion-menu-btn';
-        btn.textContent = mode.label;
-        btn.onclick = () => {
-          conditionalActionData.loopMode = mode.value;
-          if (mode.value === 'loop') {
-            // 리스트 셀렉터 입력 단계로
-            conditionalActionStep = 3;
-            updateConditionalActionStep(3);
-          } else {
-            // 조건 요소 선택 단계로
-            conditionalActionStep = 4;
-            updateConditionalActionStep(4);
-          }
-        };
-        buttonsContainer.appendChild(btn);
-      });
-    }
-  } else if (step === 3) {
-    // 세 번째 단계: 요소 선택 또는 추가 입력
-    if (conditionalActionData.actionType === 'conditionalAction') {
-      // 조건 요소가 선택되었으면 조건 타입 선택
-      if (conditionalActionData.conditionElement) {
-        header.textContent = '조건 타입 선택';
-        const conditionTypes = [
-          { value: 'is_visible', label: '요소가 보임 (is_visible)' },
-          { value: 'text_contains', label: '텍스트 포함' },
-          { value: 'text_equals', label: '텍스트 일치' },
-          { value: 'class_name', label: '클래스명 포함' },
-          { value: 'has_attribute', label: '속성 존재' }
-        ];
-        
-        conditionTypes.forEach(type => {
-          const btn = document.createElement('button');
-          btn.className = 'assertion-menu-btn';
-          btn.textContent = type.label;
-          btn.onclick = () => {
-            conditionalActionData.conditionType = type.value;
-            if (['text_contains', 'text_equals', 'class_name', 'has_attribute'].includes(type.value)) {
-              // 조건 값 입력 단계로
-              conditionalActionStep = 4;
-              updateConditionalActionStep(4);
-            } else {
-              // 실행할 액션 선택 단계로
-              conditionalActionStep = 5;
-              updateConditionalActionStep(5);
-            }
-          };
-          buttonsContainer.appendChild(btn);
-        });
-      }
-    } else if (conditionalActionData.actionType === 'relativeAction') {
-      // 기준 요소 선택
-      header.textContent = '기준 요소 선택';
-      const btn = document.createElement('button');
-      btn.className = 'assertion-menu-btn';
-      btn.textContent = '요소 선택하기';
-      btn.onclick = () => {
-        activateElementSelectionForRelativeActionStep('base');
-      };
-      buttonsContainer.appendChild(btn);
-    } else if (conditionalActionData.actionType === 'loopAction' && conditionalActionData.loopMode === 'loop') {
-      // 리스트 셀렉터 입력
-      header.textContent = '리스트 셀렉터 입력';
-      const inputContainer = document.createElement('div');
-      inputContainer.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
-      
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.placeholder = '리스트 셀렉터 (예: .item)';
-      input.style.cssText = 'width: 100%; padding: 8px; border: 1px solid var(--vscode-input-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);';
-      
-      const confirmBtn = document.createElement('button');
-      confirmBtn.className = 'assertion-menu-btn';
-      confirmBtn.textContent = '확인';
-      confirmBtn.onclick = () => {
-        conditionalActionData.loopSelector = input.value;
-        if (conditionalActionData.loopSelector) {
-          conditionalActionStep = 4;
-          updateConditionalActionStep(4);
-        }
-      };
-      
-      inputContainer.appendChild(input);
-      inputContainer.appendChild(confirmBtn);
-      buttonsContainer.appendChild(inputContainer);
-    }
-  } else if (step === 4) {
-    // 네 번째 단계: 조건 값 입력 또는 관계 요소 선택
-    if (conditionalActionData.actionType === 'conditionalAction') {
-      if (['text_contains', 'text_equals', 'class_name', 'has_attribute'].includes(conditionalActionData.conditionType)) {
-        // 조건 값 입력
-        header.textContent = '조건 값 입력';
-        const inputContainer = document.createElement('div');
-        inputContainer.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
-        
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.placeholder = '조건 값 입력';
-        input.style.cssText = 'width: 100%; padding: 8px; border: 1px solid var(--vscode-input-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);';
-        
-        const confirmBtn = document.createElement('button');
-        confirmBtn.className = 'assertion-menu-btn';
-        confirmBtn.textContent = '확인';
-        confirmBtn.onclick = () => {
-          conditionalActionData.conditionValue = input.value;
-          conditionalActionStep = 5;
-          updateConditionalActionStep(5);
-        };
-        
-        inputContainer.appendChild(input);
-        inputContainer.appendChild(confirmBtn);
-        buttonsContainer.appendChild(inputContainer);
-      }
-    } else if (conditionalActionData.actionType === 'relativeAction') {
-      // 기준 요소가 선택되었으면 관계 요소 선택 또는 실행할 액션 선택
-      if (conditionalActionData.conditionElement) {
-        if (['child', 'sibling', 'ancestor'].includes(conditionalActionData.targetRelation)) {
-          // 관계 요소 선택
-          header.textContent = `${conditionalActionData.targetRelation === 'child' ? '자식' : conditionalActionData.targetRelation === 'sibling' ? '형제' : '조상'} 요소 선택`;
-          const btn = document.createElement('button');
-          btn.className = 'assertion-menu-btn';
-          btn.textContent = '요소 선택하기';
-          btn.onclick = () => {
-            activateElementSelectionForRelativeActionStep(conditionalActionData.targetRelation);
-          };
-          buttonsContainer.appendChild(btn);
-        } else {
-          // 부모 노드는 관계 요소 선택 불필요, 바로 실행할 액션 선택
-          conditionalActionStep = 5;
-          updateConditionalActionStep(5);
-        }
-      }
-    } else if (conditionalActionData.actionType === 'loopAction') {
-      // 조건 요소 선택
-      if (!conditionalActionData.conditionElement) {
-        header.textContent = '조건 요소 선택';
-        const btn = document.createElement('button');
-        btn.className = 'assertion-menu-btn';
-        btn.textContent = '요소 선택하기';
-        btn.onclick = () => {
-          activateElementSelectionForConditionalActionStep();
-        };
-        buttonsContainer.appendChild(btn);
-      } else if (!conditionalActionData.conditionType) {
-        // 조건 요소가 선택되었으면 조건 타입 선택
-        header.textContent = '조건 타입 선택';
-        const conditionTypes = [
-          { value: 'is_visible', label: '요소가 보임 (is_visible)' },
-          { value: 'text_contains', label: '텍스트 포함' },
-          { value: 'text_equals', label: '텍스트 일치' },
-          { value: 'class_name', label: '클래스명 포함' },
-          { value: 'has_attribute', label: '속성 존재' }
-        ];
-        
-        conditionTypes.forEach(type => {
-          const btn = document.createElement('button');
-          btn.className = 'assertion-menu-btn';
-          btn.textContent = type.label;
-          btn.onclick = () => {
-            conditionalActionData.conditionType = type.value;
-            if (['text_contains', 'text_equals', 'class_name', 'has_attribute'].includes(type.value)) {
-              // 조건 값 입력 단계로
-              conditionalActionStep = 5;
-              updateConditionalActionStep(5);
-            } else {
-              // 실행할 액션 선택 단계로
-              conditionalActionStep = 6;
-              updateConditionalActionStep(6);
-            }
-          };
-          buttonsContainer.appendChild(btn);
-        });
-      } else {
-        // 조건 타입이 선택되었으면 실행할 액션 선택
-        conditionalActionStep = 6;
-        updateConditionalActionStep(6);
-      }
-    }
-  } else if (step === 5) {
-    // 다섯 번째 단계: 조건 값 입력 또는 실행할 액션 선택
-    if (conditionalActionData.actionType === 'loopAction' && ['text_contains', 'text_equals', 'class_name', 'has_attribute'].includes(conditionalActionData.conditionType)) {
-      // 조건 값 입력
-      header.textContent = '조건 값 입력';
-      const inputContainer = document.createElement('div');
-      inputContainer.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
-      
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.placeholder = '조건 값 입력';
-      input.style.cssText = 'width: 100%; padding: 8px; border: 1px solid var(--vscode-input-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);';
-      
-      const confirmBtn = document.createElement('button');
-      confirmBtn.className = 'assertion-menu-btn';
-      confirmBtn.textContent = '확인';
-      confirmBtn.onclick = () => {
-        conditionalActionData.conditionValue = input.value;
-        conditionalActionStep = 6;
-        updateConditionalActionStep(6);
-      };
-      
-      inputContainer.appendChild(input);
-      inputContainer.appendChild(confirmBtn);
-      buttonsContainer.appendChild(inputContainer);
-    } else {
-      // 실행할 액션 선택
-      header.textContent = '실행할 액션 선택';
-      const actions = [
-        { value: 'click', label: '클릭' },
-        { value: 'type', label: '입력' },
-        { value: 'hover', label: '호버' },
-        { value: 'doubleClick', label: '더블 클릭' },
-        { value: 'rightClick', label: '우클릭' }
-      ];
-      
-      actions.forEach(action => {
-        const btn = document.createElement('button');
-        btn.className = 'assertion-menu-btn';
-        btn.textContent = action.label;
-        btn.onclick = () => {
-          conditionalActionData.actionTypeValue = action.value;
-          if (action.value === 'type') {
-            // 입력 값 입력 단계로
-            conditionalActionStep = 6;
-            updateConditionalActionStep(6);
-          } else {
-            // 최종 확인 단계로
-            conditionalActionStep = 7;
-            updateConditionalActionStep(7);
-          }
-        };
-        buttonsContainer.appendChild(btn);
-      });
-    }
-  } else if (step === 6) {
-    // 여섯 번째 단계: 입력 값 입력 (type 액션인 경우) 또는 실행할 액션 선택
-    if (conditionalActionData.actionTypeValue === 'type') {
-      // 입력 값 입력
-      header.textContent = '입력할 값 입력';
-      const inputContainer = document.createElement('div');
-      inputContainer.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
-      
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.placeholder = '입력할 값';
-      input.style.cssText = 'width: 100%; padding: 8px; border: 1px solid var(--vscode-input-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);';
-      
-      const confirmBtn = document.createElement('button');
-      confirmBtn.className = 'assertion-menu-btn';
-      confirmBtn.textContent = '확인';
-      confirmBtn.onclick = () => {
-        conditionalActionData.actionValue = input.value;
-        conditionalActionStep = 7;
-        updateConditionalActionStep(7);
-      };
-      
-      inputContainer.appendChild(input);
-      inputContainer.appendChild(confirmBtn);
-      buttonsContainer.appendChild(inputContainer);
-    } else {
-      // 실행할 액션 선택 (루프 액션의 경우)
-      header.textContent = '실행할 액션 선택';
-      const actions = [
-        { value: 'click', label: '클릭' },
-        { value: 'type', label: '입력' },
-        { value: 'hover', label: '호버' },
-        { value: 'doubleClick', label: '더블 클릭' },
-        { value: 'rightClick', label: '우클릭' }
-      ];
-      
-      actions.forEach(action => {
-        const btn = document.createElement('button');
-        btn.className = 'assertion-menu-btn';
-        btn.textContent = action.label;
-        btn.onclick = () => {
-          conditionalActionData.actionTypeValue = action.value;
-          if (action.value === 'type') {
-            // 입력 값 입력 단계로
-            conditionalActionStep = 7;
-            updateConditionalActionStep(7);
-          } else {
-            // 최종 확인 단계로
-            conditionalActionStep = 8;
-            updateConditionalActionStep(8);
-          }
-        };
-        buttonsContainer.appendChild(btn);
-      });
-    }
-  } else if (step === 7) {
-    // 일곱 번째 단계: 입력 값 입력 (type 액션인 경우) 또는 최종 확인
-    if (conditionalActionData.actionTypeValue === 'type' && !conditionalActionData.actionValue) {
-      // 입력 값 입력
-      header.textContent = '입력할 값 입력';
-      const inputContainer = document.createElement('div');
-      inputContainer.style.cssText = 'display: flex; flex-direction: column; gap: 8px;';
-      
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.placeholder = '입력할 값';
-      input.style.cssText = 'width: 100%; padding: 8px; border: 1px solid var(--vscode-input-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);';
-      
-      const confirmBtn = document.createElement('button');
-      confirmBtn.className = 'assertion-menu-btn';
-      confirmBtn.textContent = '확인';
-      confirmBtn.onclick = () => {
-        conditionalActionData.actionValue = input.value;
-        conditionalActionStep = 8;
-        updateConditionalActionStep(8);
-      };
-      
-      inputContainer.appendChild(input);
-      inputContainer.appendChild(confirmBtn);
-      buttonsContainer.appendChild(inputContainer);
-    } else {
-      // 최종 확인
-      header.textContent = '조건부 액션 추가';
-      const confirmBtn = document.createElement('button');
-      confirmBtn.className = 'assertion-menu-btn';
-      confirmBtn.textContent = '추가';
-      confirmBtn.style.cssText = 'background: var(--vscode-button-background); color: var(--vscode-button-foreground);';
-      confirmBtn.onclick = () => {
-        completeConditionalAction();
-      };
-      buttonsContainer.appendChild(confirmBtn);
-    }
-  } else if (step === 8) {
-    // 여덟 번째 단계: 최종 확인
-    header.textContent = '실행할 액션 선택';
-    const actions = [
-      { value: 'click', label: '클릭' },
-      { value: 'type', label: '입력' },
-      { value: 'hover', label: '호버' },
-      { value: 'doubleClick', label: '더블 클릭' },
-      { value: 'rightClick', label: '우클릭' }
-    ];
-    
-    actions.forEach(action => {
-      const btn = document.createElement('button');
-      btn.className = 'assertion-menu-btn';
-      btn.textContent = action.label;
-      btn.onclick = () => {
-        conditionalActionData.actionTypeValue = action.value;
-        if (action.value === 'type') {
-          // 입력 값 입력 단계로
-          conditionalActionStep = 6;
-          updateConditionalActionStep(6);
-        } else {
-          // 최종 확인 단계로
-          conditionalActionStep = 7;
-          updateConditionalActionStep(7);
-        }
-      };
-      buttonsContainer.appendChild(btn);
-    });
-  } else if (step === 8) {
-    // 여덟 번째 단계: 최종 확인
-    header.textContent = '조건부 액션 추가';
-    const confirmBtn = document.createElement('button');
-    confirmBtn.className = 'assertion-menu-btn';
-    confirmBtn.textContent = '추가';
-    confirmBtn.style.cssText = 'background: var(--vscode-button-background); color: var(--vscode-button-foreground);';
-    confirmBtn.onclick = () => {
-      completeConditionalAction();
-    };
-    buttonsContainer.appendChild(confirmBtn);
-  }
+  // stateRefs의 변경사항을 전역 변수에 반영
+  conditionalActionStep = stateRefs.conditionalActionStep;
+  conditionalActionData = stateRefs.conditionalActionData;
 }
 
+// 원래 함수 정의는 recorder-conditional-workflow.js로 이동됨
+
 /**
- * 이전 단계로 이동
+ * 이전 단계로 이동 (래퍼 함수)
  * @param {number} step - 이동할 단계 번호
  */
 function goToConditionalActionStep(step) {
-  conditionalActionStep = step;
-  updateConditionalActionStep(step);
+  const stateRefs = {
+    conditionalActionStep,
+    conditionalActionData
+  };
+  
+  goToConditionalActionStepModule(step, stateRefs, {
+    updateConditionalActionStep
+  });
+  
+  // stateRefs의 변경사항을 전역 변수에 반영
+  conditionalActionStep = stateRefs.conditionalActionStep;
+  conditionalActionData = stateRefs.conditionalActionData;
 }
 
 /**
- * 조건부 액션을 위한 요소 선택 활성화 (단계별 워크플로우용)
+ * 조건부 액션을 위한 요소 선택 활성화 (단계별 워크플로우용) (래퍼 함수)
  */
 function activateElementSelectionForConditionalActionStep() {
-  startSimpleElementSelection((path, elementInfo) => {
-    if (!path || path.length === 0) {
-      alert('요소를 선택할 수 없습니다.');
-      return;
-    }
-    
-    const selectedElement = path[path.length - 1];
-    const elementData = {
-      selector: selectedElement.selector || selectedElement,
-      xpath: selectedElement.xpathValue || selectedElement.xpath || null,
-      text: elementInfo.text || selectedElement.textValue || null
-    };
-    
-    conditionalActionData.conditionElement = elementData;
-    
-    // 다음 단계로 진행
-    if (conditionalActionData.actionType === 'conditionalAction') {
-      conditionalActionStep = 3;
-      updateConditionalActionStep(3);
-    } else if (conditionalActionData.actionType === 'loopAction') {
-      // 루프 액션의 경우 조건 타입 선택 단계로
-      conditionalActionStep = 4;
-      updateConditionalActionStep(4);
-    }
-  }, null, conditionalActionData.stepIndex);
+  const stateRefs = {
+    conditionalActionStep,
+    conditionalActionData
+  };
+  
+  activateElementSelectionForConditionalActionStepModule(stateRefs, {
+    startSimpleElementSelection: startSimpleElementSelectionWrapper,
+    updateConditionalActionStep
+  });
+  
+  // stateRefs의 변경사항을 전역 변수에 반영
+  conditionalActionStep = stateRefs.conditionalActionStep;
+  conditionalActionData = stateRefs.conditionalActionData;
 }
 
 /**
- * 상대 노드 탐색을 위한 요소 선택 활성화 (단계별 워크플로우용)
+ * 상대 노드 탐색을 위한 요소 선택 활성화 (단계별 워크플로우용) (래퍼 함수)
  * @param {string} type - 'base', 'child', 'sibling', 'ancestor'
  */
 function activateElementSelectionForRelativeActionStep(type) {
-  startSimpleElementSelection((path, elementInfo) => {
-    if (!path || path.length === 0) {
-      alert('요소를 선택할 수 없습니다.');
-      return;
-    }
-    
-    const selectedElement = path[path.length - 1];
-    const elementData = {
-      selector: selectedElement.selector || selectedElement,
-      xpath: selectedElement.xpathValue || selectedElement.xpath || null,
-      text: elementInfo.text || selectedElement.textValue || null
-    };
-    
-    if (type === 'base') {
-      conditionalActionData.conditionElement = elementData;
-      // 관계 요소 선택 단계로 (child, sibling, ancestor인 경우)
-      if (['child', 'sibling', 'ancestor'].includes(conditionalActionData.targetRelation)) {
-        conditionalActionStep = 4;
-        updateConditionalActionStep(4);
-      } else {
-        // 부모 노드는 바로 실행할 액션 선택
-        conditionalActionStep = 5;
-        updateConditionalActionStep(5);
-      }
-    } else if (type === 'child') {
-      // 부모-자식 관계 검증
-      if (conditionalActionData.conditionElement) {
-        const isValid = validateBySelector(conditionalActionData.conditionElement, elementData);
-        if (isValid) {
-          conditionalActionData.childElement = elementData;
-          conditionalActionStep = 5;
-          updateConditionalActionStep(5);
-        } else {
-          alert('선택한 요소가 부모 요소의 자식이 아닙니다.');
-        }
-      }
-    } else if (type === 'sibling') {
-      // 형제 관계 검증
-      if (conditionalActionData.conditionElement) {
-        const isValid = validateSiblingRelation(conditionalActionData.conditionElement, elementData);
-        if (isValid) {
-          conditionalActionData.siblingElement = elementData;
-          conditionalActionStep = 5;
-          updateConditionalActionStep(5);
-        } else {
-          alert('선택한 요소가 기준 요소의 형제가 아닙니다.');
-        }
-      }
-    } else if (type === 'ancestor') {
-      // 조상 관계 검증
-      if (conditionalActionData.conditionElement) {
-        const isValid = validateAncestorRelation(conditionalActionData.conditionElement, elementData);
-        if (isValid) {
-          conditionalActionData.ancestorElement = elementData;
-          conditionalActionStep = 5;
-          updateConditionalActionStep(5);
-        } else {
-          alert('선택한 요소가 기준 요소의 조상이 아닙니다.');
-        }
-      }
-    }
-  }, null, conditionalActionData.stepIndex);
-}
-
-/**
- * 조건부 액션 완료 및 추가
- */
-function completeConditionalAction() {
-  // addConditionalActionAfterStep 함수 호출
-  addConditionalActionAfterStep(conditionalActionData.stepIndex, {
-    actionType: conditionalActionData.actionType,
-    conditionElement: conditionalActionData.conditionElement,
-    childElement: conditionalActionData.childElement,
-    siblingElement: conditionalActionData.siblingElement,
-    ancestorElement: conditionalActionData.ancestorElement,
-    conditionType: conditionalActionData.conditionType,
-    conditionValue: conditionalActionData.conditionValue,
-    targetRelation: conditionalActionData.targetRelation,
-    targetSelector: conditionalActionData.targetSelector,
-    loopMode: conditionalActionData.loopMode,
-    loopSelector: conditionalActionData.loopSelector,
-    actionTypeValue: conditionalActionData.actionTypeValue,
-    actionValue: conditionalActionData.actionValue
+  const stateRefs = {
+    conditionalActionStep,
+    conditionalActionData
+  };
+  
+  activateElementSelectionForRelativeActionStepModule(type, stateRefs, {
+    startSimpleElementSelection: startSimpleElementSelectionWrapper,
+    validateBySelector: validateBySelectorWrapper,
+    validateSiblingRelation: validateSiblingRelationWrapper,
+    validateAncestorRelation: validateAncestorRelationWrapper,
+    updateConditionalActionStep
   });
   
-  // 메뉴 닫기
-  const menu = document.getElementById('global-conditional-action-menu');
-  if (menu) {
-    menu.classList.add('hidden');
-  }
-  
-  // 상태 초기화
-  conditionalActionStep = 0;
-  conditionalActionData = {
-    actionType: null,
-    conditionElement: null,
-    childElement: null,
-    siblingElement: null,
-    ancestorElement: null,
-    conditionType: null,
-    conditionValue: null,
-    targetRelation: null,
-    targetSelector: null,
-    loopMode: null,
-    loopSelector: null,
-    actionTypeValue: null,
-    actionValue: null,
-    stepIndex: -1
-  };
+  // stateRefs의 변경사항을 전역 변수에 반영
+  conditionalActionStep = stateRefs.conditionalActionStep;
+  conditionalActionData = stateRefs.conditionalActionData;
 }
 
 /**
- * 조건부 액션 추가 취소
+ * 조건부 액션 완료 및 추가 (래퍼 함수)
+ */
+function completeConditionalAction() {
+  const stateRefs = {
+    conditionalActionStep,
+    conditionalActionData
+  };
+  
+  completeConditionalActionModule(stateRefs, {
+    addConditionalActionAfterStep
+  });
+  
+  // stateRefs의 변경사항을 전역 변수에 반영
+  conditionalActionStep = stateRefs.conditionalActionStep;
+  conditionalActionData = stateRefs.conditionalActionData;
+}
+
+/**
+ * 조건부 액션 추가 취소 (래퍼 함수)
  */
 function cancelConditionalAction() {
-  // 메뉴 닫기
-  const menu = document.getElementById('global-conditional-action-menu');
-  if (menu) {
-    menu.classList.add('hidden');
-  }
-  
-  // 상태 초기화
-  conditionalActionStep = 0;
-  conditionalActionData = {
-    actionType: null,
-    conditionElement: null,
-    childElement: null,
-    siblingElement: null,
-    ancestorElement: null,
-    conditionType: null,
-    conditionValue: null,
-    targetRelation: null,
-    targetSelector: null,
-    loopMode: null,
-    loopSelector: null,
-    actionTypeValue: null,
-    actionValue: null,
-    stepIndex: -1
+  const stateRefs = {
+    conditionalActionStep,
+    conditionalActionData
   };
+  
+  cancelConditionalActionModule(stateRefs, {});
+  
+  // stateRefs의 변경사항을 전역 변수에 반영
+  conditionalActionStep = stateRefs.conditionalActionStep;
+  conditionalActionData = stateRefs.conditionalActionData;
 }
 
+// 원래 함수 정의는 recorder-conditional-workflow.js로 이동됨
+
+// 원래 함수 정의는 recorder-conditional-workflow.js로 이동됨 (래퍼 함수는 위에 정의됨)
+
 /**
- * 조건부 액션 다이얼로그 표시
+ * 조건부 액션 다이얼로그 표시 (래퍼 함수)
  * @param {number} stepIndex - 스텝 인덱스 (-1이면 맨 끝에 추가)
  * @param {Object} stepEvent - 스텝 이벤트 정보
  */
 function showConditionalActionDialog(stepIndex, stepEvent) {
-  // 기존 다이얼로그가 있으면 제거
-  const existing = document.getElementById('conditional-action-dialog');
-  if (existing) {
-    existing.remove();
-  }
-  
-  const dialog = document.createElement('div');
-  dialog.id = 'conditional-action-dialog';
-  dialog.className = 'modal-dialog';
-  dialog.style.cssText = 'position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 10000; background: var(--vscode-editor-background); border: 1px solid var(--vscode-border); border-radius: 8px; padding: 20px; min-width: 500px; max-width: 700px; max-height: 80vh; overflow-y: auto;';
-  
-  const dialogContent = document.createElement('div');
-  dialogContent.className = 'modal-content';
-  
-  // 헤더
-  const header = document.createElement('div');
-  header.className = 'modal-header';
-  header.style.cssText = 'display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;';
-  header.innerHTML = '<h3>조건부 액션 추가</h3>';
-  const closeBtn = document.createElement('button');
-  closeBtn.textContent = '×';
-  closeBtn.style.cssText = 'background: none; border: none; font-size: 24px; cursor: pointer; color: var(--vscode-foreground);';
-  closeBtn.addEventListener('click', () => dialog.remove());
-  header.appendChild(closeBtn);
-  
-  // 바디
-  const body = document.createElement('div');
-  body.className = 'modal-body';
-  
-  // 액션 타입 선택
-  const actionTypeSection = document.createElement('div');
-  actionTypeSection.style.cssText = 'margin-bottom: 20px;';
-  actionTypeSection.innerHTML = '<label style="display: block; margin-bottom: 8px; font-weight: bold;">액션 타입:</label>';
-  const actionTypeSelect = document.createElement('select');
-  actionTypeSelect.id = 'conditional-action-type';
-  actionTypeSelect.style.cssText = 'width: 100%; padding: 8px; border: 1px solid var(--vscode-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);';
-  actionTypeSelect.innerHTML = `
-    <option value="conditionalAction">조건부 액션 (if 문)</option>
-    <option value="relativeAction">상대 노드 탐색 (부모/형제/자식)</option>
-    <option value="loopAction">반복 액션 (for 문)</option>
-  `;
-  actionTypeSection.appendChild(actionTypeSelect);
-  
-  // 조건 요소 선택 섹션
-  const conditionElementSection = document.createElement('div');
-  conditionElementSection.id = 'condition-element-section';
-  conditionElementSection.style.cssText = 'margin-bottom: 20px;';
-  conditionElementSection.innerHTML = `
-    <label style="display: block; margin-bottom: 8px; font-weight: bold;">조건 요소 선택:</label>
-    <button id="select-condition-element" style="width: 100%; padding: 8px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; cursor: pointer;">요소 선택하기</button>
-    <div id="selected-condition-element" style="margin-top: 8px; padding: 8px; background: var(--vscode-input-background); border-radius: 4px; display: none;"></div>
-  `;
-  
-  // 조건 타입 선택
-  const conditionTypeSection = document.createElement('div');
-  conditionTypeSection.id = 'condition-type-section';
-  conditionTypeSection.style.cssText = 'margin-bottom: 20px; display: none;';
-  conditionTypeSection.innerHTML = `
-    <label style="display: block; margin-bottom: 8px; font-weight: bold;">조건 타입:</label>
-    <select id="condition-type" style="width: 100%; padding: 8px; border: 1px solid var(--vscode-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);">
-      <option value="is_visible">요소가 보임 (is_visible)</option>
-      <option value="text_contains">텍스트 포함</option>
-      <option value="text_equals">텍스트 일치</option>
-      <option value="class_name">클래스명 포함</option>
-      <option value="has_attribute">속성 존재</option>
-    </select>
-    <input id="condition-value" type="text" placeholder="조건 값 입력" style="width: 100%; margin-top: 8px; padding: 8px; border: 1px solid var(--vscode-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); display: none;">
-  `;
-  
-  // 액션 대상 선택 (상대 노드 탐색용)
-  const targetRelationSection = document.createElement('div');
-  targetRelationSection.id = 'target-relation-section';
-  targetRelationSection.style.cssText = 'margin-bottom: 20px; display: none;';
-  targetRelationSection.innerHTML = `
-    <label style="display: block; margin-bottom: 8px; font-weight: bold;">액션 대상:</label>
-    <select id="target-relation" style="width: 100%; padding: 8px; border: 1px solid var(--vscode-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);">
-      <option value="parent">부모 노드</option>
-      <option value="ancestor">조상 노드 (closest)</option>
-      <option value="sibling">형제 노드</option>
-      <option value="child">자식 노드</option>
-    </select>
-    <div id="child-selection-section" style="margin-top: 8px; display: none;">
-      <button id="select-child-element" type="button" style="width: 100%; padding: 8px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; cursor: pointer; margin-bottom: 8px;">자식 요소 선택하기</button>
-      <div id="selected-child-element" style="margin-bottom: 8px; padding: 8px; background: var(--vscode-input-background); border-radius: 4px; display: none;"></div>
-    </div>
-    <div id="sibling-selection-section" style="margin-top: 8px; display: none;">
-      <button id="select-sibling-element" type="button" style="width: 100%; padding: 8px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; cursor: pointer; margin-bottom: 8px;">형제 요소 선택하기</button>
-      <div id="selected-sibling-element" style="margin-bottom: 8px; padding: 8px; background: var(--vscode-input-background); border-radius: 4px; display: none;"></div>
-    </div>
-    <div id="ancestor-selection-section" style="margin-top: 8px; display: none;">
-      <button id="select-ancestor-element" type="button" style="width: 100%; padding: 8px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; cursor: pointer; margin-bottom: 8px;">조상 요소 선택하기</button>
-      <div id="selected-ancestor-element" style="margin-bottom: 8px; padding: 8px; background: var(--vscode-input-background); border-radius: 4px; display: none;"></div>
-    </div>
-    <input id="target-selector" type="text" placeholder="대상 셀렉터 (선택사항, 예: .item)" style="width: 100%; margin-top: 8px; padding: 8px; border: 1px solid var(--vscode-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);">
-  `;
-  
-  // 반복 모드 선택
-  const loopModeSection = document.createElement('div');
-  loopModeSection.id = 'loop-mode-section';
-  loopModeSection.style.cssText = 'margin-bottom: 20px; display: none;';
-  loopModeSection.innerHTML = `
-    <label style="display: block; margin-bottom: 8px; font-weight: bold;">반복 모드:</label>
-    <select id="loop-mode" style="width: 100%; padding: 8px; border: 1px solid var(--vscode-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);">
-      <option value="single">단일 액션</option>
-      <option value="loop">반복 액션 (리스트 순회)</option>
-    </select>
-    <input id="loop-selector" type="text" placeholder="반복할 리스트 셀렉터 (예: .item)" style="width: 100%; margin-top: 8px; padding: 8px; border: 1px solid var(--vscode-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); display: none;">
-  `;
-  
-  // 액션 타입 선택
-  const actionTypeInputSection = document.createElement('div');
-  actionTypeInputSection.style.cssText = 'margin-bottom: 20px;';
-  actionTypeInputSection.innerHTML = `
-    <label style="display: block; margin-bottom: 8px; font-weight: bold;">실행할 액션:</label>
-    <select id="action-type" style="width: 100%; padding: 8px; border: 1px solid var(--vscode-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);">
-      <option value="click">클릭</option>
-      <option value="type">입력</option>
-      <option value="hover">호버</option>
-      <option value="doubleClick">더블 클릭</option>
-      <option value="rightClick">우클릭</option>
-    </select>
-    <input id="action-value" type="text" placeholder="입력할 값 (type 액션인 경우)" style="width: 100%; margin-top: 8px; padding: 8px; border: 1px solid var(--vscode-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); display: none;">
-  `;
-  
-  // 코드 미리보기
-  const previewSection = document.createElement('div');
-  previewSection.style.cssText = 'margin-bottom: 20px;';
-  previewSection.innerHTML = `
-    <label style="display: block; margin-bottom: 8px; font-weight: bold;">코드 미리보기:</label>
-    <pre id="code-preview" style="padding: 12px; background: var(--vscode-textBlockQuote-background); border: 1px solid var(--vscode-border); border-radius: 4px; font-size: 12px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word;"></pre>
-  `;
-  
-  body.appendChild(actionTypeSection);
-  body.appendChild(conditionElementSection);
-  body.appendChild(conditionTypeSection);
-  body.appendChild(targetRelationSection);
-  body.appendChild(loopModeSection);
-  body.appendChild(actionTypeInputSection);
-  body.appendChild(previewSection);
-  
-  // 푸터
-  const footer = document.createElement('div');
-  footer.className = 'modal-footer';
-  footer.style.cssText = 'display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;';
-  const cancelBtn = document.createElement('button');
-  cancelBtn.textContent = '취소';
-  cancelBtn.className = 'btn btn-secondary';
-  cancelBtn.style.cssText = 'padding: 8px 16px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: none; border-radius: 4px; cursor: pointer;';
-  cancelBtn.addEventListener('click', () => dialog.remove());
-  const confirmBtn = document.createElement('button');
-  confirmBtn.textContent = '추가';
-  confirmBtn.className = 'btn btn-primary';
-  confirmBtn.style.cssText = 'padding: 8px 16px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; cursor: pointer;';
-  confirmBtn.addEventListener('click', () => {
-    const actionType = actionTypeSelect.value;
-    const conditionElement = dialog.dataset.conditionElement ? JSON.parse(dialog.dataset.conditionElement) : null;
-    const childElement = dialog.dataset.childElement ? JSON.parse(dialog.dataset.childElement) : null;
-    const siblingElement = dialog.dataset.siblingElement ? JSON.parse(dialog.dataset.siblingElement) : null;
-    const ancestorElement = dialog.dataset.ancestorElement ? JSON.parse(dialog.dataset.ancestorElement) : null;
-    const conditionType = document.getElementById('condition-type').value;
-    const conditionValue = document.getElementById('condition-value').value;
-    const targetRelation = document.getElementById('target-relation').value;
-    const targetSelector = document.getElementById('target-selector').value;
-    const loopMode = document.getElementById('loop-mode').value;
-    const loopSelector = document.getElementById('loop-selector').value;
-    const actionTypeValue = document.getElementById('action-type').value;
-    const actionValue = document.getElementById('action-value').value;
-    
-    addConditionalActionAfterStep(stepIndex, {
-      actionType,
-      conditionElement,
-      childElement,
-      siblingElement,
-      ancestorElement,
-      conditionType,
-      conditionValue,
-      targetRelation,
-      targetSelector,
-      loopMode,
-      loopSelector,
-      actionTypeValue,
-      actionValue
-    });
-    
-    dialog.remove();
+  showConditionalActionDialogModule(stepIndex, stepEvent, {
+    addConditionalActionAfterStep,
+    startSimpleElementSelection: startSimpleElementSelectionWrapper,
+    validateBySelector: validateBySelectorWrapper,
+    validateSiblingRelation: validateSiblingRelationWrapper,
+    validateAncestorRelation: validateAncestorRelationWrapper,
+    updateConditionalActionUI: updateConditionalActionUIWrapper,
+    updateCodePreview: updateCodePreviewWrapper
   });
-  
-  footer.appendChild(cancelBtn);
-  footer.appendChild(confirmBtn);
-  
-  dialogContent.appendChild(header);
-  dialogContent.appendChild(body);
-  dialogContent.appendChild(footer);
-  dialog.appendChild(dialogContent);
-  document.body.appendChild(dialog);
-  
-  // 액션 타입 변경 시 UI 업데이트
-  actionTypeSelect.addEventListener('change', () => {
-    updateConditionalActionUI(actionTypeSelect.value, dialog);
-  });
-  
-  // 조건 타입 변경 시 값 입력 필드 표시/숨김
-  document.getElementById('condition-type').addEventListener('change', (e) => {
-    const conditionValueInput = document.getElementById('condition-value');
-    const needsValue = ['text_contains', 'text_equals', 'class_name', 'has_attribute'].includes(e.target.value);
-    conditionValueInput.style.display = needsValue ? 'block' : 'none';
-    updateCodePreview(dialog);
-  });
-  
-  // 액션 타입 변경 시 값 입력 필드 표시/숨김
-  document.getElementById('action-type').addEventListener('change', (e) => {
-    const actionValueInput = document.getElementById('action-value');
-    actionValueInput.style.display = e.target.value === 'type' ? 'block' : 'none';
-    updateCodePreview(dialog);
-  });
-  
-  // 반복 모드 변경 시 리스트 셀렉터 표시/숨김
-  document.getElementById('loop-mode').addEventListener('change', (e) => {
-    const loopSelectorInput = document.getElementById('loop-selector');
-    loopSelectorInput.style.display = e.target.value === 'loop' ? 'block' : 'none';
-    updateCodePreview(dialog);
-  });
-  
-  // target-relation 변경 시 선택 버튼 표시/숨김
-  document.getElementById('target-relation').addEventListener('change', (e) => {
-    const childSelectionSection = document.getElementById('child-selection-section');
-    const siblingSelectionSection = document.getElementById('sibling-selection-section');
-    const ancestorSelectionSection = document.getElementById('ancestor-selection-section');
-    const targetSelectorInput = document.getElementById('target-selector');
-    
-    // 모든 선택 섹션 숨김
-    childSelectionSection.style.display = 'none';
-    siblingSelectionSection.style.display = 'none';
-    ancestorSelectionSection.style.display = 'none';
-    
-    // 선택된 요소 데이터 초기화
-    delete dialog.dataset.childElement;
-    delete dialog.dataset.siblingElement;
-    delete dialog.dataset.ancestorElement;
-    
-    const selectedChildDiv = document.getElementById('selected-child-element');
-    const selectedSiblingDiv = document.getElementById('selected-sibling-element');
-    const selectedAncestorDiv = document.getElementById('selected-ancestor-element');
-    if (selectedChildDiv) selectedChildDiv.style.display = 'none';
-    if (selectedSiblingDiv) selectedSiblingDiv.style.display = 'none';
-    if (selectedAncestorDiv) selectedAncestorDiv.style.display = 'none';
-    
-    // 선택된 관계에 따라 해당 섹션 표시
-    if (e.target.value === 'child') {
-      childSelectionSection.style.display = 'block';
-      targetSelectorInput.placeholder = '또는 셀렉터를 직접 입력하세요 (예: .item)';
-    } else if (e.target.value === 'sibling') {
-      siblingSelectionSection.style.display = 'block';
-      targetSelectorInput.placeholder = '또는 셀렉터를 직접 입력하세요 (예: .item)';
-    } else if (e.target.value === 'ancestor') {
-      ancestorSelectionSection.style.display = 'block';
-      targetSelectorInput.placeholder = '또는 셀렉터를 직접 입력하세요 (예: .item)';
-    } else {
-      targetSelectorInput.placeholder = '대상 셀렉터 (선택사항, 예: .item)';
-    }
-    updateCodePreview(dialog);
-  });
-  
-  // 요소 선택 버튼 이벤트
-  document.getElementById('select-condition-element').addEventListener('click', () => {
-    activateElementSelectionForConditionalAction(stepIndex, dialog);
-  });
-  
-  // 자식 요소 선택 버튼 이벤트
-  document.getElementById('select-child-element').addEventListener('click', () => {
-    activateChildElementSelection(stepIndex, dialog);
-  });
-  
-  // 형제 요소 선택 버튼 이벤트
-  document.getElementById('select-sibling-element').addEventListener('click', () => {
-    activateSiblingElementSelection(stepIndex, dialog);
-  });
-  
-  // 조상 요소 선택 버튼 이벤트
-  document.getElementById('select-ancestor-element').addEventListener('click', () => {
-    activateAncestorElementSelection(stepIndex, dialog);
-  });
-  
-  // 모든 입력 변경 시 미리보기 업데이트
-  [actionTypeSelect, document.getElementById('condition-type'), document.getElementById('condition-value'),
-   document.getElementById('target-relation'), document.getElementById('target-selector'),
-   document.getElementById('loop-mode'), document.getElementById('loop-selector'),
-   document.getElementById('action-type'), document.getElementById('action-value')].forEach(el => {
-    if (el) {
-      el.addEventListener('input', () => updateCodePreview(dialog));
-      el.addEventListener('change', () => updateCodePreview(dialog));
-    }
-  });
-  
-  // 초기 UI 업데이트
-  updateConditionalActionUI(actionTypeSelect.value, dialog);
 }
 
+// 원래 함수 정의는 recorder-conditional-dialog.js로 이동됨
+
+// 원래 함수 정의는 recorder-conditional-dialog.js로 이동됨
+
 /**
- * 조건부 액션 UI 업데이트
+ * 조건부 액션 UI 업데이트 (래퍼 함수)
  */
 function updateConditionalActionUI(actionType, dialog) {
-  const conditionTypeSection = document.getElementById('condition-type-section');
-  const targetRelationSection = document.getElementById('target-relation-section');
-  const loopModeSection = document.getElementById('loop-mode-section');
-  
-  if (actionType === 'conditionalAction' || actionType === 'loopAction') {
-    conditionTypeSection.style.display = 'block';
-  } else {
-    conditionTypeSection.style.display = 'none';
-  }
-  
-  if (actionType === 'relativeAction') {
-    targetRelationSection.style.display = 'block';
-  } else {
-    targetRelationSection.style.display = 'none';
-  }
-  
-  if (actionType === 'loopAction') {
-    loopModeSection.style.display = 'block';
-  } else {
-    loopModeSection.style.display = 'none';
-  }
-  
-  updateCodePreview(dialog);
+  updateConditionalActionUIModule(actionType, dialog, {
+    updateCodePreview: updateCodePreviewWrapper
+  });
 }
 
+// 원래 함수 정의는 recorder-conditional-dialog.js로 이동됨
+
 /**
- * 코드 미리보기 업데이트
+ * 코드 미리보기 업데이트 (래퍼 함수)
  */
 function updateCodePreview(dialog) {
-  const preview = document.getElementById('code-preview');
-  if (!preview) return;
-  
-  const actionType = document.getElementById('conditional-action-type').value;
-  const conditionElement = dialog.dataset.conditionElement ? JSON.parse(dialog.dataset.conditionElement) : null;
-  const conditionType = document.getElementById('condition-type').value;
-  const conditionValue = document.getElementById('condition-value').value;
-  const targetRelation = document.getElementById('target-relation').value;
-  const targetSelector = document.getElementById('target-selector').value;
-  const loopMode = document.getElementById('loop-mode').value;
-  const loopSelector = document.getElementById('loop-selector').value;
-  const actionTypeValue = document.getElementById('action-type').value;
-  const actionValue = document.getElementById('action-value').value;
-  
-  let code = '';
-  
-  if (actionType === 'conditionalAction') {
-    if (conditionElement && conditionType) {
-      const elementSelector = conditionElement.selector || 'page.locator("...")';
-      code = `# 조건부 액션\n`;
-      code += `${elementSelector}\n`;
-      code += `if await ${elementSelector}.is_visible():\n`;
-      code += `    await ${elementSelector}.click()`;
-    } else {
-      code = '조건 요소를 선택하세요.';
-    }
-  } else if (actionType === 'relativeAction') {
-    if (conditionElement) {
-      const baseSelector = conditionElement.selector || 'page.locator("...")';
-      let targetSelectorCode = baseSelector;
-      const childElement = dialog.dataset.childElement ? JSON.parse(dialog.dataset.childElement) : null;
-      const siblingElement = dialog.dataset.siblingElement ? JSON.parse(dialog.dataset.siblingElement) : null;
-      const ancestorElement = dialog.dataset.ancestorElement ? JSON.parse(dialog.dataset.ancestorElement) : null;
-      
-      if (targetRelation === 'parent') {
-        targetSelectorCode = `${baseSelector}.locator('..')`;
-      } else if (targetRelation === 'ancestor') {
-        // 조상 요소가 선택되었으면 그것을 사용, 아니면 targetSelector 사용
-        if (ancestorElement && ancestorElement.selector) {
-          targetSelectorCode = ancestorElement.selector;
-        } else if (targetSelector) {
-          targetSelectorCode = `${baseSelector}.locator('xpath=ancestor::${targetSelector.replace(/^\./, '')}[1]')`;
-        } else {
-          targetSelectorCode = `${baseSelector}.locator('xpath=ancestor::*[1]')`;
-        }
-      } else if (targetRelation === 'sibling') {
-        // 형제 요소가 선택되었으면 그것을 사용, 아니면 targetSelector 사용
-        if (siblingElement && siblingElement.selector) {
-          targetSelectorCode = siblingElement.selector;
-        } else if (targetSelector) {
-          const tagName = targetSelector.replace(/^\./, '').split('[')[0];
-          targetSelectorCode = `${baseSelector}.locator('xpath=../following-sibling::${tagName}[1]')`;
-        } else {
-          targetSelectorCode = `${baseSelector}.locator('xpath=../following-sibling::*[1]')`;
-        }
-      } else if (targetRelation === 'child') {
-        // 자식 요소가 선택되었으면 그것을 사용, 아니면 targetSelector 사용
-        if (childElement && childElement.selector) {
-          targetSelectorCode = childElement.selector;
-        } else if (targetSelector) {
-          targetSelectorCode = `${baseSelector}.locator('${targetSelector}')`;
-        } else {
-          targetSelectorCode = `${baseSelector}.locator('...')`;
-        }
-      }
-      code = `# 상대 노드 탐색\n`;
-      code += `element = ${baseSelector}\n`;
-      code += `await ${targetSelectorCode}.click()`;
-    } else {
-      code = '조건 요소를 선택하세요.';
-    }
-  } else if (actionType === 'loopAction') {
-    if (loopMode === 'loop' && loopSelector) {
-      code = `# 반복 액션\n`;
-      code += `items = page.locator('${loopSelector}')\n`;
-      code += `count = await items.count()\n`;
-      code += `for i in range(count):\n`;
-      code += `    item = items.nth(i)\n`;
-      if (conditionElement && conditionType) {
-        const elementSelector = conditionElement.selector || 'item.locator("...")';
-        code += `    if await ${elementSelector}.is_visible():\n`;
-        code += `        await item.click()`;
-      } else {
-        code += `    await item.click()`;
-      }
-    } else {
-      code = '반복 모드를 선택하고 리스트 셀렉터를 입력하세요.';
-    }
-  }
-  
-  preview.textContent = code;
+  updateCodePreviewModule(dialog, {});
 }
 
+// 원래 함수 정의는 recorder-conditional-dialog.js로 이동됨
+
 /**
- * 조건부 액션을 위한 요소 선택 활성화
+ * 조건부 액션을 위한 요소 선택 활성화 (래퍼 함수)
  */
 function activateElementSelectionForConditionalAction(stepIndex, dialog) {
-  startSimpleElementSelection((path, elementInfo) => {
-    if (!path || path.length === 0) {
-      alert('요소를 선택할 수 없습니다.');
-      return;
-    }
-    
-    const selectedElement = path[path.length - 1];
-    const elementData = {
-      selector: selectedElement.selector || selectedElement,
-      xpath: selectedElement.xpathValue || selectedElement.xpath || null,
-      text: elementInfo.text || selectedElement.textValue || null
-    };
-    
-    dialog.dataset.conditionElement = JSON.stringify(elementData);
-    
-    const selectedElementDiv = document.getElementById('selected-condition-element');
-    selectedElementDiv.style.display = 'block';
-    selectedElementDiv.textContent = `선택된 요소: ${elementData.selector}`;
-    
-    updateCodePreview(dialog);
-  }, null, stepIndex);
+  activateElementSelectionForConditionalActionModule(stepIndex, dialog, {
+    startSimpleElementSelection: startSimpleElementSelectionWrapper,
+    updateCodePreview: updateCodePreviewWrapper
+  });
 }
 
+// 원래 함수 정의는 recorder-conditional-dialog.js로 이동됨
+
 /**
- * 자식 요소 선택 활성화 (부모-자식 관계 검증 포함)
+ * 자식 요소 선택 활성화 (부모-자식 관계 검증 포함) (래퍼 함수)
  */
 function activateChildElementSelection(stepIndex, dialog) {
-  // 부모 요소가 선택되었는지 확인
-  const conditionElement = dialog.dataset.conditionElement ? JSON.parse(dialog.dataset.conditionElement) : null;
-  if (!conditionElement) {
-    alert('먼저 부모 요소를 선택하세요.');
-    return;
-  }
-  
-  // 부모 요소 정보를 저장하여 검증에 사용
-  dialog.dataset.parentElementForValidation = JSON.stringify(conditionElement);
-  
-  startSimpleElementSelection((path, elementInfo) => {
-    if (!path || path.length === 0) {
-      alert('요소를 선택할 수 없습니다.');
-      return;
-    }
-    
-    const selectedElement = path[path.length - 1];
-    const childElementData = {
-      selector: selectedElement.selector || selectedElement,
-      xpath: selectedElement.xpathValue || selectedElement.xpath || null,
-      text: elementInfo.text || selectedElement.textValue || null
-    };
-    
-    // 부모-자식 관계 검증
-    const parentElement = dialog.dataset.parentElementForValidation ? JSON.parse(dialog.dataset.parentElementForValidation) : null;
-    if (parentElement) {
-      const isValid = validateBySelector(parentElement, childElementData);
-      
-      if (isValid) {
-        // 검증 성공: 자식 요소 저장
-        dialog.dataset.childElement = JSON.stringify(childElementData);
-        
-        const selectedChildDiv = document.getElementById('selected-child-element');
-        selectedChildDiv.style.display = 'block';
-        selectedChildDiv.textContent = `선택된 자식 요소: ${childElementData.selector}`;
-        
-        // target-selector에 자동으로 채우기
-        const targetSelectorInput = document.getElementById('target-selector');
-        if (targetSelectorInput && !targetSelectorInput.value) {
-          // 셀렉터에서 클래스나 ID 추출 시도
-          const selector = childElementData.selector || '';
-          const match = selector.match(/['"]([^'"]+)['"]/);
-          if (match) {
-            targetSelectorInput.value = match[1];
-          }
-        }
-        
-        updateCodePreview(dialog);
-      } else {
-        // 검증 실패: 경고 메시지
-        alert('선택한 요소가 부모 요소의 자식이 아닙니다. 부모 요소 내부의 자식 요소를 선택하세요.');
-      }
-    } else {
-      // 부모 요소 정보가 없으면 그냥 저장 (검증 없이)
-      dialog.dataset.childElement = JSON.stringify(childElementData);
-      
-      const selectedChildDiv = document.getElementById('selected-child-element');
-      selectedChildDiv.style.display = 'block';
-      selectedChildDiv.textContent = `선택된 자식 요소: ${childElementData.selector}`;
-      
-      updateCodePreview(dialog);
-    }
-  }, null, stepIndex);
+  activateChildElementSelectionModule(stepIndex, dialog, {
+    startSimpleElementSelection: startSimpleElementSelectionWrapper,
+    validateBySelector: validateBySelectorWrapper,
+    updateCodePreview: updateCodePreviewWrapper
+  });
 }
 
-/**
- * 셀렉터 기반 부모-자식 관계 검증
- */
-function validateBySelector(parentElement, childElement) {
-  // XPath 기반 검증
-  if (parentElement.xpath && childElement.xpath) {
-    const parentXPath = parentElement.xpath;
-    const childXPath = childElement.xpath;
-    
-    // child의 xpath가 parent의 xpath로 시작하는지 확인
-    if (childXPath.startsWith(parentXPath + '/') || 
-        childXPath.startsWith(parentXPath + '[') ||
-        childXPath === parentXPath) {
-      return true;
-    }
-  }
-  
-  // 셀렉터 기반 검증
-  if (parentElement.selector && childElement.selector) {
-    const parentSelector = parentElement.selector;
-    const childSelector = childElement.selector;
-    
-    // childSelector가 parentSelector를 포함하거나 확장한 형태인지 확인
-    if (childSelector.includes(parentSelector)) {
-      // parent.locator(...) 형태인지 확인
-      if (childSelector.startsWith(parentSelector + '.locator(') ||
-          childSelector.startsWith(parentSelector + '[') ||
-          childSelector === parentSelector) {
-        return true;
-      }
-    }
-  }
-  
-  return false;
-}
+// 원래 함수 정의는 recorder-conditional-dialog.js로 이동됨
 
 /**
- * 형제 요소 선택 활성화 (형제 관계 검증 포함)
+ * 형제 요소 선택 활성화 (형제 관계 검증 포함) (래퍼 함수)
  */
 function activateSiblingElementSelection(stepIndex, dialog) {
-  // 기준 요소가 선택되었는지 확인
-  const conditionElement = dialog.dataset.conditionElement ? JSON.parse(dialog.dataset.conditionElement) : null;
-  if (!conditionElement) {
-    alert('먼저 기준 요소를 선택하세요.');
-    return;
-  }
-  
-  // 기준 요소 정보를 저장하여 검증에 사용
-  dialog.dataset.baseElementForValidation = JSON.stringify(conditionElement);
-  
-  startSimpleElementSelection((path, elementInfo) => {
-    if (!path || path.length === 0) {
-      alert('요소를 선택할 수 없습니다.');
-      return;
-    }
-    
-    const selectedElement = path[path.length - 1];
-    const siblingElementData = {
-      selector: selectedElement.selector || selectedElement,
-      xpath: selectedElement.xpathValue || selectedElement.xpath || null,
-      text: elementInfo.text || selectedElement.textValue || null
-    };
-    
-    // 형제 관계 검증
-    const baseElement = dialog.dataset.baseElementForValidation ? JSON.parse(dialog.dataset.baseElementForValidation) : null;
-    if (baseElement) {
-      const isValid = validateSiblingRelation(baseElement, siblingElementData);
-      
-      if (isValid) {
-        // 검증 성공: 형제 요소 저장
-        dialog.dataset.siblingElement = JSON.stringify(siblingElementData);
-        
-        const selectedSiblingDiv = document.getElementById('selected-sibling-element');
-        selectedSiblingDiv.style.display = 'block';
-        selectedSiblingDiv.textContent = `선택된 형제 요소: ${siblingElementData.selector}`;
-        
-        // target-selector에 자동으로 채우기
-        const targetSelectorInput = document.getElementById('target-selector');
-        if (targetSelectorInput && !targetSelectorInput.value) {
-          const selector = siblingElementData.selector || '';
-          const match = selector.match(/['"]([^'"]+)['"]/);
-          if (match) {
-            targetSelectorInput.value = match[1];
-          }
-        }
-        
-        updateCodePreview(dialog);
-      } else {
-        // 검증 실패: 경고 메시지
-        alert('선택한 요소가 기준 요소의 형제가 아닙니다. 같은 부모를 가진 형제 요소를 선택하세요.');
-      }
-    } else {
-      // 기준 요소 정보가 없으면 그냥 저장 (검증 없이)
-      dialog.dataset.siblingElement = JSON.stringify(siblingElementData);
-      
-      const selectedSiblingDiv = document.getElementById('selected-sibling-element');
-      selectedSiblingDiv.style.display = 'block';
-      selectedSiblingDiv.textContent = `선택된 형제 요소: ${siblingElementData.selector}`;
-      
-      updateCodePreview(dialog);
-    }
-  }, null, stepIndex);
+  activateSiblingElementSelectionModule(stepIndex, dialog, {
+    startSimpleElementSelection: startSimpleElementSelectionWrapper,
+    validateSiblingRelation: validateSiblingRelationWrapper,
+    updateCodePreview: updateCodePreviewWrapper
+  });
 }
 
+// 원래 함수 정의는 recorder-conditional-dialog.js로 이동됨
+
 /**
- * 조상 요소 선택 활성화 (조상 관계 검증 포함)
+ * 조상 요소 선택 활성화 (조상 관계 검증 포함) (래퍼 함수)
  */
 function activateAncestorElementSelection(stepIndex, dialog) {
-  // 기준 요소가 선택되었는지 확인
-  const conditionElement = dialog.dataset.conditionElement ? JSON.parse(dialog.dataset.conditionElement) : null;
-  if (!conditionElement) {
-    alert('먼저 기준 요소를 선택하세요.');
-    return;
-  }
-  
-  // 기준 요소 정보를 저장하여 검증에 사용
-  dialog.dataset.baseElementForValidation = JSON.stringify(conditionElement);
-  
-  startSimpleElementSelection((path, elementInfo) => {
-    if (!path || path.length === 0) {
-      alert('요소를 선택할 수 없습니다.');
-      return;
-    }
-    
-    const selectedElement = path[path.length - 1];
-    const ancestorElementData = {
-      selector: selectedElement.selector || selectedElement,
-      xpath: selectedElement.xpathValue || selectedElement.xpath || null,
-      text: elementInfo.text || selectedElement.textValue || null
-    };
-    
-    // 조상 관계 검증
-    const baseElement = dialog.dataset.baseElementForValidation ? JSON.parse(dialog.dataset.baseElementForValidation) : null;
-    if (baseElement) {
-      const isValid = validateAncestorRelation(baseElement, ancestorElementData);
-      
-      if (isValid) {
-        // 검증 성공: 조상 요소 저장
-        dialog.dataset.ancestorElement = JSON.stringify(ancestorElementData);
-        
-        const selectedAncestorDiv = document.getElementById('selected-ancestor-element');
-        selectedAncestorDiv.style.display = 'block';
-        selectedAncestorDiv.textContent = `선택된 조상 요소: ${ancestorElementData.selector}`;
-        
-        // target-selector에 자동으로 채우기
-        const targetSelectorInput = document.getElementById('target-selector');
-        if (targetSelectorInput && !targetSelectorInput.value) {
-          const selector = ancestorElementData.selector || '';
-          const match = selector.match(/['"]([^'"]+)['"]/);
-          if (match) {
-            targetSelectorInput.value = match[1];
-          }
-        }
-        
-        updateCodePreview(dialog);
-      } else {
-        // 검증 실패: 경고 메시지
-        alert('선택한 요소가 기준 요소의 조상이 아닙니다. 기준 요소의 상위 요소를 선택하세요.');
-      }
-    } else {
-      // 기준 요소 정보가 없으면 그냥 저장 (검증 없이)
-      dialog.dataset.ancestorElement = JSON.stringify(ancestorElementData);
-      
-      const selectedAncestorDiv = document.getElementById('selected-ancestor-element');
-      selectedAncestorDiv.style.display = 'block';
-      selectedAncestorDiv.textContent = `선택된 조상 요소: ${ancestorElementData.selector}`;
-      
-      updateCodePreview(dialog);
-    }
-  }, null, stepIndex);
+  activateAncestorElementSelectionModule(stepIndex, dialog, {
+    startSimpleElementSelection: startSimpleElementSelectionWrapper,
+    validateAncestorRelation: validateAncestorRelationWrapper,
+    updateCodePreview: updateCodePreviewWrapper
+  });
 }
 
+// 원래 함수 정의는 recorder-conditional-dialog.js로 이동됨
+
+// 삭제된 함수들: 오래된 구현들은 모두 recorder-conditional-dialog.js로 이동됨
+
 /**
- * 형제 관계 검증
+ * 부모-자식 관계 검증 (래퍼 함수)
  */
-function validateSiblingRelation(baseElement, siblingElement) {
-  // XPath 기반 검증: 같은 부모를 가져야 함
-  if (baseElement.xpath && siblingElement.xpath) {
-    const baseXPath = baseElement.xpath;
-    const siblingXPath = siblingElement.xpath;
-    
-    // 부모 경로 추출 (마지막 / 또는 [ 이전까지)
-    const baseParentMatch = baseXPath.match(/^(.+)\/[^\/]+$/);
-    const siblingParentMatch = siblingXPath.match(/^(.+)\/[^\/]+$/);
-    
-    if (baseParentMatch && siblingParentMatch) {
-      const baseParent = baseParentMatch[1];
-      const siblingParent = siblingParentMatch[1];
-      
-      // 같은 부모를 가지면 형제
-      if (baseParent === siblingParent) {
-        return true;
-      }
-    }
-  }
-  
-  // 셀렉터 기반 검증: 같은 부모 경로를 포함해야 함
-  if (baseElement.selector && siblingElement.selector) {
-    const baseSelector = baseElement.selector;
-    const siblingSelector = siblingElement.selector;
-    
-    // 부모 경로 추출 시도
-    // 예: page.locator('.parent').locator('.child1') vs page.locator('.parent').locator('.child2')
-    const baseParentMatch = baseSelector.match(/^(.+)\.locator\([^)]+\)$/);
-    const siblingParentMatch = siblingSelector.match(/^(.+)\.locator\([^)]+\)$/);
-    
-    if (baseParentMatch && siblingParentMatch) {
-      const baseParent = baseParentMatch[1];
-      const siblingParent = siblingParentMatch[1];
-      
-      // 같은 부모를 가지면 형제
-      if (baseParent === siblingParent) {
-        return true;
-      }
-    }
-  }
-  
-  return false;
+function validateBySelectorWrapper(parentElement, childElement) {
+  return validateBySelectorModule(parentElement, childElement);
 }
 
 /**
- * 조상 관계 검증
+ * 형제 관계 검증 (래퍼 함수)
  */
-function validateAncestorRelation(baseElement, ancestorElement) {
-  // XPath 기반 검증: ancestor의 xpath가 base의 xpath로 시작해야 함
-  if (baseElement.xpath && ancestorElement.xpath) {
-    const baseXPath = baseElement.xpath;
-    const ancestorXPath = ancestorElement.xpath;
-    
-    // base의 xpath가 ancestor의 xpath로 시작하는지 확인
-    // 예: ancestor: /html/body/div[1], base: /html/body/div[1]/span[2] -> true
-    if (baseXPath.startsWith(ancestorXPath + '/') || 
-        baseXPath.startsWith(ancestorXPath + '[') ||
-        baseXPath === ancestorXPath) {
-      return true;
-    }
-  }
-  
-  // 셀렉터 기반 검증: base의 셀렉터가 ancestor의 셀렉터를 포함해야 함
-  if (baseElement.selector && ancestorElement.selector) {
-    const baseSelector = baseElement.selector;
-    const ancestorSelector = ancestorElement.selector;
-    
-    // baseSelector가 ancestorSelector를 포함하는지 확인
-    // 예: ancestor: page.locator('.parent'), base: page.locator('.parent').locator('.child')
-    if (baseSelector.includes(ancestorSelector)) {
-      // baseSelector가 ancestorSelector로 시작하는지 확인
-      if (baseSelector.startsWith(ancestorSelector + '.locator(') ||
-          baseSelector.startsWith(ancestorSelector + '[') ||
-          baseSelector === ancestorSelector) {
-        return true;
-      }
-    }
-  }
-  
-  return false;
+function validateSiblingRelationWrapper(baseElement, siblingElement) {
+  return validateSiblingRelationModule(baseElement, siblingElement);
 }
 
 /**
- * 조건부 액션 추가
+ * 조상 관계 검증 (래퍼 함수)
+ */
+function validateAncestorRelationWrapper(baseElement, ancestorElement) {
+  return validateAncestorRelationModule(baseElement, ancestorElement);
+}
+
+
+/**
+ * 조건부 액션 추가 (래퍼 함수)
  */
 function addConditionalActionAfterStep(stepIndex, actionData) {
-  const timestamp = Date.now();
-  const currentUrl = window.location.href || '';
-  const currentTitle = document.title || '';
-  
-  // target과 description 생성
-  let target = null;
-  let description = null;
-  
-  if (actionData.actionType === 'relativeAction') {
-    // relativeAction의 경우 targetRelation과 targetSelector 정보를 target에 포함
-    const relationLabels = {
-      'parent': '부모 노드',
-      'ancestor': '조상 노드',
-      'sibling': '형제 노드',
-      'child': '자식 노드'
-    };
-    const relationLabel = relationLabels[actionData.targetRelation] || actionData.targetRelation;
-    
-    if (actionData.childElement && actionData.childElement.selector) {
-      target = `${relationLabel}: ${actionData.childElement.selector}`;
-    } else if (actionData.siblingElement && actionData.siblingElement.selector) {
-      target = `${relationLabel}: ${actionData.siblingElement.selector}`;
-    } else if (actionData.ancestorElement && actionData.ancestorElement.selector) {
-      target = `${relationLabel}: ${actionData.ancestorElement.selector}`;
-    } else if (actionData.targetSelector) {
-      target = `${relationLabel}: ${actionData.targetSelector}`;
-    } else if (actionData.conditionElement && actionData.conditionElement.selector) {
-      target = `${relationLabel} (기준: ${actionData.conditionElement.selector})`;
-    } else {
-      target = relationLabel;
-    }
-    
-    const actionLabels = {
-      'click': '클릭',
-      'type': '입력',
-      'hover': '호버',
-      'doubleClick': '더블 클릭',
-      'rightClick': '우클릭'
-    };
-    const actionLabel = actionLabels[actionData.actionTypeValue] || actionData.actionTypeValue || '액션';
-    description = `${actionLabel} - ${target}`;
-  } else if (actionData.actionType === 'conditionalAction') {
-    // conditionalAction의 경우
-    if (actionData.conditionElement && actionData.conditionElement.selector) {
-      target = actionData.conditionElement.selector;
-    }
-    description = `조건부 액션 (${actionData.conditionType || '조건'})`;
-  } else if (actionData.actionType === 'loopAction') {
-    // loopAction의 경우
-    if (actionData.loopSelector) {
-      target = actionData.loopSelector;
-    }
-    description = `반복 액션 (${actionData.loopMode === 'loop' ? '반복' : '단일'})`;
-  }
-  
-  const eventRecord = {
-    version: 2,
-    timestamp,
-    action: actionData.actionType,
-    conditionElement: actionData.conditionElement,
-    childElement: actionData.childElement || null,
-    siblingElement: actionData.siblingElement || null,
-    ancestorElement: actionData.ancestorElement || null,
-    conditionType: actionData.conditionType,
-    conditionValue: actionData.conditionValue,
-    targetRelation: actionData.targetRelation,
-    targetSelector: actionData.targetSelector,
-    loopMode: actionData.loopMode,
-    loopSelector: actionData.loopSelector,
-    actionType: actionData.actionTypeValue,
-    value: actionData.actionValue,
-    tag: null,
-    selectorCandidates: actionData.conditionElement ? [{
-      selector: actionData.conditionElement.selector,
-      type: 'css',
-      score: 100
-    }] : [],
-    iframeContext: null,
-    page: {
-      url: currentUrl,
-      title: currentTitle
-    },
-    frame: { iframeContext: null },
-    target: target,
-    description: description,
-    clientRect: null,
-    metadata: {
-      schemaVersion: 2,
-      userAgent: navigator.userAgent
-    },
-    manual: {
-      id: `conditional-${timestamp}`,
-      type: actionData.actionType,
-      resultName: null,
-      attributeName: null
-    }
+  const stateRefs = {
+    allEvents
   };
   
-  // 현재 이벤트 배열에 삽입
-  let insertIndex;
-  if (stepIndex === -1) {
-    // 맨 끝에 추가
-    insertIndex = allEvents.length;
-  } else {
-    insertIndex = stepIndex + 1;
-  }
-  const updatedEvents = [...allEvents];
-  updatedEvents.splice(insertIndex, 0, eventRecord);
-  
-  // 타임라인 업데이트 및 코드 갱신
-  const normalized = syncTimelineFromEvents(updatedEvents, {
-    preserveSelection: false,
-    selectLast: false,
-    resetAiState: false
-  });
-  updateCode({ preloadedEvents: normalized });
-  
-  // 정규화된 이벤트를 TC step으로 저장
-  const normalizedEvent = normalizeEventRecord(eventRecord);
-  saveEventAsStep(normalizedEvent);
-  
-  logMessage(`조건부 액션 추가: ${actionData.actionType}`, 'success');
+  return addConditionalActionAfterStepModule(
+    stepIndex,
+    actionData,
+    stateRefs,
+    syncTimelineFromEvents,
+    updateCode,
+    normalizeEventRecord,
+    saveEventAsStep,
+    logMessage
+  );
 }
 
+
+/**
+ * Global assertion 처리 (맨 끝에 추가) (래퍼 함수)
+ */
 function handleGlobalAssertion(assertionType) {
-  if (!assertionType) return;
-  
-  // verifyTitle은 요소 선택 불필요
-  if (assertionType === 'verifyTitle') {
-    addVerifyAction(assertionType, null, null);
-    return;
-  }
-  
-  // verifyUrl은 matchMode 선택 필요
-  if (assertionType === 'verifyUrl') {
-    withActiveTab((tab) => {
-      const currentUrl = tab?.url || '';
-      const inputValue = prompt('검증할 URL을 입력하세요:', currentUrl);
-      if (inputValue === null) return; // 취소
-      
-      // matchMode 선택 (완전일치/포함)
-      const matchMode = confirm('완전일치 검증을 사용하시겠습니까?\n\n확인: 완전일치\n취소: 포함 검증');
-      const matchModeValue = matchMode ? 'exact' : 'contains';
-      
-      addVerifyAction(assertionType, null, inputValue || currentUrl, null, matchModeValue);
-    });
-    return;
-  }
-  
-  // 요소 검증은 심플 요소 선택 사용 (waitForElement와 동일한 방식)
-  startSimpleElementSelection(async (path, elementInfo, pendingAction, pendingStepIndex) => {
-    console.log('[Recorder] handleGlobalAssertion 콜백 실행:', {
-      pendingAction,
-      pendingStepIndex,
-      pathLength: path?.length || 0,
-      elementText: elementInfo?.text
-    });
-    
-    let value = null;
-    if (pendingAction === 'verifyText' || pendingAction === 'verifyTextContains') {
-      // 요소의 텍스트를 자동으로 사용 (prompt 없이)
-      value = elementInfo.text || path[0]?.textValue || '';
-      console.log(`[Recorder] ${pendingAction}: 요소 텍스트 자동 사용:`, value);
-    }
-    
-    // pendingStepIndex가 있으면 addAssertionAfterStep 사용, 없으면 addVerifyAction 사용
-    if (pendingStepIndex !== null && pendingStepIndex !== undefined) {
-      console.log('[Recorder] addAssertionAfterStep 호출:', { pendingStepIndex, pendingAction });
-      addAssertionAfterStep(pendingStepIndex, pendingAction, path, value);
-    } else {
-      console.log('[Recorder] addVerifyAction 호출:', { pendingAction, pathLength: path?.length || 0, value });
-      await addVerifyAction(pendingAction, path, value, elementInfo);
-    }
-  }, assertionType, null);
-  
-  // verify actions 컨테이너 숨기기
-  const verifyActionsContainer = document.getElementById('verify-actions');
-  if (verifyActionsContainer) {
-    verifyActionsContainer.classList.add('hidden');
-  }
+  handleGlobalAssertionModule(assertionType, {
+    addVerifyAction,
+    addAssertionAfterStep,
+    startSimpleElementSelection
+  });
 }
 
 /**
- * Global wait 처리 (맨 끝에 추가)
+ * Global wait 처리 (맨 끝에 추가) (래퍼 함수)
  */
 function handleGlobalWait(waitType) {
-  if (!waitType) return;
-  
-  // 시간 대기는 입력 패널 표시
-  if (waitType === 'wait') {
-    // global-wait-menu 숨기기
-    const globalWaitMenu = document.getElementById('global-wait-menu');
-    if (globalWaitMenu) {
-      globalWaitMenu.classList.add('hidden');
-    }
-    
-    // 입력 패널 표시 (global-wait-menu 다음에 위치)
-    const waitInputPanel = document.getElementById('wait-input-panel');
-    if (waitInputPanel) {
-      waitInputPanel.classList.remove('hidden');
-    }
-    
-    // 입력 필드에 포커스
-    const waitTimeInput = document.getElementById('wait-time-input');
-    if (waitTimeInput) {
-      waitTimeInput.value = '1000'; // 기본값 설정
-      waitTimeInput.focus();
-    }
-    
-    return;
-  }
-  
-  // 요소 대기는 심플 요소 선택 사용
-  if (waitType === 'waitForElement') {
-    startSimpleElementSelection((path, elementInfo, pendingAction, pendingStepIndex) => {
-      addWaitAction('waitForElement', null, path, elementInfo);
-    }, 'waitForElement', null);
-    
-    // wait-actions 컨테이너 숨기기
-    const waitActionsContainer = document.getElementById('wait-actions');
-    if (waitActionsContainer) {
-      waitActionsContainer.classList.add('hidden');
-    }
-  }
+  handleGlobalWaitModule(waitType, {
+    addWaitAction,
+    startSimpleElementSelection,
+    normalizeEventRecord,
+    allEvents,
+    updateCode,
+    syncTimelineFromEvents,
+    saveEventAsStep,
+    logMessage
+  });
 }
 
-// IPC 이벤트 리스너 설정 (Electron 환경)
+// IPC 이벤트 리스너 설정 (Electron 환경) (래퍼 함수)
 function setupIpcListeners() {
-  if (!electronAPI || !electronAPI.onIpcMessage) {
-    console.warn('[Recorder] electronAPI.onIpcMessage가 없습니다. Electron 환경이 아닐 수 있습니다.');
-    console.warn('[Recorder] electronAPI 상태:', {
-      exists: !!electronAPI,
-      hasOnIpcMessage: !!(electronAPI && electronAPI.onIpcMessage)
-    });
-    return;
-  }
-  
-  console.log('[Recorder] IPC 리스너 설정 시작');
-  
-  // 녹화 윈도우 초기화 (Main 프로세스에서 전송)
-  electronAPI.onIpcMessage('recorder-init', (data) => {
-    console.log('[Recorder] 녹화 윈도우 초기화:', data);
-    if (data.tcId && tcIdInput) {
-      tcIdInput.value = data.tcId;
-    }
-    if (data.projectId && projectIdInput) {
-      projectIdInput.value = data.projectId;
-    }
-    // sessionId는 나중에 사용할 수 있음
-    logMessage('녹화 준비 완료', 'success');
+  setupIpcListenersModule({
+    electronAPI,
+    tcIdInput,
+    projectIdInput,
+    recording,
+    logMessage,
+    handleDomEvent,
+    startRecording,
+    stopRecording,
+    handleElementHover,
+    clearElementHover,
+    simpleSelectionState,
+    elementStatusEl,
+    handleSimpleElementSelectionPicked,
+    handleElementSelectionPicked,
+    cancelSimpleElementSelection,
+    handleElementSelectionError,
+    handleElementSelectionCancelled
   });
-  
-  // Main 프로세스에서 전송된 DOM 이벤트 수신
-  // 주의: iframe 환경에서는 postMessage로도 받으므로 중복 방지를 위해 IPC는 무시
-  // WebSocket과 postMessage만 사용 (iframe 환경)
-  if (window.parent !== window) {
-    // iframe 환경: IPC는 무시하고 postMessage만 사용
-    console.log('[Recorder] iframe 환경 감지: IPC dom-event 리스너 등록 안 함 (postMessage 사용)');
-  } else {
-    // 별도 윈도우 환경: IPC 사용
-    electronAPI.onIpcMessage('dom-event', (data) => {
-      console.log('[Recorder] IPC로 DOM 이벤트 수신:', data.action, 'recording 상태:', recording);
-      if (!recording) {
-        console.warn('[Recorder] 녹화 중이 아니므로 이벤트 무시');
-        return;
-      }
-      handleDomEvent(data);
-    });
-  }
-  
-  // 녹화 시작 신호 수신 (Main 프로세스에서)
-  electronAPI.onIpcMessage('recording-start', (data) => {
-    console.log('[Recorder] IPC로 녹화 시작 신호 수신', data);
-    if (!recording) {
-      console.log('[Recorder] startRecording() 호출');
-      startRecording();
-    } else {
-      console.log('[Recorder] 이미 녹화 중입니다');
-    }
-  });
-  
-  // 녹화 중지 신호 수신 (Main 프로세스에서)
-  electronAPI.onIpcMessage('recording-stop', (data) => {
-    console.log('[Recorder] IPC로 녹화 중지 신호 수신', data);
-    if (recording) {
-      console.log('[Recorder] stopRecording() 호출');
-      stopRecording();
-    } else {
-      console.log('[Recorder] 이미 녹화 중지 상태입니다');
-    }
-  });
-  
-  // 요소 하이라이트 정보 수신
-  electronAPI.onIpcMessage('element-hover', (data) => {
-    console.log('[Recorder] IPC로 요소 하이라이트 수신:', data.element?.tag);
-    handleElementHover(data);
-  });
-  
-  // 요소 하이라이트 해제
-  electronAPI.onIpcMessage('element-hover-clear', (data) => {
-    console.log('[Recorder] IPC로 요소 하이라이트 해제');
-    clearElementHover();
-  });
-  
-  // 요소 선택 결과 수신 (IPC)
-  electronAPI.onIpcMessage('element-selection-result', (data) => {
-    console.log('[Recorder] IPC로 요소 선택 결과 수신:', data.type);
-    if (data.type === 'ELEMENT_SELECTION_PICKED') {
-      // 심플 요소 선택이 활성화되어 있으면 심플 처리, 아니면 기존 처리
-      console.log('[Recorder] ELEMENT_SELECTION_PICKED 수신 (IPC), simpleSelectionState.active:', simpleSelectionState.active);
-      if (simpleSelectionState.active) {
-        handleSimpleElementSelectionPicked(data);
-      } else {
-        console.log('[Recorder] simpleSelectionState.active가 false이므로 handleElementSelectionPicked 호출');
-        handleElementSelectionPicked(data);
-      }
-    } else if (data.type === 'ELEMENT_SELECTION_ERROR') {
-      if (simpleSelectionState.active) {
-        cancelSimpleElementSelection();
-        if (elementStatusEl) {
-          const reason = data.reason || '요소를 선택할 수 없습니다.';
-          elementStatusEl.textContent = reason;
-          elementStatusEl.className = 'element-status error';
-        }
-      } else {
-        handleElementSelectionError(data);
-      }
-    } else if (data.type === 'ELEMENT_SELECTION_CANCELLED' || data.type === 'ELEMENT_SELECTION_CANCEL') {
-      console.log('[Recorder] ELEMENT_SELECTION_CANCEL 수신, 상태 초기화');
-      if (simpleSelectionState.active) {
-        cancelSimpleElementSelection();
-      } else {
-        // active가 false여도 상태를 확실히 초기화
-        simpleSelectionState.active = false;
-        simpleSelectionState.callback = null;
-        simpleSelectionState.pendingAction = null;
-        simpleSelectionState.pendingStepIndex = null;
-        handleElementSelectionCancelled();
-      }
-    }
-  });
-  
-  console.log('[Recorder] IPC 리스너 설정 완료');
 }
 
-// DOM 요소 초기화
+// DOM 요소 초기화 (래퍼 함수)
 function initDOMElements() {
-  startBtn = document.getElementById('start-record');
-  stopBtn = document.getElementById('stop-record');
-  timeline = document.getElementById('timeline');
-  selectorList = document.getElementById('selector-list');
-  iframeBanner = document.getElementById('iframe-banner');
-  codeOutput = document.getElementById('code-output');
-  logEntries = document.getElementById('log-entries');
-  resetBtn = document.getElementById('reset-btn');
-  elementSelectBtn = document.getElementById('element-select-btn');
-  deleteEventBtn = document.getElementById('delete-event-btn');
-  tcIdInput = document.getElementById('tc-id-input');
-  projectIdInput = document.getElementById('project-id-input');
-  sendRecordingBtn = document.getElementById('send-recording-btn');
-  frameworkSelect = document.getElementById('framework-select');
-  languageSelect = document.getElementById('language-select');
-  aiReviewBtn = document.getElementById('ai-review-btn');
-  aiReviewStatusEl = document.getElementById('ai-review-status');
-  syncToTcBtn = document.getElementById('sync-to-tc-btn');
-  aiEndpointInput = document.getElementById('ai-endpoint');
-  aiApiKeyInput = document.getElementById('ai-api-key');
-  aiModelInput = document.getElementById('ai-model');
-  aiSettingsSaveBtn = document.getElementById('ai-settings-save');
-  aiSettingsStatusEl = document.getElementById('ai-settings-status');
-  // 요소 선택 워크플로우 DOM 요소
-  elementPanel = document.getElementById('element-panel');
-  elementStatusEl = document.getElementById('element-status');
-  elementPathContainer = document.getElementById('element-path');
-  elementPathItems = document.getElementById('element-path-items');
-  elementCandidatesContainer = document.getElementById('element-candidates');
-  elementActionsContainer = document.getElementById('element-actions');
-  elementCancelBtn = document.getElementById('element-cancel-btn');
-  elementAttrPanel = document.getElementById('element-attribute-panel');
-  elementAttrNameInput = document.getElementById('element-attr-name');
-  elementAttrApplyBtn = document.getElementById('element-attr-apply');
-  elementCodePreview = document.getElementById('element-code-preview');
-  elementCodeEl = document.getElementById('element-code');
-  
-  // DOM 요소 확인
-  if (!startBtn) {
-    console.error('[Recorder] start-record 버튼을 찾을 수 없습니다');
-  }
-  if (!stopBtn) {
-    console.error('[Recorder] stop-record 버튼을 찾을 수 없습니다');
-  }
+  const domRefs = {};
+  initDOMElementsModule(domRefs);
+  // domRefs의 값을 전역 변수에 할당
+  startBtn = domRefs.startBtn;
+  stopBtn = domRefs.stopBtn;
+  timeline = domRefs.timeline;
+  selectorList = domRefs.selectorList;
+  iframeBanner = domRefs.iframeBanner;
+  codeOutput = domRefs.codeOutput;
+  logEntries = domRefs.logEntries;
+  resetBtn = domRefs.resetBtn;
+  elementSelectBtn = domRefs.elementSelectBtn;
+  deleteEventBtn = domRefs.deleteEventBtn;
+  tcIdInput = domRefs.tcIdInput;
+  projectIdInput = domRefs.projectIdInput;
+  sendRecordingBtn = domRefs.sendRecordingBtn;
+  frameworkSelect = domRefs.frameworkSelect;
+  languageSelect = domRefs.languageSelect;
+  aiReviewBtn = domRefs.aiReviewBtn;
+  aiReviewStatusEl = domRefs.aiReviewStatusEl;
+  syncToTcBtn = domRefs.syncToTcBtn;
+  aiEndpointInput = domRefs.aiEndpointInput;
+  aiApiKeyInput = domRefs.aiApiKeyInput;
+  aiModelInput = domRefs.aiModelInput;
+  aiSettingsSaveBtn = domRefs.aiSettingsSaveBtn;
+  aiSettingsStatusEl = domRefs.aiSettingsStatusEl;
+  elementPanel = domRefs.elementPanel;
+  elementStatusEl = domRefs.elementStatusEl;
+  elementPathContainer = domRefs.elementPathContainer;
+  elementPathItems = domRefs.elementPathItems;
+  elementCandidatesContainer = domRefs.elementCandidatesContainer;
+  elementActionsContainer = domRefs.elementActionsContainer;
+  elementCancelBtn = domRefs.elementCancelBtn;
+  elementAttrPanel = domRefs.elementAttrPanel;
+  elementAttrNameInput = domRefs.elementAttrNameInput;
+  elementAttrApplyBtn = domRefs.elementAttrApplyBtn;
+  elementCodePreview = domRefs.elementCodePreview;
+  elementCodeEl = domRefs.elementCodeEl;
 }
 
 // 초기화
@@ -7859,6 +2222,9 @@ function init() {
   
   // IPC 리스너 설정 (Electron 환경) - 가장 먼저 설정
   setupIpcListeners();
+  
+  // PostMessage 리스너 설정 (iframe 환경)
+  setupPostMessageListeners();
 
   // WebSocket 연결
   connectWebSocket();
@@ -7876,279 +2242,52 @@ function init() {
   console.log('[Recorder] 초기화 완료');
 }
 
-// 부모 윈도우로부터 메시지 수신 (iframe 환경)
-// postMessage로 받은 메시지 처리 (iframe 환경)
-window.addEventListener('message', (event) => {
-  if (!event.data || typeof event.data !== 'object') return;
-  
-  switch (event.data.type) {
-    case 'recorder-init':
-      console.log('[Recorder] 부모 윈도우로부터 초기화 메시지 수신:', event.data);
-      if (event.data.tcId && tcIdInput) {
-        tcIdInput.value = event.data.tcId;
-      }
-      if (event.data.projectId && projectIdInput) {
-        projectIdInput.value = event.data.projectId;
-      }
-      logMessage('녹화 준비 완료', 'success');
-      break;
-      
-    case 'dom-event':
-      // postMessage로 받은 이벤트는 이미 WebSocket이나 IPC로 처리되었을 수 있으므로
-      // iframe 환경에서만 처리 (별도 윈도우에서는 WebSocket/IPC 사용)
-      if (window.parent !== window) {
-        console.log('[Recorder] 부모 윈도우로부터 DOM 이벤트 수신 (postMessage):', event.data.event?.action);
-        if (event.data.event) {
-          handleDomEvent(event.data.event);
-        }
-      } else {
-        console.log('[Recorder] postMessage dom-event 무시 (별도 윈도우에서는 WebSocket/IPC 사용)');
-      }
-      break;
-      
-    case 'recording-start':
-      console.log('[Recorder] 부모 윈도우로부터 녹화 시작 신호 수신');
-      if (!recording) {
-        startRecording();
-      }
-      break;
-      
-    case 'recording-stop':
-      console.log('[Recorder] 부모 윈도우로부터 녹화 중지 신호 수신');
-      if (recording) {
-        stopRecording();
-      }
-      break;
-      
-    case 'element-hover':
-      console.log('[Recorder] 부모 윈도우로부터 요소 하이라이트 수신');
-      if (event.data.data) {
-        handleElementHover(event.data.data);
-      }
-      break;
-      
-    case 'element-hover-clear':
-      console.log('[Recorder] 부모 윈도우로부터 요소 하이라이트 해제');
-      clearElementHover();
-      break;
-      
-    case 'element-selection-result':
-      // 요소 선택 결과 수신 (IPC를 통해 전달됨)
-      console.log('[Recorder] 요소 선택 결과 수신 (postMessage):', event.data.type);
-      const selectionResult = event.data;
-      if (selectionResult.type === 'ELEMENT_SELECTION_PICKED') {
-        // 심플 요소 선택이 활성화되어 있으면 심플 처리, 아니면 기존 처리
-        if (simpleSelectionState.active) {
-          handleSimpleElementSelectionPicked(selectionResult);
-        } else {
-          handleElementSelectionPicked(selectionResult);
-        }
-      } else if (selectionResult.type === 'ELEMENT_SELECTION_ERROR') {
-        if (simpleSelectionState.active) {
-          cancelSimpleElementSelection();
-          if (elementStatusEl) {
-            const reason = selectionResult.reason || '요소를 선택할 수 없습니다.';
-            elementStatusEl.textContent = reason;
-            elementStatusEl.className = 'element-status error';
-          }
-        } else {
-          handleElementSelectionError(selectionResult);
-        }
-      } else if (selectionResult.type === 'ELEMENT_SELECTION_CANCELLED') {
-        if (simpleSelectionState.active) {
-          cancelSimpleElementSelection();
-        } else {
-          handleElementSelectionCancelled();
-        }
-      }
-      break;
-      
-    case 'url-changed':
-      // URL 변경 감지 (페이지 전환)
-      console.log('[Recorder] ========== URL 변경 감지 (postMessage) ==========');
-      console.log('[Recorder] URL 변경 정보:', {
-        url: event.data.url,
-        previousUrl: event.data.previousUrl || 'N/A',
-        tabId: event.data.tabId || 'N/A',
-        timestamp: event.data.timestamp || Date.now()
-      });
-      console.log('[Recorder] 현재 녹화 상태:', recording ? '녹화 중' : '녹화 중지');
-      console.log('[Recorder] WebSocket 연결 상태:', wsConnection ? {
-        readyState: wsConnection.readyState,
-        url: wsConnection.url
-      } : '연결 없음');
-      
-      // 녹화 중인 경우에만 처리
-      if (recording) {
-        logMessage(`페이지 전환: ${event.data.url}`, 'info');
-        
-        // DOM 스냅샷 저장 시도
-        trySaveDomSnapshot(event.data.url);
-        
-        console.log('[Recorder] ✅ URL 변경 처리 완료 (녹화 상태 유지)');
-        console.log('[Recorder] ⚠️ 주의: Content Script가 새 페이지에서 이벤트 리스너를 재등록해야 합니다');
-        console.log('[Recorder] ⚠️ Background Script가 Content Script에 RECORDING_START 메시지를 다시 보내야 합니다');
-      } else {
-        console.log('[Recorder] ⚠️ URL 변경 감지되었지만 녹화 중이 아니므로 무시');
-      }
-      console.log('[Recorder] ============================================');
-      break;
-      
-    default:
-      break;
-  }
-});
-
-/**
- * 패널 리사이즈 초기화
- */
-function initPanelResize() {
-  const resizeHandles = document.querySelectorAll('.panel-resize-handle');
-  
-  console.log('[Resize] 리사이즈 핸들 개수:', resizeHandles.length); // 디버깅용
-  
-  resizeHandles.forEach(handle => {
-    const panelId = handle.dataset.panel;
-    if (!panelId) {
-      console.warn('[Resize] panelId가 없습니다:', handle);
-      return;
-    }
-    
-    const panel = document.getElementById(panelId);
-    if (!panel) {
-      console.warn('[Resize] 패널을 찾을 수 없습니다:', panelId);
-      return;
-    }
-    
-    console.log('[Resize] 리사이즈 핸들 초기화:', panelId); // 디버깅용
-    
-    let isResizing = false;
-    let startY = 0;
-    let startHeight = 0;
-    
-    const startResize = (e) => {
-      isResizing = true;
-      startY = e.clientY || (e.touches && e.touches[0].clientY);
-      startHeight = panel.offsetHeight;
-      
-      document.addEventListener('mousemove', doResize);
-      document.addEventListener('mouseup', stopResize);
-      document.addEventListener('touchmove', doResize);
-      document.addEventListener('touchend', stopResize);
-      
-      e.preventDefault();
-    };
-    
-    const doResize = (e) => {
-      if (!isResizing) return;
-      
-      const currentY = e.clientY || (e.touches && e.touches[0].clientY);
-      const diff = currentY - startY;
-      
-      // 패널 위치에 따라 높이 조정 방향 결정
-      // 모든 패널은 하단 핸들로 아래로 드래그하면 높이 증가
-      const newHeight = startHeight + diff;
-      
-      // 최소/최대 높이 제한
-      const minHeight = 150;
-      const maxHeight = window.innerHeight * 0.8;
-      
-      if (newHeight >= minHeight && newHeight <= maxHeight) {
-        panel.style.height = `${newHeight}px`;
-        panel.style.minHeight = `${newHeight}px`;
-      }
-      
-      e.preventDefault();
-    };
-    
-    const stopResize = () => {
-      if (isResizing) {
-        isResizing = false;
-        
-        // 최종 높이 저장
-        const finalHeight = panel.offsetHeight;
-        savePanelHeight(panelId, finalHeight);
-        
-        document.removeEventListener('mousemove', doResize);
-        document.removeEventListener('mouseup', stopResize);
-        document.removeEventListener('touchmove', doResize);
-        document.removeEventListener('touchend', stopResize);
-      }
-    };
-    
-    handle.addEventListener('mousedown', startResize);
-    handle.addEventListener('touchstart', startResize);
+// PostMessage 이벤트 리스너 설정 (래퍼 함수)
+// init 함수에서 호출됨
+function setupPostMessageListeners() {
+  setupPostMessageListenersModule({
+    tcIdInput,
+    projectIdInput,
+    recording,
+    logMessage,
+    handleDomEvent,
+    startRecording,
+    stopRecording,
+    handleElementHover,
+    clearElementHover,
+    simpleSelectionState,
+    elementStatusEl,
+    handleSimpleElementSelectionPicked: handleSimpleElementSelectionPickedWrapper,
+    handleElementSelectionPicked: handleElementSelectionPickedWrapper,
+    cancelSimpleElementSelection: cancelSimpleElementSelectionWrapper,
+    handleElementSelectionError: handleElementSelectionErrorWrapper,
+    handleElementSelectionCancelled: handleElementSelectionCancelledWrapper,
+    wsConnection,
+    trySaveDomSnapshot
   });
 }
 
 /**
- * Recorder 설정 로드
+ * 패널 리사이즈 초기화 (래퍼 함수)
  */
-async function loadRecorderSettings() {
-  try {
-    if (!electronAPI || !electronAPI.getRecorderSettings) {
-      console.warn('[Recorder] electronAPI.getRecorderSettings를 사용할 수 없습니다.');
-      return;
-    }
-    
-    const result = await electronAPI.getRecorderSettings();
-    if (result && result.success && result.data) {
-      const settings = result.data;
-      
-      // 패널 높이 복원
-      if (settings.panelHeights) {
-        Object.keys(settings.panelHeights).forEach(panelId => {
-          const panel = document.getElementById(panelId);
-          if (panel && settings.panelHeights[panelId]) {
-            const height = settings.panelHeights[panelId];
-            panel.style.height = `${height}px`;
-            panel.style.minHeight = `${height}px`;
-          }
-        });
-      }
-      
-      console.log('[Recorder] 설정 로드 완료:', settings);
-    }
-  } catch (error) {
-    console.error('[Recorder] 설정 로드 실패:', error);
-  }
+function initPanelResize() {
+  initPanelResizeModule((panelId, height) => {
+    savePanelHeight(panelId, height);
+  });
 }
 
 /**
- * 패널 높이 저장
+ * Recorder 설정 로드 (래퍼 함수)
+ */
+async function loadRecorderSettings() {
+  await loadRecorderSettingsModule(electronAPI);
+}
+
+/**
+ * 패널 높이 저장 (래퍼 함수)
  */
 async function savePanelHeight(panelId, height) {
-  try {
-    if (!electronAPI || !electronAPI.getRecorderSettings || !electronAPI.setRecorderSettings) {
-      console.warn('[Recorder] electronAPI를 사용할 수 없습니다.');
-      return;
-    }
-    
-    // 현재 설정 로드
-    const result = await electronAPI.getRecorderSettings();
-    if (!result || !result.success) {
-      console.warn('[Recorder] 설정 로드 실패');
-      return;
-    }
-    
-    const settings = result.data || {};
-    if (!settings.panelHeights) {
-      settings.panelHeights = {};
-    }
-    
-    // 높이 업데이트
-    settings.panelHeights[panelId] = height;
-    
-    // 설정 저장
-    await electronAPI.setRecorderSettings({
-      panelHeights: settings.panelHeights,
-      layout: settings.layout || {}
-    });
-    
-    console.log(`[Recorder] 패널 높이 저장: ${panelId} = ${height}px`);
-  } catch (error) {
-    console.error('[Recorder] 패널 높이 저장 실패:', error);
-  }
+  await savePanelHeightModule(panelId, height, electronAPI);
 }
 
 // DOMContentLoaded 이벤트 대기

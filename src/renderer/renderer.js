@@ -500,6 +500,28 @@ function setupEventListeners() {
         return;
       }
 
+      // TC에 스텝이 있는지 확인
+      let steps = currentTC.steps;
+      if (steps && typeof steps === 'string') {
+        try {
+          steps = JSON.parse(steps);
+        } catch (e) {
+          steps = null;
+        }
+      }
+      
+      if (steps && Array.isArray(steps) && steps.length > 0) {
+        // 스텝이 있으면 확인 팝업 표시
+        const confirmed = await showConfirmDialog(
+          '녹화 시작 확인',
+          `이 TC에는 ${steps.length}개의 스텝이 있습니다. 녹화를 시작하면 기존 스텝이 덮어씌워질 수 있습니다. 계속하시겠습니까?`
+        );
+        
+        if (!confirmed) {
+          return; // 사용자가 취소를 선택한 경우
+        }
+      }
+
       try {
         const sessionId = `session-${Date.now()}`;
         const result = await window.electronAPI.openBrowser({
@@ -1255,6 +1277,75 @@ function showMessageDialog(title, message) {
     // 다이얼로그 표시
     document.body.appendChild(dialog);
     confirmBtn.focus();
+  });
+}
+
+function showConfirmDialog(title, message) {
+  return new Promise((resolve) => {
+    // 기존 다이얼로그가 있으면 제거
+    const existing = document.getElementById('confirm-dialog');
+    if (existing) {
+      existing.remove();
+    }
+
+    // 다이얼로그 생성
+    const dialog = document.createElement('div');
+    dialog.id = 'confirm-dialog';
+    dialog.className = 'modal-dialog';
+    
+    const dialogContent = document.createElement('div');
+    dialogContent.className = 'modal-content';
+    
+    // 헤더
+    const header = document.createElement('div');
+    header.className = 'modal-header';
+    header.innerHTML = `<h3>${title}</h3>`;
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'modal-close';
+    closeBtn.textContent = '×';
+    closeBtn.addEventListener('click', () => {
+      dialog.remove();
+      resolve(false);
+    });
+    header.appendChild(closeBtn);
+    
+    // 바디
+    const body = document.createElement('div');
+    body.className = 'modal-body';
+    body.innerHTML = `<p>${message}</p>`;
+    
+    // 푸터
+    const footer = document.createElement('div');
+    footer.className = 'modal-footer';
+    footer.style.cssText = 'display: flex; gap: 8px; justify-content: flex-end;';
+    
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn btn-secondary';
+    cancelBtn.textContent = '취소';
+    cancelBtn.addEventListener('click', () => {
+      dialog.remove();
+      resolve(false);
+    });
+    
+    const confirmBtn = document.createElement('button');
+    confirmBtn.className = 'btn btn-primary';
+    confirmBtn.textContent = '확인';
+    confirmBtn.addEventListener('click', () => {
+      dialog.remove();
+      resolve(true);
+    });
+    
+    footer.appendChild(cancelBtn);
+    footer.appendChild(confirmBtn);
+    
+    dialogContent.appendChild(header);
+    dialogContent.appendChild(body);
+    dialogContent.appendChild(footer);
+    dialog.appendChild(dialogContent);
+
+    // 다이얼로그 표시
+    document.body.appendChild(dialog);
+    cancelBtn.focus();
   });
 }
 

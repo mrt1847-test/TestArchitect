@@ -180,7 +180,13 @@ export function computeXPath(node, optimized = true, attributes = []) {
     
     // ShadowRoot 경계 처리
     if (contextNode && contextNode instanceof ShadowRoot) {
-      const selectorStr = (buffer[0].optimized ? '' : '/') + buffer.map(p => p.toString()).join('/');
+      let prefix = '';
+      if (!optimized) {
+        prefix = '/';
+      } else {
+        prefix = buffer[0] && buffer[0].optimized ? '' : '/';
+      }
+      const selectorStr = prefix + buffer.map(p => p.toString()).join('/');
       selectors.unshift(selectorStr);
       buffer.splice(0, buffer.length);
       contextNode = contextNode.host;
@@ -188,7 +194,15 @@ export function computeXPath(node, optimized = true, attributes = []) {
   }
 
   if (buffer.length) {
-    const selectorStr = (buffer[0].optimized ? '' : '/') + buffer.map(p => p.toString()).join('/');
+    // optimized = false일 때는 항상 절대 경로(/로 시작)를 생성
+    // optimized = true일 때는 optimized part가 있으면 //로 시작, 없으면 /로 시작
+    let prefix = '';
+    if (!optimized) {
+      prefix = '/';
+    } else {
+      prefix = buffer[0].optimized ? '' : '/';
+    }
+    const selectorStr = prefix + buffer.map(p => p.toString()).join('/');
     selectors.unshift(selectorStr);
   }
 
@@ -208,8 +222,9 @@ export function buildFullXPath(el) {
   if (!el || el.nodeType !== 1) return null;
   const xpath = computeXPath(el, false);
   if (!xpath) return null;
-  // Chrome Recorder 방식은 이미 //로 시작하거나 /로 시작하므로 그대로 반환
-  return xpath.startsWith('//') ? xpath : `//${xpath}`;
+  // Full XPath는 절대 경로(/로 시작)여야 함
+  // /로 시작하지 않으면 /를 추가
+  return xpath.startsWith('/') ? xpath : `/${xpath}`;
 }
 
 /**
@@ -294,6 +309,7 @@ function getXPathSelectorPart(node, optimized, attributes = []) {
       if (!(node instanceof Element)) {
         return;
       }
+      // optimized = false일 때는 절대 경로를 위해 optimized part를 생성하지 않음
       if (optimized) {
         for (const attribute of attributes) {
           value = node.getAttribute(attribute) ?? '';
@@ -301,9 +317,9 @@ function getXPathSelectorPart(node, optimized, attributes = []) {
             return new SelectorPart(`//*[@${attribute}=${escapeXPathLiteral(value)}]`, true);
           }
         }
-      }
-      if (node.id) {
-        return new SelectorPart(`//*[@id=${escapeXPathLiteral(node.id)}]`, true);
+        if (node.id) {
+          return new SelectorPart(`//*[@id=${escapeXPathLiteral(node.id)}]`, true);
+        }
       }
       value = node.localName || node.tagName?.toLowerCase() || '';
       break;
@@ -550,7 +566,7 @@ const DEFAULT_TAG_SCORE = 20;
 
 // 속성 우선순위 정의
 const ATTRIBUTE_PRIORITY = [
-  { attr: "id", type: "id", score: 90, reason: "id 속성", allowPartial: false },
+  { attr: "id", type: "id", score: 98, reason: "id 속성", allowPartial: false },
   { attr: "data-testid", type: "data-testid", score: 88, reason: "data-testid 속성", allowPartial: true },
   { attr: "data-test", type: "data-test", score: 86, reason: "data-test 속성", allowPartial: true },
   { attr: "data-qa", type: "data-qa", score: 84, reason: "data-qa 속성", allowPartial: true },
@@ -634,21 +650,278 @@ function generateClassSelectors(element) {
     return a.localeCompare(b);
   });
   
+  // 원본 class 셀렉터는 조합 XPath보다 높은 점수
+  // ID가 있는 경우 class 조합 셀렉터의 점수를 낮춤
+  const hasId = element.id ? 1 : 0;
+  
   ordered.slice(0, MAX_CLASS_COMBINATIONS).forEach((key) => {
     const classSelector = `.${key}`;
+    // 원본 class 셀렉터 점수 상향 (조합 XPath보다 높게)
+    const baseClassScore = 75 - Math.min(8, key.split(".").length * 2); // 62 → 75점 기준
+    const baseTagClassScore = 82 - Math.min(8, key.split(".").length); // 68 → 82점 기준
+    
     results.push({
       type: "class",
       selector: classSelector,
-      score: 62 - Math.min(10, key.split(".").length * 2),
+      score: hasId ? Math.max(68, baseClassScore - 5) : baseClassScore, // ID가 있으면 최대 70점
       reason: "class 조합"
     });
     results.push({
       type: "class-tag",
       selector: `${element.tagName.toLowerCase()}${classSelector}`,
-      score: 68 - Math.min(10, key.split(".").length),
+      score: hasId ? Math.max(75, baseTagClassScore - 5) : baseTagClassScore, // ID가 있으면 최대 77점
       reason: "태그 + class 조합"
     });
   });
+  return results;
+}
+
+/**
+ * class 기반 XPath 생성 (유일성 확보를 위한 조합)
+ */
+function buildClassBasedXPath(element) {
+  if (!element || element.nodeType !== 1) return [];
+  const classList = Array.from(element.classList || []).filter(Boolean);
+  if (classList.length === 0) return [];
+  
+  const results = [];
+  const tagName = element.tagName ? element.tagName.toLowerCase() : '*';
+  const doc = typeof document !== 'undefined' ? document : null;
+  if (!doc) return [];
+  
+  // class XPath 표현식 생성 헬퍼
+  const buildClassContainsExpr = (cls) => {
+    return `contains(concat(' ', normalize-space(@class), ' '), ${escapeXPathLiteral(" " + cls + " ")})`;
+  };
+  
+  // 조합 XPath는 원본 셀렉터보다 낮은 점수 (가공된 셀렉터이므로)
+  // ID가 있는 경우 class 조합 XPath의 점수를 더 낮춤
+  const hasIdForXPath = element.id ? 1 : 0;
+  
+  // 원본 class 셀렉터 정보 수집 (반복요소 탭 표시용)
+  const originalClassSelectors = [];
+  for (const cls of classList.slice(0, 3)) {
+    const classSelector = `.${cssEscapeIdent(cls)}`;
+    const classSelectorParsed = parseSelectorForMatching(classSelector, "css");
+    const classSelectorCount = countMatchesForSelector(classSelectorParsed, doc, { maxCount: 10 });
+    originalClassSelectors.push({
+      selector: classSelector,
+      type: "class",
+      matchCount: classSelectorCount,
+      unique: classSelectorCount === 1
+    });
+  }
+  
+  // 1. 단일 class만 사용 (태그명 포함) - 조합 XPath이므로 원본 class 셀렉터보다 낮게
+  for (let i = 0; i < Math.min(3, classList.length); i++) {
+    const cls = classList[i];
+    const classExpr = buildClassContainsExpr(cls);
+    const xpathValue = `//${tagName}[${classExpr}]`;
+    const selector = `xpath=${xpathValue}`;
+    const parsed = parseSelectorForMatching(selector, "xpath");
+    const count = countMatchesForSelector(parsed, doc, { maxCount: 3 });
+    
+    // 조합 XPath는 원본 class 셀렉터(75-82점)보다 낮게 설정
+    const singleClassBaseScore = count === 1 ? 72 : (count === 2 ? 60 : 50); // 88 → 72점으로 하향
+    const singleClassAdjustedScore = hasIdForXPath ? Math.max(60, singleClassBaseScore - 8) : singleClassBaseScore; // ID가 있으면 최대 64점
+    
+    // 원본 class 셀렉터 정보 추가 (반복요소 탭 표시용)
+    const originalClassInfo = originalClassSelectors[i];
+    const result = {
+      type: "xpath",
+      selector: selector,
+      score: singleClassAdjustedScore,
+      reason: count === 1 ? "태그 + class 조합 (유일)" : `태그 + class 조합 (${count}개 일치)`,
+      xpathValue: xpathValue,
+      unique: count === 1,
+      matchCount: count
+    };
+    
+    // 원본 class 셀렉터 정보 저장 (조합 XPath가 유일해도 원본이 반복되면 반복요소 탭에 표시)
+    if (originalClassInfo && originalClassInfo.matchCount > 1) {
+      result.rawSelector = originalClassInfo.selector;
+      result.rawType = originalClassInfo.type;
+      result.rawMatchCount = originalClassInfo.matchCount;
+      result.rawUnique = false;
+      result.rawReason = `class 조합`;
+    }
+    
+    results.push(result);
+  }
+  
+  // 2. class만 사용 (태그명 없음) - 조합 XPath이므로 원본 class 셀렉터보다 낮게
+  for (let i = 0; i < Math.min(2, classList.length); i++) {
+    const cls = classList[i];
+    const classExpr = buildClassContainsExpr(cls);
+    const xpathValue = `//*[${classExpr}]`;
+    const selector = `xpath=${xpathValue}`;
+    const parsed = parseSelectorForMatching(selector, "xpath");
+    const count = countMatchesForSelector(parsed, doc, { maxCount: 3 });
+    
+    // 조합 XPath는 원본 class 셀렉터(75점)보다 낮게 설정
+    const wildcardClassBaseScore = count === 1 ? 70 : (count === 2 ? 55 : 45); // 85 → 70점으로 하향
+    const wildcardClassAdjustedScore = hasIdForXPath ? Math.max(58, wildcardClassBaseScore - 8) : wildcardClassBaseScore; // ID가 있으면 최대 62점
+    
+    // 원본 class 셀렉터 정보 추가
+    const originalClassInfo = originalClassSelectors[i];
+    const result = {
+      type: "xpath",
+      selector: selector,
+      score: wildcardClassAdjustedScore,
+      reason: count === 1 ? "class만 사용 (유일)" : `class만 사용 (${count}개 일치)`,
+      xpathValue: xpathValue,
+      unique: count === 1,
+      matchCount: count
+    };
+    
+    // 원본 class 셀렉터 정보 저장
+    if (originalClassInfo && originalClassInfo.matchCount > 1) {
+      result.rawSelector = originalClassInfo.selector;
+      result.rawType = originalClassInfo.type;
+      result.rawMatchCount = originalClassInfo.matchCount;
+      result.rawUnique = false;
+      result.rawReason = `class 조합`;
+    }
+    
+    results.push(result);
+  }
+  
+  // 3. 여러 class 조합 (2-3개 class)
+  if (classList.length >= 2) {
+    const classCombos = [];
+    // 2개 조합
+    for (let i = 0; i < Math.min(2, classList.length); i++) {
+      for (let j = i + 1; j < Math.min(3, classList.length); j++) {
+        classCombos.push([classList[i], classList[j]]);
+      }
+    }
+    // 3개 조합 (class가 3개 이상인 경우)
+    if (classList.length >= 3) {
+      classCombos.push([classList[0], classList[1], classList[2]]);
+    }
+    
+    // ID가 있는 경우 class 조합 XPath의 점수를 낮춤 (ID가 더 우선순위가 높음)
+    const hasId = element.id ? 1 : 0;
+    
+    for (const combo of classCombos.slice(0, 3)) {
+      const classExprs = combo.map(cls => buildClassContainsExpr(cls));
+      const combinedExpr = classExprs.join(' and ');
+      
+      // 원본 class 조합 셀렉터 정보 수집 (반복요소 탭 표시용)
+      const comboClassSelector = `.${combo.map(c => cssEscapeIdent(c)).join('.')}`;
+      const comboClassSelectorParsed = parseSelectorForMatching(comboClassSelector, "css");
+      const comboClassSelectorCount = countMatchesForSelector(comboClassSelectorParsed, doc, { maxCount: 10 });
+      
+      // 태그명 포함 버전
+      const tagXpathValue = `//${tagName}[${combinedExpr}]`;
+      const tagSelector = `xpath=${tagXpathValue}`;
+      const tagParsed = parseSelectorForMatching(tagSelector, "xpath");
+      const tagCount = countMatchesForSelector(tagParsed, doc, { maxCount: 3 });
+      
+      // 여러 class 조합 XPath는 원본 class 셀렉터보다 낮게 설정
+      const tagBaseScore = tagCount === 1 ? 75 : (tagCount === 2 ? 62 : 52); // 92 → 75점으로 하향
+      const tagAdjustedScore = hasId ? Math.max(60, tagBaseScore - 8) : tagBaseScore; // ID가 있으면 최대 67점
+      
+      const tagResult = {
+        type: "xpath",
+        selector: tagSelector,
+        score: tagAdjustedScore,
+        reason: tagCount === 1 ? `태그 + ${combo.length}개 class 조합 (유일)` : `태그 + ${combo.length}개 class 조합 (${tagCount}개 일치)`,
+        xpathValue: tagXpathValue,
+        unique: tagCount === 1,
+        matchCount: tagCount
+      };
+      
+      // 원본 class 조합 셀렉터 정보 저장
+      if (comboClassSelectorCount > 1) {
+        tagResult.rawSelector = comboClassSelector;
+        tagResult.rawType = "class";
+        tagResult.rawMatchCount = comboClassSelectorCount;
+        tagResult.rawUnique = false;
+        tagResult.rawReason = `class 조합`;
+      }
+      
+      results.push(tagResult);
+      
+      // 태그명 없이 버전
+      const wildcardXpathValue = `//*[${combinedExpr}]`;
+      const wildcardSelector = `xpath=${wildcardXpathValue}`;
+      const wildcardParsed = parseSelectorForMatching(wildcardSelector, "xpath");
+      const wildcardCount = countMatchesForSelector(wildcardParsed, doc, { maxCount: 3 });
+      
+      // 여러 class 조합 XPath는 원본 class 셀렉터보다 낮게 설정
+      const wildcardBaseScore = wildcardCount === 1 ? 73 : (wildcardCount === 2 ? 58 : 48); // 88 → 73점으로 하향
+      const wildcardAdjustedScore = hasId ? Math.max(60, wildcardBaseScore - 8) : wildcardBaseScore; // ID가 있으면 최대 65점
+      
+      const wildcardResult = {
+        type: "xpath",
+        selector: wildcardSelector,
+        score: wildcardAdjustedScore,
+        reason: wildcardCount === 1 ? `${combo.length}개 class 조합 (유일)` : `${combo.length}개 class 조합 (${wildcardCount}개 일치)`,
+        xpathValue: wildcardXpathValue,
+        unique: wildcardCount === 1,
+        matchCount: wildcardCount
+      };
+      
+      // 원본 class 조합 셀렉터 정보 저장
+      if (comboClassSelectorCount > 1) {
+        wildcardResult.rawSelector = comboClassSelector;
+        wildcardResult.rawType = "class";
+        wildcardResult.rawMatchCount = comboClassSelectorCount;
+        wildcardResult.rawUnique = false;
+        wildcardResult.rawReason = `class 조합`;
+      }
+      
+      results.push(wildcardResult);
+    }
+  }
+  
+  // 4. class + id 조합
+  if (element.id) {
+    for (const cls of classList.slice(0, 2)) {
+      const classExpr = buildClassContainsExpr(cls);
+      const xpathValue = `//*[@id=${escapeXPathLiteral(element.id)} and ${classExpr}]`;
+      const selector = `xpath=${xpathValue}`;
+      const parsed = parseSelectorForMatching(selector, "xpath");
+      const count = countMatchesForSelector(parsed, doc, { maxCount: 2 });
+      
+      results.push({
+        type: "xpath",
+        selector: selector,
+        score: 90,
+        reason: "id + class 조합",
+        xpathValue: xpathValue,
+        unique: true,
+        matchCount: count
+      });
+    }
+  }
+  
+  // 5. class + 다른 속성 조합 (data-*, aria-* 등)
+  const attrPriority = ['data-testid', 'data-test', 'data-qa', 'data-cy', 'aria-label', 'name', 'role'];
+  for (const attr of attrPriority) {
+    const attrValue = element.getAttribute && element.getAttribute(attr);
+    if (!attrValue) continue;
+    
+    for (const cls of classList.slice(0, 2)) {
+      const classExpr = buildClassContainsExpr(cls);
+      const xpathValue = `//*[@${attr}=${escapeXPathLiteral(attrValue)} and ${classExpr}]`;
+      const selector = `xpath=${xpathValue}`;
+      const parsed = parseSelectorForMatching(selector, "xpath");
+      const count = countMatchesForSelector(parsed, doc, { maxCount: 3 });
+      
+      results.push({
+        type: "xpath",
+        selector: selector,
+        score: count === 1 ? 82 : (count === 2 ? 67 : 57),
+        reason: count === 1 ? `${attr} + class 조합 (유일)` : `${attr} + class 조합 (${count}개 일치)`,
+        xpathValue: xpathValue,
+        unique: count === 1,
+        matchCount: count
+      });
+    }
+  }
+  
   return results;
 }
 
@@ -779,17 +1052,18 @@ export function getSelectorCandidates(element) {
       }
       
       // 텍스트 셀렉터 점수 계산 개선: 일치 개수에 따른 세밀한 점수 차등
+      // 원본 셀렉터이므로 조합 XPath보다 높은 점수
       let textScore;
       if (textMatchCount === 1) {
-        textScore = 80; // 유일 일치
+        textScore = 85; // 유일 일치 (원본 셀렉터 우선)
       } else if (textMatchCount === 2) {
-        textScore = 65; // 2개 일치
+        textScore = 70; // 2개 일치
       } else if (textMatchCount > 2 && textMatchCount <= 5) {
-        textScore = 50; // 3-5개 일치
+        textScore = 55; // 3-5개 일치
       } else if (textMatchCount > 5) {
-        textScore = 30; // 5개 이상 일치 (낮은 우선순위)
+        textScore = 35; // 5개 이상 일치 (낮은 우선순위)
       } else {
-        textScore = 40; // 일치 개수를 알 수 없는 경우
+        textScore = 45; // 일치 개수를 알 수 없는 경우
       }
       
       candidates.push({
@@ -805,7 +1079,17 @@ export function getSelectorCandidates(element) {
     }
   }
   
-  // 5. Robust XPath (속성 기반, 최적화됨 - Chrome Recorder 방식)
+  // 5. Class 기반 XPath (유일성 확보를 위한 조합)
+  try {
+    const classBasedXPaths = buildClassBasedXPath(element);
+    classBasedXPaths.forEach((cand) => {
+      candidates.push(cand);
+    });
+  } catch (e) {
+    console.error('[SelectorUtils] buildClassBasedXPath 오류:', e);
+  }
+  
+  // 6. Robust XPath (속성 기반, 최적화됨 - Chrome Recorder 방식)
   try {
     const customAttributes = [
       'data-testid',
@@ -831,22 +1115,28 @@ export function getSelectorCandidates(element) {
     console.error('[SelectorUtils] computeXPath (optimized) 오류:', e);
   }
   
-  // 6. CSS 경로
+  // 7. CSS 경로
   const cssPath = buildUniqueCssPath(element);
   if (cssPath) {
+    // ID가 있는 경우 CSS 경로 점수를 높임 (ID 기반 CSS 경로는 더 안정적)
+    const hasId = element.id ? 1 : 0;
+    const baseScore = 70;
+    const adjustedScore = hasId ? 93 : baseScore; // ID가 있으면 93점
+    
     candidates.push({
       selector: cssPath,
       type: 'css',
-      score: 70,
+      score: adjustedScore,
       reason: 'CSS 경로'
     });
   }
   
-  // 7. Full XPath (비최적화 버전 - 하위 호환성)
+  // 8. Full XPath (비최적화 버전 - 절대 경로)
   try {
     const fullXPath = computeXPath(element, false);
     if (fullXPath) {
-      const xpathValue = fullXPath.startsWith('//') ? fullXPath : `//${fullXPath}`;
+      // Full XPath는 절대 경로(/로 시작)여야 함
+      const xpathValue = fullXPath.startsWith('/') ? fullXPath : `/${fullXPath}`;
       candidates.push({
         selector: `xpath=${xpathValue}`,
         type: 'xpath-full',
@@ -859,7 +1149,7 @@ export function getSelectorCandidates(element) {
     console.error('[SelectorUtils] computeXPath (full) 오류:', e);
   }
   
-  // 8. 첫 번째 nth-of-type 셀렉터
+  // 9. 첫 번째 nth-of-type 셀렉터
   try {
     const firstNthCandidate = buildFirstNthOfTypeSelector(element);
     if (firstNthCandidate) {
@@ -869,7 +1159,7 @@ export function getSelectorCandidates(element) {
     console.error('[SelectorUtils] buildFirstNthOfTypeSelector 오류:', e);
   }
   
-  // 9. 태그 기반 (낮은 우선순위)
+  // 10. 태그 기반 (낮은 우선순위)
   const tagSelector = element.tagName.toLowerCase();
   candidates.push({
     selector: tagSelector,
@@ -1238,9 +1528,14 @@ function applyGlobalMatchCheck(candidate, parsed, options, ctx) {
   const globalCount = countMatchesForSelector(parsed, doc, matchOptions);
   candidate.matchCount = globalCount;
   candidate.unique = globalCount === 1;
+  // 원본 셀렉터 정보 보존 (가공 전 원본 셀렉터의 matchCount를 rawMatchCount로 저장)
   if (candidate.rawMatchCount === undefined) {
     candidate.rawMatchCount = globalCount;
     candidate.rawUnique = globalCount === 1;
+  } else {
+    // rawMatchCount가 이미 있으면 유지 (조합 XPath에서 원본 정보를 가져온 경우)
+    // rawUnique도 업데이트
+    candidate.rawUnique = candidate.rawMatchCount === 1;
   }
   
   // 유일성 검증 실패 시 명확한 피드백 제공
@@ -1332,6 +1627,9 @@ function maybeDeriveTextSelector(candidate, originalType, options, parsed, ctx) 
  */
 function maybeDeriveCssSelector(candidate, options, ctx) {
   if (candidate.unique) return;
+  // XPath 타입 셀렉터는 CSS로 변환하지 않음 (class 조합 XPath 보호)
+  const currentType = candidate.type || inferSelectorType(candidate.selector);
+  if (currentType === "xpath") return;
   if (!options.element) return;
   const baseCssSelector = extractCssSelector(candidate);
   if (!baseCssSelector) return;
@@ -1357,7 +1655,11 @@ function maybeDeriveCssSelector(candidate, options, ctx) {
  */
 function maybeApplyIndexing(candidate, originalType, options, ctx) {
   if (candidate.unique) return;
+  // XPath 타입 셀렉터는 인덱싱을 적용하지 않음 (class 조합 XPath 보호)
   if (originalType === "text" || originalType === "xpath") return;
+  // 현재 타입이 XPath인 경우도 인덱싱 적용하지 않음
+  const currentType = candidate.type || inferSelectorType(candidate.selector);
+  if (currentType === "xpath") return;
   if (!options.element) return;
   if (options.enableIndexing === false) return;
   const contextEl = options.contextElement && candidate.relation === "relative" ? options.contextElement : null;
@@ -1468,6 +1770,72 @@ export function enrichCandidateWithUniqueness(baseCandidate, options = {}) {
  * 개선된 셀렉터 후보 생성 (유일성 검증 포함)
  * 이 함수는 상위 요소 기반 셀렉터 생성 및 유일성 검증을 포함합니다.
  */
+/**
+ * 셀렉터 문자열 정규화 (중복 비교용)
+ */
+function normalizeSelectorForDedup(selector, type) {
+  if (!selector) return '';
+  // prefix 제거 (css=, xpath=, text= 등)
+  let normalized = selector;
+  if (normalized.startsWith('css=')) {
+    normalized = normalized.slice(4);
+  } else if (normalized.startsWith('xpath=')) {
+    normalized = normalized.slice(6);
+  } else if (normalized.startsWith('text=')) {
+    normalized = normalized.slice(5);
+  }
+  // 공백 제거 및 소문자 변환
+  return normalized.trim().toLowerCase();
+}
+
+/**
+ * 중복 셀렉터 제거 (같은 셀렉터는 가장 높은 점수만 유지)
+ */
+function deduplicateCandidates(candidates) {
+  const seen = new Map(); // key: normalizedSelector, value: bestCandidate
+  
+  for (const candidate of candidates) {
+    const selector = candidate.selector || '';
+    const type = candidate.type || inferSelectorType(selector);
+    const normalizedKey = normalizeSelectorForDedup(selector, type);
+    
+    if (!normalizedKey) continue; // 빈 셀렉터는 건너뛰기
+    
+    const existing = seen.get(normalizedKey);
+    
+    if (!existing) {
+      // 첫 번째 발견: 저장
+      seen.set(normalizedKey, candidate);
+    } else {
+      // 중복 발견: 점수 비교하여 더 좋은 것만 유지
+      const existingScore = existing.score || 0;
+      const currentScore = candidate.score || 0;
+      
+      // 점수가 같거나 더 높으면 교체
+      // 점수가 같으면 유일성, relation 등을 고려
+      if (currentScore > existingScore) {
+        seen.set(normalizedKey, candidate);
+      } else if (currentScore === existingScore) {
+        // 점수가 같으면 유일성 우선
+        if (candidate.unique && !existing.unique) {
+          seen.set(normalizedKey, candidate);
+        } else if (candidate.unique === existing.unique) {
+          // 유일성도 같으면 relation 비교
+          const currentRelation = candidate.relation === "relative" ? 1 : 0;
+          const existingRelation = existing.relation === "relative" ? 1 : 0;
+          if (currentRelation > existingRelation) {
+            seen.set(normalizedKey, candidate);
+          }
+          // 모두 같으면 기존 것 유지
+        }
+      }
+      // currentScore < existingScore면 기존 것 유지
+    }
+  }
+  
+  return Array.from(seen.values());
+}
+
 export function getSelectorCandidatesWithUniqueness(element, options = {}) {
   if (!element || element.nodeType !== 1) return [];
   
@@ -1487,11 +1855,52 @@ export function getSelectorCandidatesWithUniqueness(element, options = {}) {
     }
   });
   
+  // 중복 제거 (같은 셀렉터는 가장 높은 점수만 유지)
+  const deduplicated = deduplicateCandidates(candidates);
+  
   // 점수 및 유일성 기준으로 정렬
-  return candidates.sort((a, b) => {
+  return deduplicated.sort((a, b) => {
     const uniqueA = a.unique ? 1 : 0;
     const uniqueB = b.unique ? 1 : 0;
     if (uniqueA !== uniqueB) return uniqueB - uniqueA;
+    
+    const scoreA = a.score || 0;
+    const scoreB = b.score || 0;
+    const typeA = a.type || inferSelectorType(a.selector);
+    const typeB = b.type || inferSelectorType(b.selector);
+    
+    // 타입 우선순위: id > css > class > class-tag > text > xpath > 기타
+    const typePriority = {
+      'id': 100,
+      'css': 90,
+      'class': 85,
+      'class-tag': 80,
+      'text': 75,
+      'xpath': 70
+    };
+    const priorityA = typePriority[typeA] || 50;
+    const priorityB = typePriority[typeB] || 50;
+    
+    // 점수 차이 계산
+    const scoreDiff = Math.abs(scoreA - scoreB);
+    
+    // ID 타입은 항상 우선 (점수 차이가 5점 이하일 때)
+    if (typeA === 'id' && typeB !== 'id' && scoreDiff <= 5) {
+      return -1; // ID 우선
+    }
+    if (typeB === 'id' && typeA !== 'id' && scoreDiff <= 5) {
+      return 1; // ID 우선
+    }
+    
+    // 점수 차이가 크면 점수 우선 (3점 이상 차이)
+    if (scoreDiff >= 3) {
+      return scoreB - scoreA; // 점수가 높은 것 우선
+    }
+    
+    // 점수 차이가 작으면(3점 미만) 타입 우선순위 적용
+    // 원본 셀렉터 타입(ID, CSS, class)이 조합 XPath보다 우선
+    if (priorityA !== priorityB) return priorityB - priorityA;
+    
     const relationA = a.relation === "relative" ? 1 : 0;
     const relationB = b.relation === "relative" ? 1 : 0;
     if (relationA !== relationB) return relationB - relationA;

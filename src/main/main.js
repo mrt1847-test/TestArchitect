@@ -957,8 +957,119 @@ async function waitForPageStabilityAndCapture(cdpPort, targetId = null) {
       const STABILITY_TIMEOUT = 5000; // 5초 타임아웃 (네비게이션이 없을 수 있음)
       const MAX_WAIT_TIME = 3000; // 최대 3초 대기 (네비게이션이 빠르게 발생하지 않으면 짧은 지연 후 캡처)
       
-      const captureAndResolve = () => {
+      // 중간 처리 페이지 필터링 함수
+      function shouldFilterIntermediateUrl(url) {
+        if (!url) return false;
+        const urlLower = url.toLowerCase();
+        const intermediatePatterns = [
+          /loginproc/i, /logoutproc/i, /redirect/i, /processing/i, /intermediate/i,
+          /callback/i, /verify/i,
+          /token/i, /oauth/i, /handshake/i, /sso/i, /saml/i,
+          /loading/i, /wait/i, /waiting/i, /transit/i,
+          /session/i, /signin/i, /signout/i, /logout/i, /jump/i
+        ];
+        return intermediatePatterns.some(pattern => pattern.test(urlLower));
+      }
+      
+      // 현재 URL 확인 및 중간 처리 페이지 건너뛰기
+      async function checkAndWaitForFinalPage() {
+        return new Promise((resolveCheck) => {
+          try {
+            // Runtime.enable
+            cdpWs.send(JSON.stringify({ id: 200, method: 'Runtime.enable' }));
+            
+            // 현재 URL 확인
+            setTimeout(() => {
+              cdpWs.send(JSON.stringify({
+                id: 201,
+                method: 'Runtime.evaluate',
+                params: {
+                  expression: 'window.location.href',
+                  returnByValue: true
+                }
+              }));
+            }, 100);
+            
+            let urlChecked = false;
+            let navigationHandler = null;
+            let urlCheckTimeout = null;
+            
+            const messageHandler = (data) => {
+              try {
+                const message = JSON.parse(data.toString());
+                
+                // URL 확인 응답 처리
+                if (message.id === 201 && message.result && !urlChecked) {
+                  urlChecked = true;
+                  const currentUrl = message.result.value || '';
+                  const isIntermediate = shouldFilterIntermediateUrl(currentUrl);
+                  
+                  if (isIntermediate) {
+                    console.log(`[Screenshot] 중간 처리 페이지 감지: ${currentUrl}, 최종 목적지 페이지로 이동 대기...`);
+                    
+                    // Page.navigatedWithinDocument 이벤트 대기
+                    navigationHandler = (navData) => {
+                      try {
+                        const navMessage = JSON.parse(navData.toString());
+                        if (navMessage.method === 'Page.navigatedWithinDocument') {
+                          console.log('[Screenshot] URL 변경 감지, 다시 확인...');
+                          // URL 변경 감지, 다시 확인
+                          setTimeout(() => {
+                            cdpWs.removeListener('message', navigationHandler);
+                            checkAndWaitForFinalPage().then(resolveCheck);
+                          }, 500);
+                        }
+                      } catch (e) {
+                        // 무시
+                      }
+                    };
+                    
+                    cdpWs.on('message', navigationHandler);
+                    
+                    // 타임아웃 설정 (최대 3초 대기)
+                    urlCheckTimeout = setTimeout(() => {
+                      if (navigationHandler) {
+                        cdpWs.removeListener('message', navigationHandler);
+                      }
+                      console.log('[Screenshot] 중간 처리 페이지 대기 타임아웃, 스크린샷 캡처');
+                      resolveCheck(true);
+                    }, 3000);
+                  } else {
+                    console.log(`[Screenshot] 최종 목적지 페이지 확인: ${currentUrl}`);
+                    if (urlCheckTimeout) clearTimeout(urlCheckTimeout);
+                    resolveCheck(true);
+                  }
+                }
+              } catch (e) {
+                // 무시
+              }
+            };
+            
+            cdpWs.on('message', messageHandler);
+            
+            // 타임아웃 설정 (URL 확인 실패 시)
+            setTimeout(() => {
+              if (!urlChecked) {
+                cdpWs.removeListener('message', messageHandler);
+                if (navigationHandler) {
+                  cdpWs.removeListener('message', navigationHandler);
+                }
+                console.warn('[Screenshot] URL 확인 타임아웃, 스크린샷 캡처');
+                resolveCheck(true);
+              }
+            }, 2000);
+          } catch (error) {
+            console.warn('[Screenshot] URL 확인 실패:', error.message);
+            resolveCheck(true);
+          }
+        });
+      }
+      
+      const captureAndResolve = async () => {
         if (!stabilityResolved) {
+          // 중간 처리 페이지 확인 및 대기
+          await checkAndWaitForFinalPage();
+          
           stabilityResolved = true;
           screenshotCaptured = true;
           clearTimeout(timeout);
@@ -4027,11 +4138,11 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
                             if (!url) return false;
                             const urlLower = url.toLowerCase();
                             const intermediatePatterns = [
-                              /loginproc/i, /redirect/i, /processing/i, /intermediate/i,
+                              /loginproc/i, /logoutproc/i, /redirect/i, /processing/i, /intermediate/i,
                               /callback/i, /verify/i,
                               /token/i, /oauth/i, /handshake/i, /sso/i, /saml/i,
                               /loading/i, /wait/i, /waiting/i, /transit/i,
-                              /session/i, /signin/i, /jump/i
+                              /session/i, /signin/i, /signout/i, /logout/i, /jump/i
                             ];
                             return intermediatePatterns.some(pattern => pattern.test(urlLower));
                           }

@@ -126,6 +126,32 @@ class DomSnapshotService {
       return [];
     }
   }
+
+  /**
+   * 오래된 DOM 스냅샷 정리 (60일 이상 된 스냅샷 삭제)
+   * @returns {Promise<number>} 삭제된 스냅샷 개수
+   */
+  async cleanupOldSnapshots() {
+    try {
+      // 로컬 모드인 경우 로컬 데이터베이스에서 정리
+      if (config.database.mode === 'local' && DbService.cleanupOldDomSnapshots) {
+        return DbService.cleanupOldDomSnapshots();
+      }
+      
+      // 서버 모드인 경우 서버 API 호출 시도
+      try {
+        const response = await ApiService.request('POST', '/api/dom-snapshots/cleanup');
+        return response.deletedCount || 0;
+      } catch (error) {
+        // 서버 연결 실패 시 조용히 실패 처리 (서버에서 자동으로 처리할 수 있음)
+        console.warn('⚠️ 서버에서 스냅샷 정리 실패:', error.message);
+        return 0;
+      }
+    } catch (error) {
+      console.warn('⚠️ DOM 스냅샷 정리 실패:', error.message);
+      return 0;
+    }
+  }
 }
 
 module.exports = new DomSnapshotService();

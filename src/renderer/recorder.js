@@ -1682,6 +1682,8 @@ function buildSelectorTabGroups(event, baseCandidates, aiCandidates) {
   const safeAi = Array.isArray(aiCandidates) ? aiCandidates : [];
   const uniqueBaseList = [];
   const uniqueAiList = [];
+  const repeatBaseList = [];
+  const repeatAiList = [];
 
   const createGroup = (listRef) => ({
     listRef,
@@ -1694,8 +1696,8 @@ function buildSelectorTabGroups(event, baseCandidates, aiCandidates) {
       ai: createGroup(uniqueAiList)
     },
     repeat: {
-      base: createGroup(safeBase),
-      ai: createGroup(safeAi)
+      base: createGroup(repeatBaseList),
+      ai: createGroup(repeatAiList)
     }
   };
 
@@ -1717,35 +1719,101 @@ function buildSelectorTabGroups(event, baseCandidates, aiCandidates) {
     addIndex(groups.unique, source, newIndex);
   };
 
+  const registerRepeat = (source, candidate, originalIndex) => {
+    if (!candidate || !candidate.selector) return;
+    const targetList = source === 'ai' ? repeatAiList : repeatBaseList;
+    const stored = { ...candidate, __sourceIndex: originalIndex, __isRaw: true };
+    const newIndex = targetList.push(stored) - 1;
+    addIndex(groups.repeat, source, newIndex);
+  };
+
   const assign = (listRef, source) => {
     if (!Array.isArray(listRef)) return;
     listRef.forEach((candidate, index) => {
       if (!candidate || !candidate.selector) return;
+      
+      // 원본 셀렉터 정보 확인 (rawSelector가 있으면 원본, 없으면 현재 셀렉터가 원본)
+      const rawSelector = candidate.rawSelector || candidate.selector;
+      const rawType = candidate.rawType || candidate.type || inferSelectorType(candidate.selector);
+      const rawMatchCount = typeof candidate.rawMatchCount === 'number' 
+        ? candidate.rawMatchCount 
+        : (typeof candidate.matchCount === 'number' ? candidate.matchCount : null);
+      const rawUnique = candidate.rawUnique !== undefined ? candidate.rawUnique : (rawMatchCount === 1);
+      
+      // 가공 여부 확인 (셀렉터가 변경되었거나, 부모 노드 기반으로 생성되었거나, 인덱싱이 적용된 경우)
+      const isProcessed = candidate.selector !== rawSelector || 
+                          candidate.__derived === true || 
+                          candidate.__autoDerived !== undefined ||
+                          (candidate.reason && (candidate.reason.includes('부모') || candidate.reason.includes('상위') || candidate.reason.includes('경로') || candidate.reason.includes('조합')));
+      
+      // 가공된 셀렉터의 유일성 확인
       const finalMatchCount = typeof candidate.matchCount === 'number' ? candidate.matchCount : null;
       const isAlreadyUnique = candidate.unique === true || finalMatchCount === 1;
 
-      if (isAlreadyUnique) {
+      // 1. 원본 셀렉터가 유일한 경우: 유일요소 탭에 포함
+      if (rawUnique || (rawMatchCount !== null && rawMatchCount === 1)) {
         registerUnique(source, candidate, index);
-        // 유일한 셀렉터는 반복 구조 그룹에 포함하지 않음
-        return;
+        // 가공된 셀렉터가 유일한 경우도 처리
+        const derivedCandidate = enforceNthSelectorIfNeeded({ ...candidate }, event);
+        if (derivedCandidate && derivedCandidate.unique === true && derivedCandidate.selector !== candidate.selector) {
+          registerUnique(source, derivedCandidate, index, { derived: true });
+        }
+        return; // 원본이 유일하면 반복요소 탭에 포함하지 않음
       }
 
-      // 유일하지 않은 셀렉터만 반복 구조 그룹에 추가
-      addIndex(groups.repeat, source, index);
+      // 2. 가공된 셀렉터가 유일한 경우: 유일요소 탭에 포함
+      if (isAlreadyUnique && isProcessed) {
+        registerUnique(source, candidate, index);
+        // 조합 XPath가 유일하더라도 원본 셀렉터가 반복되면 반복요소 탭에도 추가
+        if (!rawUnique && rawMatchCount !== null && rawMatchCount > 1) {
+          const rawCandidate = {
+            selector: rawSelector,
+            type: rawType,
+            matchCount: rawMatchCount,
+            unique: false,
+            score: candidate.score,
+            reason: candidate.rawReason || candidate.reason,
+            __isRaw: true,
+            __originalIndex: index
+          };
+          registerRepeat(source, rawCandidate, index);
+        }
+        return; // 가공된 셀렉터가 유일하면 여기서 종료
+      }
 
-      const derivedCandidate = enforceNthSelectorIfNeeded({ ...candidate }, event);
-      if (derivedCandidate && derivedCandidate.unique === true) {
-        registerUnique(source, derivedCandidate, index, { derived: true });
-        const auto = {
-          ...derivedCandidate,
-          rawSelector: candidate.selector,
-          rawType: candidate.type || inferSelectorType(candidate.selector),
-          rawMatchCount: candidate.matchCount,
-          rawReason: candidate.reason,
-          __sourceIndex: index,
-          __derived: true
+      // 3. 반복요소 탭: 원본 셀렉터가 중복되는 경우에만 포함
+      // 원본 셀렉터가 DOM 전체에서 중복되는 경우 (text, class, id 등)
+      // 조건: 원본 셀렉터가 반복되고(rawMatchCount > 1)
+      // 가공되지 않은 원본 셀렉터만 반복요소 탭에 포함 (가공된 셀렉터는 위에서 이미 처리됨)
+      if (!rawUnique && rawMatchCount !== null && rawMatchCount > 1 && !isProcessed) {
+        // 원본 셀렉터 정보로 반복 구조 그룹에 추가
+        const rawCandidate = {
+          selector: rawSelector,
+          type: rawType,
+          matchCount: rawMatchCount,
+          unique: false,
+          score: candidate.score,
+          reason: candidate.rawReason || candidate.reason,
+          __isRaw: true, // 원본 셀렉터임을 표시
+          __originalIndex: index
         };
-        listRef[index] = { ...candidate, __autoDerived: auto };
+        registerRepeat(source, rawCandidate, index);
+        
+        // 반복요소에서 nth-of-type을 적용하여 유일하게 만든 경우 유일요소 탭에도 추가
+        const derivedCandidate = enforceNthSelectorIfNeeded({ ...candidate }, event);
+        if (derivedCandidate && derivedCandidate.unique === true && derivedCandidate.selector !== candidate.selector) {
+          registerUnique(source, derivedCandidate, index, { derived: true });
+          const auto = {
+            ...derivedCandidate,
+            rawSelector: candidate.selector,
+            rawType: candidate.type || inferSelectorType(candidate.selector),
+            rawMatchCount: candidate.matchCount,
+            rawReason: candidate.reason,
+            __sourceIndex: index,
+            __derived: true
+          };
+          listRef[index] = { ...candidate, __autoDerived: auto };
+        }
       }
     });
   };
@@ -1942,11 +2010,18 @@ function renderSelectorGroup(candidates, options = {}) {
     mode = 'default'
   } = options;
 
-  const iterateIndices = Array.isArray(listRef)
-    ? listRef.map((_, idx) => idx)
-    : Array.isArray(candidates)
-      ? candidates.map((_, idx) => idx)
-      : [];
+  // indices가 제공되면 해당 인덱스만 사용, 없으면 전체 리스트 사용
+  const providedIndices = Array.isArray(options.indices) && options.indices.length > 0
+    ? options.indices
+    : null;
+  
+  const iterateIndices = providedIndices !== null
+    ? providedIndices
+    : (Array.isArray(listRef)
+        ? listRef.map((_, idx) => idx)
+        : Array.isArray(candidates)
+          ? candidates.map((_, idx) => idx)
+          : []);
 
   if (!container || !Array.isArray(iterateIndices) || iterateIndices.length === 0) return;
 
@@ -1958,14 +2033,38 @@ function renderSelectorGroup(candidates, options = {}) {
     
     const effectiveCandidate = candidateRef;
     const selectorType = effectiveCandidate.type || inferSelectorType(effectiveCandidate.selector);
-    const matchCount = typeof effectiveCandidate.matchCount === 'number' ? effectiveCandidate.matchCount : null;
+    
+    // 반복요소 탭에서는 원본 셀렉터의 matchCount 사용
+    // 유일요소 탭에서는 가공된 셀렉터의 matchCount 사용
+    const matchCount = allowNonUnique && effectiveCandidate.__isRaw
+      ? (typeof effectiveCandidate.matchCount === 'number' ? effectiveCandidate.matchCount : null)
+      : (typeof effectiveCandidate.matchCount === 'number' ? effectiveCandidate.matchCount : null);
+    
     const isTextSelector = selectorType === 'text';
     
+    // 유일요소 탭: 유일하지 않은 셀렉터 제외 (text는 예외)
     if (!allowNonUnique && !isTextSelector) {
       if (matchCount !== null && matchCount !== 1) {
         return;
       }
       if (effectiveCandidate.unique === false) {
+        return;
+      }
+    }
+    
+    // 반복요소 탭: 원본 셀렉터가 중복되는 것만 표시
+    if (allowNonUnique) {
+      // 원본 셀렉터가 유일한 경우 제외
+      if (effectiveCandidate.__isRaw && effectiveCandidate.unique === true) {
+        return;
+      }
+      // matchCount가 1이거나 null인 경우 제외 (중복 정보가 없음)
+      // 반복요소 탭은 원본 셀렉터가 2개 이상 일치하는 경우만 표시
+      if (matchCount === null || matchCount === 1) {
+        return; // 중복 정보가 없으면 반복요소 탭에 표시하지 않음
+      }
+      // matchCount가 2 이상인 경우만 반복요소 탭에 표시
+      if (matchCount < 2) {
         return;
       }
     }
@@ -1983,10 +2082,24 @@ function renderSelectorGroup(candidates, options = {}) {
       : '';
     const typeLabel = (selectorType || 'css').toUpperCase();
     
+    // 반복요소 탭에서는 matchCount를 명확히 표시
+    let matchCountLabel = '';
+    if (allowNonUnique && matchCount !== null && matchCount !== 1) {
+      matchCountLabel = `<span class="match-count" style="color: #ff6b6b; font-weight: bold;">(${matchCount}개 일치)</span>`;
+    }
+    
+    // 유일요소 탭에서 가공된 셀렉터 표시
+    let derivedLabel = '';
+    if (!allowNonUnique && (effectiveCandidate.__derived === true || effectiveCandidate.__autoDerived)) {
+      derivedLabel = `<span class="derived-badge" style="background: #4CAF50; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; margin-left: 4px;">가공됨</span>`;
+    }
+    
     item.innerHTML = `
       <div class="selector-main">
         <span class="type">${typeLabel}</span>
         <span class="sel">${effectiveCandidate.selector}</span>
+        ${matchCountLabel}
+        ${derivedLabel}
         <span class="score">${scoreLabel}</span>
       </div>
       <div class="selector-actions">
@@ -2062,7 +2175,14 @@ function updateSelectorTabUI() {
   if (active === 'repeat') {
     const info = document.createElement('div');
     info.className = 'selector-repeat-info';
-    info.textContent = '반복 구조 후보는 선택 시 위치 기반 :nth-of-type()이 자동 적용됩니다.';
+    info.style.cssText = 'padding: 8px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; margin-bottom: 12px; color: #856404; font-size: 13px;';
+    info.textContent = '반복 구조 후보: DOM 전체에서 중복되는 원본 셀렉터입니다. 선택 시 위치 기반 :nth-of-type()이 자동 적용되어 유일요소 탭으로 이동합니다.';
+    contentEl.appendChild(info);
+  } else if (active === 'unique') {
+    const info = document.createElement('div');
+    info.className = 'selector-unique-info';
+    info.style.cssText = 'padding: 8px; background: #d4edda; border: 1px solid #28a745; border-radius: 4px; margin-bottom: 12px; color: #155724; font-size: 13px;';
+    info.textContent = '유일 후보: 조합하거나 부모 노드를 통해 유일성을 확보한 가공된 셀렉터입니다.';
     contentEl.appendChild(info);
   }
 
@@ -3072,7 +3192,7 @@ function cancelSimpleElementSelection() {
 /**
  * 요소 선택 완료 처리
  */
-function handleElementSelectionPicked(msg) {
+async function handleElementSelectionPicked(msg) {
   if (!selectionState.active) {
     selectionState.active = true;
     updateElementButtonState();
@@ -3124,7 +3244,7 @@ function handleElementSelectionPicked(msg) {
         addAssertionAfterStep(pendingStepIndex, pending, path, value);
         selectionState.pendingStepIndex = null;
       } else {
-        addVerifyAction(pending, path, value);
+        await addVerifyAction(pending, path, value);
       }
       selectionState.pendingAction = null;
       cancelSelectionWorkflow('', 'info');
@@ -3190,7 +3310,7 @@ function handleElementSelectionCancelled() {
 /**
  * 요소 액션 처리
  */
-function handleElementAction(action) {
+async function handleElementAction(action) {
   if (!action) return;
   const currentNode = getCurrentSelectionNode();
   if (!currentNode || !currentNode.selectedCandidate) {
@@ -3199,13 +3319,13 @@ function handleElementAction(action) {
   }
   switch (action) {
     case 'click':
-      applySelectionAction('click');
+      await applySelectionAction('click');
       break;
     case 'text':
-      applySelectionAction('extract_text');
+      await applySelectionAction('extract_text');
       break;
     case 'value':
-      applySelectionAction('get_attribute', {attributeName: 'value'});
+      await applySelectionAction('get_attribute', {attributeName: 'value'});
       break;
     case 'attribute':
       if (elementAttrPanel) {
@@ -3225,7 +3345,7 @@ function handleElementAction(action) {
       startParentSelection();
       break;
     case 'commit':
-      applySelectionAction('commit');
+      await applySelectionAction('commit');
       break;
     case 'finish':
       cancelSelectionWorkflow('요소 선택을 종료했습니다.');
@@ -3280,7 +3400,7 @@ function startParentSelection() {
 /**
  * 선택 액션 적용 (8단계 완성)
  */
-function applySelectionAction(actionType, options = {}) {
+async function applySelectionAction(actionType, options = {}) {
   const path = buildSelectionPathArray();
   if (!path.length) {
     setElementStatus('먼저 요소를 선택하세요.', 'error');
@@ -3315,7 +3435,7 @@ function applySelectionAction(actionType, options = {}) {
         addAssertionAfterStep(selectionState.pendingStepIndex, pending, path, value);
         selectionState.pendingStepIndex = null;
       } else {
-        addVerifyAction(pending, path, value);
+        await addVerifyAction(pending, path, value);
       }
       selectionState.pendingAction = null;
       cancelSelectionWorkflow('', 'info');
@@ -3428,15 +3548,93 @@ function addManualAction(entry, callback) {
 /**
  * 검증 액션 처리
  */
-function handleVerifyAction(verifyType) {
+async function handleVerifyAction(verifyType) {
   if (verifyType === 'verifyTitle' || verifyType === 'verifyUrl') {
     // 타이틀/URL 검증은 요소 선택 불필요
-    addVerifyAction(verifyType, null, null);
+    let initialValue = null;
+    
+    if (verifyType === 'verifyUrl') {
+      // 중간 처리 페이지 필터링 함수
+      function shouldFilterIntermediateUrl(url) {
+        if (!url) return false;
+        const urlLower = url.toLowerCase();
+        const intermediatePatterns = [
+          /loginproc/i, /logoutproc/i, /redirect/i, /processing/i, /intermediate/i,
+          /callback/i, /verify/i,
+          /token/i, /oauth/i, /handshake/i, /sso/i, /saml/i,
+          /loading/i, /wait/i, /waiting/i, /transit/i,
+          /session/i, /signin/i, /signout/i, /logout/i, /jump/i
+        ];
+        return intermediatePatterns.some(pattern => pattern.test(urlLower));
+      }
+      
+      // 현재 URL 가져오기
+      let currentUrl = window.location.href || '';
+      
+      // 중간 처리 페이지인 경우 최종 목적지 페이지로 이동할 때까지 대기
+      if (shouldFilterIntermediateUrl(currentUrl)) {
+        console.log('[Recorder] verifyUrl: 중간 처리 페이지 감지, 최종 목적지 페이지로 이동 대기...');
+        
+        // 최대 3초 동안 최종 목적지 페이지로 이동 대기
+        const maxWaitTime = 3000;
+        const checkInterval = 200;
+        let waitedTime = 0;
+        
+        const waitForFinalPage = () => {
+          return new Promise((resolveWait) => {
+            const checkUrl = () => {
+              const checkCurrentUrl = window.location.href || '';
+              if (!shouldFilterIntermediateUrl(checkCurrentUrl)) {
+                console.log('[Recorder] verifyUrl: 최종 목적지 페이지 도달:', checkCurrentUrl);
+                currentUrl = checkCurrentUrl;
+                resolveWait(true);
+                return;
+              }
+              
+              waitedTime += checkInterval;
+              if (waitedTime >= maxWaitTime) {
+                console.warn('[Recorder] verifyUrl: 최종 목적지 페이지 대기 타임아웃, 중간 URL 필터링');
+                // 타임아웃 시 중간 URL 사용하지 않음 (null로 설정하여 addVerifyAction에서 다시 체크)
+                currentUrl = null;
+                resolveWait(false);
+                return;
+              }
+              
+              setTimeout(checkUrl, checkInterval);
+            };
+            
+            checkUrl();
+          });
+        };
+        
+        // 최종 목적지 페이지로 이동 대기
+        const waitResult = await waitForFinalPage();
+        
+        // 타임아웃으로 인해 currentUrl이 여전히 중간 URL인 경우 이벤트 추가 취소
+        if (!waitResult && shouldFilterIntermediateUrl(currentUrl)) {
+          console.warn('[Recorder] verifyUrl: 중간 URL 필터링으로 인해 이벤트 추가 취소');
+          setElementStatus('중간 처리 페이지가 감지되었습니다. 최종 목적지 페이지에서 다시 시도해주세요.', 'error');
+          return;
+        }
+      }
+      
+      // 필터링된 URL 사용 (중간 URL이 아닌 경우만)
+      if (currentUrl && !shouldFilterIntermediateUrl(currentUrl)) {
+        initialValue = currentUrl;
+      } else if (currentUrl && shouldFilterIntermediateUrl(currentUrl)) {
+        // 여전히 중간 URL인 경우 이벤트 추가 취소
+        console.warn('[Recorder] verifyUrl: 중간 URL 필터링으로 인해 이벤트 추가 취소');
+        setElementStatus('중간 처리 페이지가 감지되었습니다. 최종 목적지 페이지에서 다시 시도해주세요.', 'error');
+        return;
+      }
+    }
+    
+    await addVerifyAction(verifyType, null, initialValue);
     return;
   }
   
   // 요소 검증은 심플 요소 선택 사용 (waitForElement와 동일한 방식)
-  startSimpleElementSelection((path, elementInfo, pendingAction, pendingStepIndex) => {
+  startSimpleElementSelection(async (path, elementInfo, pendingAction, pendingStepIndex) => {
     let value = null;
     if (pendingAction === 'verifyText') {
       // 요소의 텍스트를 자동으로 사용 (prompt 없이)
@@ -3447,7 +3645,7 @@ function handleVerifyAction(verifyType) {
       value = null;
     }
     
-    addVerifyAction(pendingAction, path, value, elementInfo);
+    await addVerifyAction(pendingAction, path, value, elementInfo);
   }, verifyType, null);
 }
 
@@ -3535,7 +3733,7 @@ function handleInteractionAction(interactionType) {
 /**
  * 검증 액션을 이벤트로 추가
  */
-function addVerifyAction(verifyType, path, value, elementInfo = null) {
+async function addVerifyAction(verifyType, path, value, elementInfo = null) {
   console.log('[Recorder] addVerifyAction 호출:', {
     verifyType,
     pathLength: path?.length || 0,
@@ -3666,9 +3864,74 @@ function addVerifyAction(verifyType, path, value, elementInfo = null) {
     if (verifyType === 'verifyTitle') {
       value = value || currentTitle;
     } else if (verifyType === 'verifyUrl') {
+      // 중간 처리 페이지 필터링 함수
+      function shouldFilterIntermediateUrl(url) {
+        if (!url) return false;
+        const urlLower = url.toLowerCase();
+        const intermediatePatterns = [
+          /loginproc/i, /logoutproc/i, /redirect/i, /processing/i, /intermediate/i,
+          /callback/i, /verify/i,
+          /token/i, /oauth/i, /handshake/i, /sso/i, /saml/i,
+          /loading/i, /wait/i, /waiting/i, /transit/i,
+          /session/i, /signin/i, /signout/i, /logout/i, /jump/i
+        ];
+        return intermediatePatterns.some(pattern => pattern.test(urlLower));
+      }
+      
       // URL 정규화 적용 (쿼리 파라미터 제거)
-      const rawUrl = value || currentUrl;
-      if (rawUrl) {
+      let rawUrl = value || currentUrl;
+      
+      // 중간 처리 페이지인 경우 최종 목적지 페이지로 이동할 때까지 대기
+      if (shouldFilterIntermediateUrl(rawUrl)) {
+        console.log('[Recorder] verifyUrl: 중간 처리 페이지 감지, 최종 목적지 페이지로 이동 대기...');
+        
+        // 최대 3초 동안 최종 목적지 페이지로 이동 대기
+        const maxWaitTime = 3000;
+        const checkInterval = 200;
+        let waitedTime = 0;
+        
+        const waitForFinalPage = () => {
+          return new Promise((resolveWait) => {
+            const checkUrl = () => {
+              const checkCurrentUrl = window.location.href || '';
+              if (!shouldFilterIntermediateUrl(checkCurrentUrl)) {
+                console.log('[Recorder] verifyUrl: 최종 목적지 페이지 도달:', checkCurrentUrl);
+                rawUrl = checkCurrentUrl;
+                resolveWait(true);
+                return;
+              }
+              
+              waitedTime += checkInterval;
+              if (waitedTime >= maxWaitTime) {
+                console.warn('[Recorder] verifyUrl: 최종 목적지 페이지 대기 타임아웃, 중간 URL 필터링');
+                // 타임아웃 시 중간 URL 사용하지 않음 (null로 설정하여 스킵)
+                rawUrl = null;
+                resolveWait(false);
+                return;
+              }
+              
+              setTimeout(checkUrl, checkInterval);
+            };
+            
+            checkUrl();
+          });
+        };
+        
+        // 최종 목적지 페이지로 이동 대기
+        const waitResult = await waitForFinalPage();
+        
+        // 타임아웃으로 인해 rawUrl이 null이 된 경우 이벤트 추가 취소
+        if (!waitResult && !rawUrl) {
+          console.warn('[Recorder] verifyUrl: 중간 URL 필터링으로 인해 이벤트 추가 취소');
+          setElementStatus('중간 처리 페이지가 감지되었습니다. 최종 목적지 페이지에서 다시 시도해주세요.', 'error');
+          return;
+        }
+      } else {
+        // 중간 처리 페이지가 아닌 경우 즉시 진행
+      }
+      
+      // rawUrl이 null이 아니고 중간 URL이 아닌 경우에만 처리
+      if (rawUrl && !shouldFilterIntermediateUrl(rawUrl)) {
         try {
           const urlObj = new URL(rawUrl);
           value = `${urlObj.protocol}//${urlObj.host}${urlObj.pathname}`;
@@ -3677,6 +3940,11 @@ function addVerifyAction(verifyType, path, value, elementInfo = null) {
           const queryIndex = rawUrl.indexOf('?');
           value = queryIndex !== -1 ? rawUrl.substring(0, queryIndex) : rawUrl;
         }
+      } else if (!rawUrl || shouldFilterIntermediateUrl(rawUrl)) {
+        // 중간 URL이거나 rawUrl이 null인 경우 이벤트 추가 취소
+        console.warn('[Recorder] verifyUrl: 중간 URL 필터링으로 인해 이벤트 추가 취소');
+        setElementStatus('중간 처리 페이지가 감지되었습니다. 최종 목적지 페이지에서 다시 시도해주세요.', 'error');
+        return;
       }
     }
     
@@ -5045,7 +5313,7 @@ function setupEventListeners() {
 
   // 속성 추출 적용 버튼
   if (elementAttrApplyBtn) {
-    elementAttrApplyBtn.addEventListener('click', () => {
+    elementAttrApplyBtn.addEventListener('click', async () => {
       const attrName = elementAttrNameInput ? elementAttrNameInput.value.trim() : '';
       if (!attrName) {
         setElementStatus('속성명을 입력하세요.', 'error');
@@ -5053,7 +5321,7 @@ function setupEventListeners() {
       }
       if (selectionState.pendingAction === 'attribute') {
         selectionState.pendingAttribute = attrName;
-        applySelectionAction('get_attribute', {attributeName: attrName});
+        await applySelectionAction('get_attribute', {attributeName: attrName});
         selectionState.pendingAction = null;
         selectionState.pendingAttribute = '';
       }
@@ -5530,7 +5798,7 @@ function handleStepAssertion(stepIndex, assertionType, stepEvent) {
  * Assertion을 위한 요소 선택 모드 활성화 (심플 요소 선택 사용)
  */
 function activateElementSelectionForAssertion(stepIndex, assertionType) {
-  startSimpleElementSelection((path, elementInfo, pendingAction, pendingStepIndex) => {
+  startSimpleElementSelection(async (path, elementInfo, pendingAction, pendingStepIndex) => {
     let value = null;
     if (pendingAction === 'verifyText' || pendingAction === 'verifyTextContains') {
       // 요소의 텍스트를 자동으로 사용 (prompt 없이)
@@ -5545,7 +5813,7 @@ function activateElementSelectionForAssertion(stepIndex, assertionType) {
     if (pendingStepIndex !== null && pendingStepIndex !== undefined) {
       addAssertionAfterStep(pendingStepIndex, pendingAction, path, value);
     } else {
-      addVerifyAction(pendingAction, path, value);
+      await addVerifyAction(pendingAction, path, value);
     }
   }, assertionType, stepIndex);
   
@@ -7318,7 +7586,7 @@ function handleGlobalAssertion(assertionType) {
   }
   
   // 요소 검증은 심플 요소 선택 사용 (waitForElement와 동일한 방식)
-  startSimpleElementSelection((path, elementInfo, pendingAction, pendingStepIndex) => {
+  startSimpleElementSelection(async (path, elementInfo, pendingAction, pendingStepIndex) => {
     console.log('[Recorder] handleGlobalAssertion 콜백 실행:', {
       pendingAction,
       pendingStepIndex,
@@ -7339,7 +7607,7 @@ function handleGlobalAssertion(assertionType) {
       addAssertionAfterStep(pendingStepIndex, pendingAction, path, value);
     } else {
       console.log('[Recorder] addVerifyAction 호출:', { pendingAction, pathLength: path?.length || 0, value });
-      addVerifyAction(pendingAction, path, value, elementInfo);
+      await addVerifyAction(pendingAction, path, value, elementInfo);
     }
   }, assertionType, null);
   

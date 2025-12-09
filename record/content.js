@@ -12,15 +12,12 @@
   }
   function buildFullXPath(el) {
     if (!el || el.nodeType !== 1) return null;
-    if (el.id) {
-      const cleanedId = escapeAttributeValue(el.id);
-      if (cleanedId) {
-        return `//*[@id="${cleanedId}"]`;
-      }
-    }
+    // Full XPath는 절대 경로(/html/body/...)여야 함
+    // ID가 있어도 절대 경로로 생성
     const parts = [];
     let current = el;
-    while (current && current.nodeType === 1 && current !== document.documentElement) {
+    // document.documentElement(html)까지 포함
+    while (current && current.nodeType === 1) {
       const tagName = current.tagName.toLowerCase();
       let index = 1;
       let sibling = current.previousSibling;
@@ -31,10 +28,15 @@
         sibling = sibling.previousSibling;
       }
       parts.unshift(`${tagName}[${index}]`);
+      // html 요소에 도달하면 중단
+      if (current === document.documentElement) {
+        break;
+      }
       current = current.parentNode;
     }
     if (parts.length === 0) return null;
-    return `//${parts.join("/")}`;
+    // 절대 경로는 /로 시작
+    return `/${parts.join("/")}`;
   }
   function buildCssSegment(el) {
     if (!el || el.nodeType !== 1) return "";
@@ -233,6 +235,129 @@
       xpath = `//${segments.join("/")}`;
     }
     return xpath;
+  }
+  function buildClassBasedXPath(element) {
+    if (!element || element.nodeType !== 1) return [];
+    const classList = Array.from(element.classList || []).filter(Boolean);
+    if (classList.length === 0) return [];
+    const results = [];
+    const tagName = element.tagName ? element.tagName.toLowerCase() : "*";
+    function buildClassContainsExpr(cls) {
+      return `contains(concat(' ', normalize-space(@class), ' '), ${escapeXPathLiteral(" " + cls + " ")})`;
+    }
+    for (const cls of classList.slice(0, 3)) {
+      const classExpr = buildClassContainsExpr(cls);
+      const xpathValue = `//${tagName}[${classExpr}]`;
+      const selector = `xpath=${xpathValue}`;
+      const parsed = parseSelectorForMatching(selector, "xpath");
+      const count = countMatchesForSelector(parsed, document, { maxCount: 3 });
+      results.push({
+        type: "xpath",
+        selector: selector,
+        score: count === 1 ? 88 : count === 2 ? 70 : 60,
+        reason: count === 1 ? "\uD0DC\uADF8 + class \uC870\uD569 (\uC720\uC77C)" : `\uD0DC\uADF8 + class \uC870\uD569 (${count}\uAC1C \uC77C\uCE58)`,
+        xpathValue: xpathValue,
+        unique: count === 1,
+        matchCount: count
+      });
+    }
+    for (const cls of classList.slice(0, 2)) {
+      const classExpr = buildClassContainsExpr(cls);
+      const xpathValue = `//*[${classExpr}]`;
+      const selector = `xpath=${xpathValue}`;
+      const parsed = parseSelectorForMatching(selector, "xpath");
+      const count = countMatchesForSelector(parsed, document, { maxCount: 3 });
+      results.push({
+        type: "xpath",
+        selector: selector,
+        score: count === 1 ? 85 : count === 2 ? 65 : 55,
+        reason: count === 1 ? "class\uB9CC \uC0AC\uC6A9 (\uC720\uC77C)" : `class\uB9CC \uC0AC\uC6A9 (${count}\uAC1C \uC77C\uCE58)`,
+        xpathValue: xpathValue,
+        unique: count === 1,
+        matchCount: count
+      });
+    }
+    if (classList.length >= 2) {
+      const classCombos = [];
+      for (let i = 0; i < Math.min(2, classList.length); i++) {
+        for (let j = i + 1; j < Math.min(3, classList.length); j++) {
+          classCombos.push([classList[i], classList[j]]);
+        }
+      }
+      if (classList.length >= 3) {
+        classCombos.push([classList[0], classList[1], classList[2]]);
+      }
+      for (const combo of classCombos.slice(0, 3)) {
+        const classExprs = combo.map((cls) => buildClassContainsExpr(cls));
+        const combinedExpr = classExprs.join(" and ");
+        const tagXpathValue = `//${tagName}[${combinedExpr}]`;
+        const tagSelector = `xpath=${tagXpathValue}`;
+        const tagParsed = parseSelectorForMatching(tagSelector, "xpath");
+        const tagCount = countMatchesForSelector(tagParsed, document, { maxCount: 3 });
+        results.push({
+          type: "xpath",
+          selector: tagSelector,
+          score: tagCount === 1 ? 92 : tagCount === 2 ? 75 : 65,
+          reason: tagCount === 1 ? `\uD0DC\uADF8 + ${combo.length}\uAC1C class \uC870\uD569 (\uC720\uC77C)` : `\uD0DC\uADF8 + ${combo.length}\uAC1C class \uC870\uD569 (${tagCount}\uAC1C \uC77C\uCE58)`,
+          xpathValue: tagXpathValue,
+          unique: tagCount === 1,
+          matchCount: tagCount
+        });
+        const wildcardXpathValue = `//*[${combinedExpr}]`;
+        const wildcardSelector = `xpath=${wildcardXpathValue}`;
+        const wildcardParsed = parseSelectorForMatching(wildcardSelector, "xpath");
+        const wildcardCount = countMatchesForSelector(wildcardParsed, document, { maxCount: 3 });
+        results.push({
+          type: "xpath",
+          selector: wildcardSelector,
+          score: wildcardCount === 1 ? 88 : wildcardCount === 2 ? 70 : 60,
+          reason: wildcardCount === 1 ? `${combo.length}\uAC1C class \uC870\uD569 (\uC720\uC77C)` : `${combo.length}\uAC1C class \uC870\uD569 (${wildcardCount}\uAC1C \uC77C\uCE58)`,
+          xpathValue: wildcardXpathValue,
+          unique: wildcardCount === 1,
+          matchCount: wildcardCount
+        });
+      }
+    }
+    if (element.id) {
+      for (const cls of classList.slice(0, 2)) {
+        const classExpr = buildClassContainsExpr(cls);
+        const xpathValue = `//*[@id=${escapeXPathLiteral(element.id)} and ${classExpr}]`;
+        const selector = `xpath=${xpathValue}`;
+        const parsed = parseSelectorForMatching(selector, "xpath");
+        const count = countMatchesForSelector(parsed, document, { maxCount: 2 });
+        results.push({
+          type: "xpath",
+          selector: selector,
+          score: 90,
+          reason: "id + class \uC870\uD569",
+          xpathValue: xpathValue,
+          unique: true,
+          matchCount: count
+        });
+      }
+    }
+    const attrPriority = ["data-testid", "data-test", "data-qa", "data-cy", "aria-label", "name", "role"];
+    for (const attr of attrPriority) {
+      const attrValue = element.getAttribute && element.getAttribute(attr);
+      if (!attrValue) continue;
+      for (const cls of classList.slice(0, 2)) {
+        const classExpr = buildClassContainsExpr(cls);
+        const xpathValue = `//*[@${attr}=${escapeXPathLiteral(attrValue)} and ${classExpr}]`;
+        const selector = `xpath=${xpathValue}`;
+        const parsed = parseSelectorForMatching(selector, "xpath");
+        const count = countMatchesForSelector(parsed, document, { maxCount: 3 });
+        results.push({
+          type: "xpath",
+          selector: selector,
+          score: count === 1 ? 82 : count === 2 ? 67 : 57,
+          reason: count === 1 ? `${attr} + class \uC870\uD569 (\uC720\uC77C)` : `${attr} + class \uC870\uD569 (${count}\uAC1C \uC77C\uCE58)`,
+          xpathValue: xpathValue,
+          unique: count === 1,
+          matchCount: count
+        });
+      }
+    }
+    return results;
   }
   function normalizeText(text) {
     return (text || "").replace(/\s+/g, " ").trim();
@@ -689,6 +814,14 @@
       const uniqueA = a.unique ? 1 : 0;
       const uniqueB = b.unique ? 1 : 0;
       if (uniqueA !== uniqueB) return uniqueB - uniqueA;
+      
+      // XPath 타입에 우선순위 부여 (class 조합 XPath 보호)
+      const typeA = a.type || inferSelectorType(a.selector);
+      const typeB = b.type || inferSelectorType(b.selector);
+      const xpathA = typeA === "xpath" ? 1 : 0;
+      const xpathB = typeB === "xpath" ? 1 : 0;
+      if (xpathA !== xpathB) return xpathB - xpathA;
+      
       const relationA = a.relation === "relative" ? 1 : 0;
       const relationB = b.relation === "relative" ? 1 : 0;
       if (relationA !== relationB) return relationB - relationA;
@@ -1073,6 +1206,9 @@
   }
   function maybeDeriveCssSelector(candidate, options, ctx) {
     if (candidate.unique) return;
+    // XPath 타입 셀렉터는 CSS로 변환하지 않음 (class 조합 XPath 보호)
+    const currentType = candidate.type || inferSelectorType(candidate.selector);
+    if (currentType === "xpath") return;
     if (!options.element) return;
     const baseCssSelector = extractCssSelector(candidate);
     if (!baseCssSelector) return;
@@ -1094,7 +1230,11 @@
   }
   function maybeApplyIndexing(candidate, originalType, options, ctx) {
     if (candidate.unique) return;
+    // XPath 타입 셀렉터는 인덱싱을 적용하지 않음 (class 조합 XPath 보호)
     if (originalType === "text" || originalType === "xpath") return;
+    // 현재 타입이 XPath인 경우도 인덱싱 적용하지 않음
+    const currentType = candidate.type || inferSelectorType(candidate.selector);
+    if (currentType === "xpath") return;
     if (!options.element) return;
     if (options.enableIndexing === false) return;
     const contextEl = options.contextElement && candidate.relation === "relative" ? options.contextElement : null;
@@ -1312,6 +1452,12 @@
     generateClassSelectors(element).forEach((cand) => {
       addCandidate(registry, cand, { duplicateScore: 58, element, maxMatchSample: 5 });
     });
+    try {
+      buildClassBasedXPath(element).forEach((cand) => {
+        addCandidate(registry, cand, { duplicateScore: 52, element, maxMatchSample: 5 });
+      });
+    } catch (e) {
+    }
     collectTextCandidates(element, registry);
     const robustXPath = buildRobustXPath(element);
     if (robustXPath) {

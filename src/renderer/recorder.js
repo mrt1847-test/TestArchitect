@@ -141,7 +141,8 @@ import {
   validateAncestorRelation as validateAncestorRelationModule,
   addAssertionAfterStep as addAssertionAfterStepModule,
   addConditionalActionAfterStep as addConditionalActionAfterStepModule,
-  handleStepAssertion as handleStepAssertionModule,
+  // handleStepAssertion은 recorder-conditional.js에서 export되지 않음
+  // handleStepAssertion as handleStepAssertionModule,
 } from './recorder/recorder-conditional.js';
 import {
   saveCodeToTC as saveCodeToTCModule,
@@ -309,9 +310,12 @@ const snapshotSavedUrls = new Set();
 
 // WebSocket 연결 (래퍼 함수)
 function connectWebSocket() {
+  // stateRefs를 getter/setter 패턴으로 변경하여 자동 동기화
   const stateRefs = {
-    recording,
-    wsConnection,
+    get recording() { return recording; },
+    set recording(v) { recording = v; },
+    get wsConnection() { return wsConnection; },
+    set wsConnection(v) { wsConnection = v; },
     startBtn,
     stopBtn
   };
@@ -722,12 +726,12 @@ function appendTimelineItem(ev, index) {
     }
   }
   
+  // stateRefs를 getter/setter 패턴으로 변경하여 자동 동기화
   const stateRefs = {
-    currentEventIndex: {
-      get value() { return currentEventIndex; },
-      set value(v) { currentEventIndex = v; }
-    },
-    allEvents
+    get currentEventIndex() { return currentEventIndex; },
+    set currentEventIndex(v) { currentEventIndex = v; },
+    get allEvents() { return allEvents; },
+    set allEvents(v) { allEvents = v; }
   };
   
   console.log('[Recorder] appendTimelineItem 호출:', { action: ev.action, index, timeline: !!timeline });
@@ -764,9 +768,12 @@ function updateStepsEmptyState() {
  */
 // 이벤트로부터 타임라인 동기화 (래퍼 함수)
 function syncTimelineFromEvents(events, options = {}) {
+  // stateRefs를 getter/setter 패턴으로 변경하여 자동 동기화
   const stateRefs = {
-    allEvents,
-    currentEventIndex,
+    get allEvents() { return allEvents; },
+    set allEvents(v) { allEvents = v; },
+    get currentEventIndex() { return currentEventIndex; },
+    set currentEventIndex(v) { currentEventIndex = v; },
     timeline,
     selectorList
   };
@@ -1260,6 +1267,8 @@ function updateCode(options = {}) {
   }
 
   // Electron 환경에서는 allEvents를 직접 사용
+  // refreshTimeline이 true이면 syncTimelineFromEvents가 allEvents를 업데이트하므로
+  // 여기서는 allEvents를 그대로 전달
   handleEvents(allEvents);
 }
 
@@ -1297,12 +1306,16 @@ function initCodeEditor() {
 // 녹화 시작 (래퍼 함수)
 async function startRecording() {
   try {
-    console.log('[Recorder] startRecording 함수 호출됨');
+    // stateRefs를 getter/setter 패턴으로 변경하여 자동 동기화
     const stateRefs = {
-      recording,
-      allEvents,
-      currentEventIndex,
-      wsConnection,
+      get recording() { return recording; },
+      set recording(v) { recording = v; },
+      get allEvents() { return allEvents; },
+      set allEvents(v) { allEvents = v; },
+      get currentEventIndex() { return currentEventIndex; },
+      set currentEventIndex(v) { currentEventIndex = v; },
+      get wsConnection() { return wsConnection; },
+      set wsConnection(v) { wsConnection = v; },
       startBtn,
       stopBtn,
       timeline,
@@ -1314,6 +1327,36 @@ async function startRecording() {
     const projectId = projectIdInput?.value;
     
     console.log('[Recorder] startRecordingModule 호출 전:', { tcId, projectId });
+    
+    // WebSocket 연결 확인 및 연결
+    if (!wsConnection || wsConnection.readyState !== WebSocket.OPEN) {
+      console.log('[Recorder] WebSocket 연결 시작 (startRecording 호출 시)');
+      const newConnection = connectWebSocket();
+      
+      if (newConnection) {
+        wsConnection = newConnection;
+      }
+      
+      // WebSocket 연결 완료 대기 (최대 2초)
+      let waitCount = 0;
+      const maxWait = 20; // 2초 (100ms * 20)
+      
+      while ((!wsConnection || wsConnection.readyState !== WebSocket.OPEN) && waitCount < maxWait) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        waitCount++;
+      }
+      
+      if (!wsConnection || wsConnection.readyState !== WebSocket.OPEN) {
+        console.warn('[Recorder] WebSocket 연결 실패. 녹화를 시작할 수 없습니다.');
+        if (logMessage) {
+          logMessage('WebSocket 연결이 필요합니다. 브라우저를 먼저 열어주세요.', 'error');
+        }
+        return;
+      }
+    }
+    
+    // stateRefs 업데이트 (최신 wsConnection 반영) - getter/setter로 자동 동기화됨
+    stateRefs.wsConnection = wsConnection;
     
     await startRecordingModule(
       stateRefs,
@@ -1328,12 +1371,7 @@ async function startRecording() {
       initElectronAPI
     );
     
-    // 상태 동기화
-    recording = stateRefs.recording;
-    allEvents = stateRefs.allEvents;
-    currentEventIndex = stateRefs.currentEventIndex;
-    wsConnection = stateRefs.wsConnection;
-    
+    // getter/setter로 자동 동기화되므로 수동 동기화 불필요
     console.log('[Recorder] startRecording 완료:', { recording, allEventsLength: allEvents.length });
   } catch (error) {
     console.error('[Recorder] startRecording 오류:', error);
@@ -1352,9 +1390,12 @@ async function startRecording() {
 
 // 녹화 중지 (래퍼 함수)
 async function stopRecording() {
+  // stateRefs를 getter/setter 패턴으로 변경하여 자동 동기화
   const stateRefs = {
-    recording,
-    wsConnection,
+    get recording() { return recording; },
+    set recording(v) { recording = v; },
+    get wsConnection() { return wsConnection; },
+    set wsConnection(v) { wsConnection = v; },
     startBtn,
     stopBtn
   };
@@ -1365,9 +1406,7 @@ async function stopRecording() {
     updateCode
   );
   
-  // 상태 동기화
-  recording = stateRefs.recording;
-  wsConnection = stateRefs.wsConnection;
+  // getter/setter로 자동 동기화되므로 수동 동기화 불필요
 }
 
 // 원래 함수 정의는 recorder-core.js로 이동됨
@@ -1687,57 +1726,99 @@ function setupEventListeners() {
  */
 // 스텝 assertion 처리 (래퍼 함수)
 function handleStepAssertion(stepIndex, assertionType, stepEvent) {
+  // stateRefs를 getter/setter 패턴으로 변경하여 자동 동기화
   const stateRefs = {
-    allEvents
+    get allEvents() { return allEvents; },
+    set allEvents(v) { allEvents = v; }
   };
   
   const verifyActionsContainer = document.getElementById('verify-actions');
   
-  handleStepAssertionModule(
-    stepIndex,
-    assertionType,
-    stepEvent,
-    (stepIdx, type, path, val, matchMode) => {
-      return addAssertionAfterStepModule(
-        stepIdx,
-        type,
-        path,
-        val,
-        matchMode,
-        stateRefs,
-        inferSelectorType,
-        syncTimelineFromEvents,
-        updateCode,
-        logMessage
-      );
-    },
-    (stepIdx, type) => {
-      // activateElementSelectionForAssertionModule이 존재하지 않으므로 직접 처리
-      startSimpleElementSelectionWrapper((path, elementInfo) => {
-        if (!path || path.length === 0) {
-          alert('요소를 선택할 수 없습니다.');
-          return;
-        }
-        
-        const result = addAssertionAfterStepModule(
-          stepIdx,
-          type,
-          path,
-          null,
-          null,
-          stateRefs,
-          inferSelectorType,
-          syncTimelineFromEvents,
-          updateCode,
-          logMessage
-        );
-        
-        if (result && verifyActionsContainer) {
-          verifyActionsContainer.classList.add('hidden');
-        }
-      }, null, stepIdx);
+  if (!assertionType || !stepEvent) return;
+  
+  // verifyTitle은 요소 선택 불필요
+  if (assertionType === 'verifyTitle') {
+    const result = addAssertionAfterStepModule(
+      stepIndex,
+      assertionType,
+      null,
+      null,
+      null,
+      stateRefs,
+      inferSelectorType,
+      syncTimelineFromEvents,
+      updateCode,
+      logMessage
+    );
+    if (result && verifyActionsContainer) {
+      verifyActionsContainer.classList.add('hidden');
     }
-  );
+    return;
+  }
+  
+  // verifyUrl은 matchMode 선택 필요
+  if (assertionType === 'verifyUrl') {
+    const currentUrl = window.location.href || '';
+    const inputValue = prompt('검증할 URL을 입력하세요:', currentUrl);
+    if (inputValue === null) return; // 취소
+    
+    // matchMode 선택 (완전일치/포함)
+    const matchMode = confirm('완전일치 검증을 사용하시겠습니까?\n\n확인: 완전일치\n취소: 포함 검증');
+    const matchModeValue = matchMode ? 'exact' : 'contains';
+    
+    const result = addAssertionAfterStepModule(
+      stepIndex,
+      assertionType,
+      null,
+      inputValue || currentUrl,
+      matchModeValue,
+      stateRefs,
+      inferSelectorType,
+      syncTimelineFromEvents,
+      updateCode,
+      logMessage
+    );
+    if (result && verifyActionsContainer) {
+      verifyActionsContainer.classList.add('hidden');
+    }
+    return;
+  }
+  
+  // 요소 검증은 심플 요소 선택 사용
+  // pendingAction으로 assertionType 전달하여 요소 선택 상태 메시지에 사용
+  startSimpleElementSelectionWrapper((path, elementInfo, pendingAction, pendingStepIndex) => {
+    if (!path || path.length === 0) {
+      alert('요소를 선택할 수 없습니다.');
+      return;
+    }
+    
+    // pendingAction이 전달되면 사용, 없으면 assertionType 사용
+    const actualAssertionType = pendingAction || assertionType;
+    const actualStepIndex = pendingStepIndex !== null && pendingStepIndex !== undefined ? pendingStepIndex : stepIndex;
+    
+    let value = null;
+    if (actualAssertionType === 'verifyText' || actualAssertionType === 'verifyTextContains') {
+      // 요소의 텍스트를 자동으로 사용
+      value = elementInfo?.text || path[0]?.textValue || '';
+    }
+    
+    const result = addAssertionAfterStepModule(
+      actualStepIndex,
+      actualAssertionType,
+      path,
+      value,
+      null,
+      stateRefs,
+      inferSelectorType,
+      syncTimelineFromEvents,
+      updateCode,
+      logMessage
+    );
+    
+    if (result && verifyActionsContainer) {
+      verifyActionsContainer.classList.add('hidden');
+    }
+  }, assertionType, stepIndex);
 }
 
 // 원래 함수 정의는 recorder-conditional.js로 이동됨
@@ -1746,21 +1827,28 @@ function handleStepAssertion(stepIndex, assertionType, stepEvent) {
  * Assertion을 위한 요소 선택 모드 활성화 (래퍼 함수)
  */
 function activateElementSelectionForAssertion(stepIndex, assertionType) {
+  // stateRefs를 getter/setter 패턴으로 변경하여 자동 동기화
   const stateRefs = {
-    allEvents
+    get allEvents() { return allEvents; },
+    set allEvents(v) { allEvents = v; }
   };
   
   const verifyActionsContainer = document.getElementById('verify-actions');
   
-  startSimpleElementSelectionWrapper((path, elementInfo) => {
+  // pendingAction으로 assertionType 전달하여 요소 선택 상태 메시지에 사용
+  startSimpleElementSelectionWrapper((path, elementInfo, pendingAction, pendingStepIndex) => {
     if (!path || path.length === 0) {
       alert('요소를 선택할 수 없습니다.');
       return;
     }
     
+    // pendingAction이 전달되면 사용, 없으면 assertionType 사용
+    const actualAssertionType = pendingAction || assertionType;
+    const actualStepIndex = pendingStepIndex !== null && pendingStepIndex !== undefined ? pendingStepIndex : stepIndex;
+    
     const result = addAssertionAfterStepModule(
-      stepIndex,
-      assertionType,
+      actualStepIndex,
+      actualAssertionType,
       path,
       null,
       null,
@@ -1774,7 +1862,7 @@ function activateElementSelectionForAssertion(stepIndex, assertionType) {
     if (result && verifyActionsContainer) {
       verifyActionsContainer.classList.add('hidden');
     }
-  }, null, stepIndex);
+  }, assertionType, stepIndex);
 }
 
 // 원래 함수 정의는 recorder-conditional.js로 이동됨
@@ -1788,8 +1876,10 @@ function activateElementSelectionForAssertion(stepIndex, assertionType) {
  * @param {string} matchMode - 매칭 모드 (verifyUrl의 경우 'exact' | 'contains')
  */
 function addAssertionAfterStep(stepIndex, assertionType, path, value, matchMode = null) {
+  // stateRefs를 getter/setter 패턴으로 변경하여 자동 동기화
   const stateRefs = {
-    allEvents
+    get allEvents() { return allEvents; },
+    set allEvents(v) { allEvents = v; }
   };
   
   return addAssertionAfterStepModule(
@@ -2083,8 +2173,10 @@ function validateAncestorRelationWrapper(baseElement, ancestorElement) {
  * 조건부 액션 추가 (래퍼 함수)
  */
 function addConditionalActionAfterStep(stepIndex, actionData) {
+  // stateRefs를 getter/setter 패턴으로 변경하여 자동 동기화
   const stateRefs = {
-    allEvents
+    get allEvents() { return allEvents; },
+    set allEvents(v) { allEvents = v; }
   };
   
   return addConditionalActionAfterStepModule(
@@ -2107,7 +2199,7 @@ function handleGlobalAssertion(assertionType) {
   handleGlobalAssertionModule(assertionType, {
     addVerifyAction,
     addAssertionAfterStep,
-    startSimpleElementSelection
+    startSimpleElementSelection: startSimpleElementSelectionWrapper
   });
 }
 
@@ -2117,7 +2209,7 @@ function handleGlobalAssertion(assertionType) {
 function handleGlobalWait(waitType) {
   handleGlobalWaitModule(waitType, {
     addWaitAction,
-    startSimpleElementSelection,
+    startSimpleElementSelection: startSimpleElementSelectionWrapper,
     normalizeEventRecord,
     allEvents,
     updateCode,
@@ -2142,11 +2234,11 @@ function setupIpcListeners() {
     clearElementHover,
     simpleSelectionState,
     elementStatusEl,
-    handleSimpleElementSelectionPicked,
-    handleElementSelectionPicked,
-    cancelSimpleElementSelection,
-    handleElementSelectionError,
-    handleElementSelectionCancelled
+    handleSimpleElementSelectionPicked: handleSimpleElementSelectionPickedWrapper,
+    handleElementSelectionPicked: handleElementSelectionPickedWrapper,
+    cancelSimpleElementSelection: cancelSimpleElementSelectionWrapper,
+    handleElementSelectionError: handleElementSelectionErrorWrapper,
+    handleElementSelectionCancelled: handleElementSelectionCancelledWrapper
   });
 }
 
@@ -2226,8 +2318,8 @@ function init() {
   // PostMessage 리스너 설정 (iframe 환경)
   setupPostMessageListeners();
 
-  // WebSocket 연결
-  connectWebSocket();
+  // WebSocket 연결 제거 - startRecording()이 호출될 때만 연결
+  // connectWebSocket();
 
   // AI 설정 초기화
   setupAiSettings();

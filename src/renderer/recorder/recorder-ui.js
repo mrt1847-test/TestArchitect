@@ -637,11 +637,8 @@ export function appendTimelineItem(
     document.querySelectorAll('.recorder-step').forEach(item => item.classList.remove('selected'));
     // 현재 선택
     div.classList.add('selected');
-    if (stateRefs.currentEventIndex && typeof stateRefs.currentEventIndex === 'object' && 'value' in stateRefs.currentEventIndex) {
-      stateRefs.currentEventIndex.value = index;
-    } else {
-      stateRefs.currentEventIndex = index;
-    }
+    // getter/setter 패턴 지원
+    stateRefs.currentEventIndex = index;
     
     // Step Details 패널 표시
     const stepDetailsPanel = document.getElementById('step-details-panel');

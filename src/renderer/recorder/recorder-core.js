@@ -343,7 +343,10 @@ export async function startRecording(
   electronAPI,
   initElectronAPI
 ) {
-  if (stateRefs.recording) return;
+  if (stateRefs.recording) {
+    console.log('[Recorder-Core] 이미 녹화 중이므로 반환');
+    return;
+  }
 
   // TC ID가 있을 때 steps 초기화/추가 선택
   if (tcId) {
@@ -426,31 +429,14 @@ export async function startRecording(
   // 빈 상태 메시지 표시
   updateStepsEmptyState();
 
-  // WebSocket 연결 확인 및 재시도
+  // WebSocket 연결 확인 (startRecording()에서 이미 연결했으므로 여기서는 확인만)
   if (!stateRefs.wsConnection || stateRefs.wsConnection.readyState !== WebSocket.OPEN) {
-    console.warn('[Recorder] WebSocket이 연결되지 않았습니다. 연결을 시도합니다...');
-    logMessage('WebSocket 연결 시도 중...', 'info');
-    
-    // WebSocket 연결 시도
-    connectWebSocket();
-    
-    // 연결 대기 (최대 2초)
-    let waitCount = 0;
-    const maxWait = 20; // 2초 (100ms * 20)
-    
-    while ((!stateRefs.wsConnection || stateRefs.wsConnection.readyState !== WebSocket.OPEN) && waitCount < maxWait) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-      waitCount++;
-    }
-    
-    if (!stateRefs.wsConnection || stateRefs.wsConnection.readyState !== WebSocket.OPEN) {
-      console.warn('[Recorder] WebSocket 연결 실패. 녹화를 시작할 수 없습니다.');
-      logMessage('WebSocket 연결이 필요합니다. 브라우저를 먼저 열어주세요.', 'error');
-      stateRefs.recording = false;
-      if (stateRefs.startBtn) stateRefs.startBtn.disabled = false;
-      if (stateRefs.stopBtn) stateRefs.stopBtn.disabled = true;
-      return;
-    }
+    console.warn('[Recorder] WebSocket이 연결되지 않았습니다. 녹화를 시작할 수 없습니다.');
+    logMessage('WebSocket 연결이 필요합니다. 브라우저를 먼저 열어주세요.', 'error');
+    stateRefs.recording = false;
+    if (stateRefs.startBtn) stateRefs.startBtn.disabled = false;
+    if (stateRefs.stopBtn) stateRefs.stopBtn.disabled = true;
+    return;
   }
   
   // WebSocket으로 녹화 시작 신호 전송

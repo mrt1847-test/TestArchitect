@@ -500,27 +500,8 @@ function setupEventListeners() {
         return;
       }
 
-      // TC에 스텝이 있는지 확인
-      let steps = currentTC.steps;
-      if (steps && typeof steps === 'string') {
-        try {
-          steps = JSON.parse(steps);
-        } catch (e) {
-          steps = null;
-        }
-      }
-      
-      if (steps && Array.isArray(steps) && steps.length > 0) {
-        // 스텝이 있으면 확인 팝업 표시
-        const confirmed = await showConfirmDialog(
-          '녹화 시작 확인',
-          `이 TC에는 ${steps.length}개의 스텝이 있습니다. 녹화를 시작하면 기존 스텝이 덮어씌워질 수 있습니다. 계속하시겠습니까?`
-        );
-        
-        if (!confirmed) {
-          return; // 사용자가 취소를 선택한 경우
-        }
-      }
+      // TC 스텝 확인 팝업은 recorder.html의 Record 버튼에서 처리
+      // 메인 녹화 버튼에서는 브라우저만 열고 녹화 사이드 패널을 엽니다
 
       try {
         const sessionId = `session-${Date.now()}`;
@@ -603,15 +584,17 @@ function setupEventListeners() {
           });
           
           // 녹화 시작/중지 신호 수신 (iframe으로 전달)
-          window.electronAPI.onIpcMessage('recording-start', (data) => {
-            const iframe = document.getElementById('recorder-iframe');
-            if (iframe && iframe.contentWindow) {
-              iframe.contentWindow.postMessage({
-                type: 'recording-start',
-                data: data
-              }, '*');
-            }
-          });
+          // 주의: 메인 녹화 버튼은 브라우저만 열고, 실제 녹화 시작은 recorder.html의 Record 버튼에서만 수행
+          // 따라서 recording-start IPC 메시지는 자동으로 전달하지 않음
+          // window.electronAPI.onIpcMessage('recording-start', (data) => {
+          //   const iframe = document.getElementById('recorder-iframe');
+          //   if (iframe && iframe.contentWindow) {
+          //     iframe.contentWindow.postMessage({
+          //       type: 'recording-start',
+          //       data: data
+          //     }, '*');
+          //   }
+          // });
           
           window.electronAPI.onIpcMessage('recording-stop', (data) => {
             const iframe = document.getElementById('recorder-iframe');

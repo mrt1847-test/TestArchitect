@@ -521,10 +521,16 @@ export function startSimpleElementSelection(
   let message = '요소를 선택하세요.';
   if (pendingAction === 'verifyText') {
     message = '텍스트를 검증할 요소를 선택하세요.';
+  } else if (pendingAction === 'verifyTextContains') {
+    message = '텍스트를 검증할 요소를 선택하세요.';
   } else if (pendingAction === 'verifyElementPresent' || pendingAction === 'verifyElementNotPresent') {
     message = '검증할 요소를 선택하세요.';
+  } else if (pendingAction === 'verifyImage') {
+    message = '이미지를 비교할 요소를 선택하세요.';
   } else if (pendingAction === 'waitForElement') {
     message = '대기할 요소를 선택하세요.';
+  } else if (pendingAction && pendingAction.startsWith('verify')) {
+    message = '검증할 요소를 선택하세요.';
   }
   
   if (elementStatusEl) {
@@ -537,12 +543,14 @@ export function startSimpleElementSelection(
     pendingAction, 
     pendingStepIndex,
     active: simpleSelectionStateRef.active,
-    hasCallback: !!simpleSelectionStateRef.callback
+    hasCallback: !!simpleSelectionStateRef.callback,
+    hasSendSelectionMessageFn: !!sendSelectionMessageFn
   });
   if (sendSelectionMessageFn) {
     sendSelectionMessageFn({type: 'ELEMENT_SELECTION_START'}, (resp) => {
       console.log('[Recorder] 요소 선택 시작 응답:', resp, '현재 active:', simpleSelectionStateRef.active);
       if (resp && resp.ok === false && resp.reason) {
+        console.warn('[Recorder] 요소 선택 시작 실패:', resp.reason);
         simpleSelectionStateRef.active = false;
         simpleSelectionStateRef.callback = null;
         simpleSelectionStateRef.pendingAction = null;
@@ -552,9 +560,19 @@ export function startSimpleElementSelection(
           elementStatusEl.className = 'element-status error';
         }
       } else {
-        console.log('[Recorder] 요소 선택 모드 활성화됨, 브라우저에서 요소를 클릭하세요. active:', simpleSelectionStateRef.active);
+        console.log('[Recorder] ✅ 요소 선택 모드 활성화됨, 브라우저에서 요소를 클릭하세요. active:', simpleSelectionStateRef.active);
       }
     });
+  } else {
+    console.error('[Recorder] ⚠️ sendSelectionMessageFn이 전달되지 않았습니다. 요소 선택 모드를 시작할 수 없습니다.');
+    simpleSelectionStateRef.active = false;
+    simpleSelectionStateRef.callback = null;
+    simpleSelectionStateRef.pendingAction = null;
+    simpleSelectionStateRef.pendingStepIndex = null;
+    if (elementStatusEl) {
+      elementStatusEl.textContent = '요소 선택을 시작할 수 없습니다: sendSelectionMessageFn이 없습니다.';
+      elementStatusEl.className = 'element-status error';
+    }
   }
 }
 
@@ -647,15 +665,29 @@ export function handleSimpleElementSelectionPicked(
   // 요소 선택 종료를 먼저 전송하여 Content Script의 isElementSelectionMode를 즉시 해제
   // (콜백 호출 전에 전송하여 이후 클릭 이벤트가 무시되도록 함)
   if (sendSelectionMessageFn) {
-    sendSelectionMessageFn({type: 'ELEMENT_SELECTION_CANCEL'}, () => {});
+    sendSelectionMessageFn({type: 'ELEMENT_SELECTION_CANCEL'}, () => {
+      console.log('[Recorder] handleSimpleElementSelectionPicked: ELEMENT_SELECTION_CANCEL 전송 완료');
+    });
+  }
+  
+  // 상태 메시지 초기화 (요소 선택 모드 해제)
+  if (elementStatusEl) {
+    elementStatusEl.textContent = '';
+    elementStatusEl.className = 'element-status';
   }
   
   // 콜백 호출
   try {
+    console.log('[Recorder] handleSimpleElementSelectionPicked: 콜백 호출 시작');
     callback(path, elementInfo, pendingAction, pendingStepIndex);
     console.log('[Recorder] handleSimpleElementSelectionPicked: 콜백 호출 완료');
   } catch (error) {
     console.error('[Recorder] handleSimpleElementSelectionPicked: 콜백 호출 오류:', error);
+    // 오류 발생 시에도 상태 메시지 표시
+    if (elementStatusEl) {
+      elementStatusEl.textContent = `오류 발생: ${error.message}`;
+      elementStatusEl.className = 'element-status error';
+    }
   }
 }
 

@@ -346,10 +346,15 @@ export async function addVerifyAction(
       console.log('[Recorder] addVerifyAction: 정규화된 이벤트:', normalized);
       allEvents.push(normalized);
       console.log('[Recorder] addVerifyAction: allEvents에 추가됨, 총 이벤트 수:', allEvents.length);
+      
+      // updateCode를 refreshTimeline: true로 호출하여 syncTimelineFromEvents를 내부에서 호출
       if (updateCodeFn) {
-        updateCodeFn({ preloadedEvents: allEvents });
-      }
-      if (syncTimelineFromEventsFn) {
+        updateCodeFn({ 
+          refreshTimeline: true,
+          selectLast: true 
+        });
+      } else if (syncTimelineFromEventsFn) {
+        // updateCodeFn이 없으면 syncTimelineFromEvents만 호출
         syncTimelineFromEventsFn(allEvents, { selectLast: true });
       }
       console.log('[Recorder] addVerifyAction: 코드 및 타임라인 업데이트 완료');
@@ -484,10 +489,15 @@ export async function addVerifyAction(
   console.log('[Recorder] addVerifyAction: 정규화된 이벤트:', normalized);
   allEvents.push(normalized);
   console.log('[Recorder] addVerifyAction: allEvents에 추가됨, 총 이벤트 수:', allEvents.length);
+  
+  // updateCode를 refreshTimeline: true로 호출하여 syncTimelineFromEvents를 내부에서 호출
   if (updateCodeFn) {
-    updateCodeFn({ preloadedEvents: allEvents });
-  }
-  if (syncTimelineFromEventsFn) {
+    updateCodeFn({ 
+      refreshTimeline: true,
+      selectLast: true 
+    });
+  } else if (syncTimelineFromEventsFn) {
+    // updateCodeFn이 없으면 syncTimelineFromEvents만 호출
     syncTimelineFromEventsFn(allEvents, { selectLast: true });
   }
   console.log('[Recorder] addVerifyAction: 코드 및 타임라인 업데이트 완료');
@@ -574,7 +584,7 @@ export function addWaitAction(
       version: 2,
       timestamp,
       action: 'wait',
-      value: String(timeValue || 1000),
+      value: String(timeValue !== null && timeValue !== undefined ? timeValue : 1000),
       tag: null,
       selectorCandidates: [],
       iframeContext: null,
@@ -661,10 +671,15 @@ export function addWaitAction(
   // 이벤트 추가
   const normalized = normalizeEventRecordFn ? normalizeEventRecordFn(eventRecord) : eventRecord;
   allEvents.push(normalized);
+  
+  // updateCode를 refreshTimeline: true로 호출하여 syncTimelineFromEvents를 내부에서 호출
   if (updateCodeFn) {
-    updateCodeFn({ preloadedEvents: allEvents });
-  }
-  if (syncTimelineFromEventsFn) {
+    updateCodeFn({ 
+      refreshTimeline: true,
+      selectLast: true 
+    });
+  } else if (syncTimelineFromEventsFn) {
+    // updateCodeFn이 없으면 syncTimelineFromEvents만 호출
     syncTimelineFromEventsFn(allEvents, { selectLast: true });
   }
   
@@ -752,10 +767,15 @@ export function addInteractionAction(
   // 이벤트 추가
   const normalized = normalizeEventRecordFn ? normalizeEventRecordFn(eventRecord) : eventRecord;
   allEvents.push(normalized);
+  
+  // updateCode를 refreshTimeline: true로 호출하여 syncTimelineFromEvents를 내부에서 호출
   if (updateCodeFn) {
-    updateCodeFn({ preloadedEvents: allEvents });
-  }
-  if (syncTimelineFromEventsFn) {
+    updateCodeFn({ 
+      refreshTimeline: true,
+      selectLast: true 
+    });
+  } else if (syncTimelineFromEventsFn) {
+    // updateCodeFn이 없으면 syncTimelineFromEvents만 호출
     syncTimelineFromEventsFn(allEvents, { selectLast: true });
   }
   

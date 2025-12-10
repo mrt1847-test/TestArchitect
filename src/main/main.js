@@ -807,7 +807,14 @@ function handleExtensionMessage(ws, data) {
       // 요소 선택 결과 메시지 (Content Script에서 전송)
       console.log('[Extension] 요소 선택 결과 수신:', data.type || messageType);
       
-      // 메인 윈도우로 전달
+      // WebSocket 클라이언트들에게 브로드캐스트 (recorder 포함)
+      // recorder는 WebSocket으로 연결되어 있으므로 브로드캐스트 필요
+      broadcastToExtensions({
+        type: data.type || messageType,
+        ...data
+      });
+      
+      // 메인 윈도우로 전달 (IPC)
       if (mainWindow && mainWindow.webContents) {
         mainWindow.webContents.send('element-selection-result', {
           type: data.type || messageType,
@@ -815,7 +822,7 @@ function handleExtensionMessage(ws, data) {
         });
       }
       
-      // 녹화 윈도우로도 전달
+      // 녹화 윈도우로도 전달 (IPC - 백업 경로)
       if (recorderWindow && !recorderWindow.isDestroyed() && recorderWindow.webContents) {
         recorderWindow.webContents.send('element-selection-result', {
           type: data.type || messageType,
@@ -2024,8 +2031,19 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
     }
   }
   
-  // 초기화 시 녹화 상태 복원
-  restoreRecordingState();
+  // 초기화 시 녹화 상태 복원 (주석 처리: 브라우저가 새로 열릴 때는 항상 false로 시작)
+  // 브라우저가 새로 열릴 때는 localStorage에서 녹화 상태를 복원하지 않음
+  // 녹화는 recorder.html의 Record 버튼을 클릭해야만 시작됨
+  // restoreRecordingState();
+  
+  // 브라우저가 새로 열릴 때는 항상 녹화 상태를 false로 초기화
+  isRecording = false;
+  try {
+    localStorage.setItem('testarchitect_isRecording', 'false');
+    console.log('[DOM Capture] 브라우저 새로 열림: 녹화 상태 초기화 (false)');
+  } catch (err) {
+    console.error('[DOM Capture] localStorage 초기화 실패:', err);
+  }
   
   // ============================================================================
   // Chrome Recorder 방식: 사용자 상호작용 추적 (CDP 이벤트 우선, 폴백용)
@@ -2103,7 +2121,8 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
   // 네비게이션 이벤트 생성 함수 (클릭 이벤트와 동일한 패턴으로 sendEvent 직접 호출)
   // CDP에서 호출할 수 있도록 window에 노출
   window.__testarchitect_createNavigationEvent = function(url, isUserInteraction, source) {
-    const recordingState = isRecording || localStorage.getItem('testarchitect_isRecording') === 'true';
+    // 녹화 상태는 isRecording 변수만 체크 (localStorage는 브라우저 새로 열릴 때 초기화됨)
+    const recordingState = isRecording;
     
     if (!recordingState) {
       return;
@@ -2416,15 +2435,15 @@ async function injectDomEventCaptureViaCDP(cdpPort, targetUrl) {
   
   // 이벤트 전송 함수
   function sendEvent(eventData) {
-    // Chrome Recorder 방식: localStorage에서도 녹화 상태 확인 (CDP 이벤트 대응)
-    const recordingState = isRecording || localStorage.getItem('testarchitect_isRecording') === 'true';
+    // 녹화 상태는 isRecording 변수만 체크 (localStorage는 브라우저 새로 열릴 때 초기화됨)
+    // 녹화는 recorder.html의 Record 버튼을 클릭해야만 시작됨
+    const recordingState = isRecording;
     
     console.log('[DOM Capture] sendEvent 호출:', {
       action: eventData.action,
       url: eventData.page?.url || eventData.url || '',  // page.url을 우선 사용
       value: eventData.value || '',  // value는 별도로 표시
       isRecording: isRecording,
-      localStorageRecording: localStorage.getItem('testarchitect_isRecording'),
       recordingState: recordingState,
       wsConnection: !!wsConnection,
       wsReady: wsConnection ? wsConnection.readyState === WebSocket.OPEN : false
@@ -7246,15 +7265,16 @@ ipcMain.handle('open-browser', async (event, options) => {
         }
       }, initialDelay); // 기존 프로필 사용 시 5초, 임시 프로필 사용 시 3초
 
-      // 확장 프로그램에 녹화 시작 명령 전송 (WebSocket으로)
-      broadcastToExtensions({
-        type: 'start-recording',
-        tcId: tcId,
-        projectId: projectId,
-        sessionId: sessionId,
-        url: recordingUrl,
-        timestamp: Date.now()
-      });
+      // 확장 프로그램에 녹화 시작 명령 전송 제거
+      // 메인 녹화 버튼은 브라우저만 열고, 실제 녹화 시작은 recorder.html의 Record 버튼에서만 수행
+      // broadcastToExtensions({
+      //   type: 'start-recording',
+      //   tcId: tcId,
+      //   projectId: projectId,
+      //   sessionId: sessionId,
+      //   url: recordingUrl,
+      //   timestamp: Date.now()
+      // });
       
       return { 
         success: true, 

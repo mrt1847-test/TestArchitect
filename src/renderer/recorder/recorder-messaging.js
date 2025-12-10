@@ -71,15 +71,17 @@ export function setupIpcListeners(dependencies) {
   }
   
   // 녹화 시작 신호 수신 (Main 프로세스에서)
-  electronAPI.onIpcMessage('recording-start', (data) => {
-    console.log('[Recorder] IPC로 녹화 시작 신호 수신', data);
-    if (!recording) {
-      console.log('[Recorder] startRecording() 호출');
-      startRecording();
-    } else {
-      console.log('[Recorder] 이미 녹화 중입니다');
-    }
-  });
+  // 주의: 메인 녹화 버튼은 브라우저만 열고, 실제 녹화 시작은 recorder.html의 Record 버튼에서만 수행
+  // 따라서 recording-start IPC 메시지는 자동으로 startRecording()을 호출하지 않음
+  // electronAPI.onIpcMessage('recording-start', (data) => {
+  //   console.log('[Recorder] IPC로 녹화 시작 신호 수신', data);
+  //   if (!recording) {
+  //     console.log('[Recorder] startRecording() 호출');
+  //     startRecording();
+  //   } else {
+  //     console.log('[Recorder] 이미 녹화 중입니다');
+  //   }
+  // });
   
   // 녹화 중지 신호 수신 (Main 프로세스에서)
   electronAPI.onIpcMessage('recording-stop', (data) => {
@@ -177,6 +179,7 @@ export function setupPostMessageListeners(dependencies) {
     switch (event.data.type) {
       case 'recorder-init':
         console.log('[Recorder] 부모 윈도우로부터 초기화 메시지 수신:', event.data);
+        console.log('[Recorder] ⚠️ recorder-init 수신: startRecording()을 자동으로 호출하지 않습니다. Record 버튼을 클릭해야 합니다.');
         if (event.data.tcId && tcIdInput) {
           tcIdInput.value = event.data.tcId;
         }
@@ -200,10 +203,12 @@ export function setupPostMessageListeners(dependencies) {
         break;
         
       case 'recording-start':
-        console.log('[Recorder] 부모 윈도우로부터 녹화 시작 신호 수신');
-        if (!recording) {
-          startRecording();
-        }
+        // 주의: 메인 녹화 버튼은 브라우저만 열고, 실제 녹화 시작은 recorder.html의 Record 버튼에서만 수행
+        // 따라서 postMessage로 받은 recording-start 메시지는 자동으로 startRecording()을 호출하지 않음
+        console.log('[Recorder] 부모 윈도우로부터 녹화 시작 신호 수신 (자동 시작 비활성화)');
+        // if (!recording) {
+        //   startRecording();
+        // }
         break;
         
       case 'recording-stop':
@@ -231,9 +236,15 @@ export function setupPostMessageListeners(dependencies) {
         const selectionResult = event.data;
         if (selectionResult.type === 'ELEMENT_SELECTION_PICKED') {
           // 심플 요소 선택이 활성화되어 있으면 심플 처리, 아니면 기존 처리
+          console.log('[Recorder] ELEMENT_SELECTION_PICKED 수신 (postMessage), simpleSelectionState.active:', simpleSelectionState.active, {
+            hasSimpleSelectionState: !!simpleSelectionState,
+            hasHandleSimpleElementSelectionPicked: !!handleSimpleElementSelectionPicked
+          });
           if (simpleSelectionState.active) {
+            console.log('[Recorder] handleSimpleElementSelectionPicked 호출 (postMessage)');
             handleSimpleElementSelectionPicked(selectionResult);
           } else {
+            console.log('[Recorder] simpleSelectionState.active가 false이므로 handleElementSelectionPicked 호출 (postMessage)');
             handleElementSelectionPicked(selectionResult);
           }
         } else if (selectionResult.type === 'ELEMENT_SELECTION_ERROR') {
@@ -329,6 +340,12 @@ export function handleWebSocketMessage(message, dependencies) {
     return;
   }
   
+  console.log('[Recorder] WebSocket 메시지 수신:', message.type, {
+    hasSimpleSelectionState: !!simpleSelectionState,
+    simpleSelectionStateActive: simpleSelectionState?.active,
+    hasHandleSimpleElementSelectionPicked: !!handleSimpleElementSelectionPicked
+  });
+  
   switch (message.type) {
     case 'connected':
       console.log('[Recorder] 서버 연결 확인:', message.message);
@@ -373,9 +390,12 @@ export function handleWebSocketMessage(message, dependencies) {
       break;
 
     case 'recording-start':
-      if (!recording) {
-        startRecording();
-      }
+      // 주의: 메인 녹화 버튼은 브라우저만 열고, 실제 녹화 시작은 recorder.html의 Record 버튼에서만 수행
+      // 따라서 WebSocket으로 받은 recording-start 메시지는 자동으로 startRecording()을 호출하지 않음
+      // if (!recording) {
+      //   startRecording();
+      // }
+      console.log('[Recorder] WebSocket으로 recording-start 메시지 수신 (자동 시작 비활성화)');
       break;
 
     case 'recording-stop':
@@ -428,11 +448,16 @@ export function handleWebSocketMessage(message, dependencies) {
     case 'ELEMENT_SELECTION_PICKED':
       // 요소 선택 완료
       // 심플 요소 선택이 활성화되어 있으면 심플 처리, 아니면 기존 처리
-      console.log('[Recorder] ELEMENT_SELECTION_PICKED 수신 (WebSocket), simpleSelectionState.active:', simpleSelectionState.active);
+      console.log('[Recorder] ELEMENT_SELECTION_PICKED 수신 (WebSocket), simpleSelectionState.active:', simpleSelectionState.active, {
+        hasSimpleSelectionState: !!simpleSelectionState,
+        hasHandleSimpleElementSelectionPicked: !!handleSimpleElementSelectionPicked,
+        messageKeys: Object.keys(message || {})
+      });
       if (simpleSelectionState.active) {
+        console.log('[Recorder] handleSimpleElementSelectionPicked 호출 (WebSocket)');
         handleSimpleElementSelectionPicked(message);
       } else {
-        console.log('[Recorder] simpleSelectionState.active가 false이므로 handleElementSelectionPicked 호출');
+        console.log('[Recorder] simpleSelectionState.active가 false이므로 handleElementSelectionPicked 호출 (WebSocket)');
         handleElementSelectionPicked(message);
       }
       break;

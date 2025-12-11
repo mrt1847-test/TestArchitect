@@ -219,6 +219,25 @@ export const KEYWORDS = {
       pytest: (params) => `expect(page).to_have_url("${params.value || ''}")`
     }
   },
+  verifyImage: {
+    type: KEYWORD_TYPES.VERIFICATION,
+    name: 'verifyImage',
+    description: '이미지 비교 검증',
+    parameters: ['target', 'value'],
+    codeGenerators: {
+      playwright: (params) => {
+        const snapshotName = params.value || 'snapshot';
+        return `image = page.locator("${params.target}").screenshot()\nassert_snapshot(image, name="${snapshotName}.jpeg")`;
+      },
+      selenium: (params) => {
+        return `# 이미지 비교를 위해 PIL/Pillow 라이브러리 필요\nfrom PIL import Image\nimport io\ncurrent_screenshot = driver.find_element(By.CSS_SELECTOR, "${params.target}").screenshot_as_png\n# 기준 이미지와 비교하는 로직 구현 필요`;
+      },
+      pytest: (params) => {
+        const snapshotName = params.value || 'snapshot';
+        return `image = page.locator("${params.target}").screenshot()\nassert_snapshot(image, name="${snapshotName}.jpeg")`;
+      }
+    }
+  },
   
   // 대기
   waitForElement: {

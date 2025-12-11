@@ -380,6 +380,13 @@ function buildPlaywrightPythonAction(ev, selectorInfo, base = 'page') {
       }
     }
   }
+  
+  // Wait actions that don't require selector - selector 체크 전으로 이동
+  if (ev && ev.action === 'wait') {
+    const waitTime = ev.value || 1000;
+    return `${base}.wait_for_timeout(${waitTime})`;
+  }
+  
   if (!ev || !selectorInfo || !selectorInfo.selector) return null;
   const locatorExpr = buildPlaywrightLocatorExpressionForAction(base, selectorInfo, true);
   const value = escapeForPythonString(ev.value || '');
@@ -419,6 +426,12 @@ function buildPlaywrightPythonAction(ev, selectorInfo, base = 'page') {
   }
   if (ev.action === 'navigate') {
     return `page.goto("${escapeForPythonString(ev.value || ev.url || '')}")`;
+  }
+  // Wait actions
+  if (ev.action === 'waitForElement') {
+    if (!selectorInfo || !selectorInfo.selector) return null;
+    const selector = escapeForPythonString(selectorInfo.selector);
+    return `${base}.wait_for_selector("${selector}", timeout=30000)`;
   }
   // Assertion actions
   if (ev.action === 'verifyText') {
@@ -496,6 +509,13 @@ function buildPlaywrightJSAction(ev, selectorInfo, base = 'page') {
       }
     }
   }
+  
+  // Wait actions that don't require selector - selector 체크 전으로 이동
+  if (ev && ev.action === 'wait') {
+    const waitTime = ev.value || 1000;
+    return `await ${base}.waitForTimeout(${waitTime});`;
+  }
+  
   if (!ev || !selectorInfo || !selectorInfo.selector) return null;
   const locatorExpr = buildPlaywrightLocatorExpressionForAction(base, selectorInfo, false);
   const value = escapeForJSString(ev.value || '');
@@ -535,6 +555,11 @@ function buildPlaywrightJSAction(ev, selectorInfo, base = 'page') {
   }
   if (ev.action === 'navigate') {
     return `await page.goto("${escapeForJSString(ev.value || ev.url || '')}");`;
+  }
+  // Wait actions
+  if (ev.action === 'waitForElement') {
+    if (!selectorInfo || !selectorInfo.selector) return null;
+    return `await ${getLocator()}.waitFor({ timeout: 30000 });`;
   }
   // Assertion actions
   if (ev.action === 'verifyText') {
@@ -662,6 +687,17 @@ function buildSeleniumPythonAction(ev, selectorInfo, driverVar = 'driver') {
   if (ev.action === 'navigate') {
     return `${driverVar}.get("${escapeForPythonString(ev.value || ev.url || '')}")`;
   }
+  // Wait actions
+  if (ev.action === 'waitForElement') {
+    if (!selectorInfo || !selectorInfo.selector) return null;
+    const selectorType = selectorInfo.type || inferSelectorType(selectorInfo.selector);
+    const selector = escapeForPythonString(selectorInfo.selector);
+    if (selectorType === 'xpath') {
+      const xpath = escapeForPythonString(getXPathValue(selectorInfo));
+      return `WebDriverWait(${driverVar}, 10).until(EC.presence_of_element_located((By.XPATH, "${xpath}")))`;
+    }
+    return `WebDriverWait(${driverVar}, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "${selector}")))`;
+  }
   // Assertion actions
   if (ev.action === 'verifyText') {
     const expectedText = escapeForPythonString(value || '');
@@ -766,6 +802,17 @@ function buildSeleniumJSAction(ev, selectorInfo) {
   }
   if (ev.action === 'navigate') {
     return `await driver.get("${escapeForJSString(ev.value || ev.url || '')}");`;
+  }
+  // Wait actions
+  if (ev.action === 'waitForElement') {
+    if (!selectorInfo || !selectorInfo.selector) return null;
+    const selectorType = selectorInfo.type || inferSelectorType(selectorInfo.selector);
+    if (selectorType === 'xpath') {
+      const xpath = escapeForJSString(getXPathValue(selectorInfo));
+      return `await driver.wait(until.elementLocated(By.xpath("${xpath}")), 10000);`;
+    }
+    const cssSelector = escapeForJSString(selectorInfo.selector);
+    return `await driver.wait(until.elementLocated(By.css("${cssSelector}")), 10000);`;
   }
   // Assertion actions
   if (ev.action === 'verifyText') {
@@ -1374,6 +1421,11 @@ export function generateCode(events, manualList, framework, language) {
           if (actionLine) {
             // wrapInTry 플래그 확인
             if (event.wrapInTry) {
+              console.log('[CodeGenerator] wrapInTry가 true인 이벤트 발견:', {
+                action: event.action,
+                target: event.target || event.primarySelector,
+                wrapInTry: event.wrapInTry
+              });
               const wrappedLines = wrapPythonInTry(actionLine, '    ');
               if (Array.isArray(wrappedLines)) {
                 wrappedLines.forEach(line => lines.push(line));
@@ -1682,7 +1734,7 @@ export function generateCode(events, manualList, framework, language) {
       });
       lines.push("driver.quit()");
     } else if (languageLower === 'javascript') {
-      lines.push("const { Builder, By } = require('selenium-webdriver');");
+      lines.push("const { Builder, By, until } = require('selenium-webdriver');");
       lines.push("const chrome = require('selenium-webdriver/chrome');");
       lines.push("");
       lines.push("(async () => {");
@@ -1723,7 +1775,7 @@ export function generateCode(events, manualList, framework, language) {
       lines.push("  await driver.quit();");
       lines.push("})();");
     } else if (languageLower === 'typescript') {
-      lines.push("import { Builder, By } from 'selenium-webdriver';");
+      lines.push("import { Builder, By, until } from 'selenium-webdriver';");
       lines.push("import * as chrome from 'selenium-webdriver/chrome';");
       lines.push("");
       lines.push("(async () => {");

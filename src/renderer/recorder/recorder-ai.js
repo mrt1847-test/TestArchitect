@@ -289,12 +289,14 @@ export function buildAiRequestPayload(event) {
 export async function requestAiSelectorsForEvent(
   event, 
   eventIndex, 
-  allEvents, 
+  getAllEventsFn, // allEvents 대신 getAllEvents 함수 전달
   selectedFramework, 
   selectedLanguage,
   showSelectorsFn
 ) {
-  const targetEvent = eventIndex >= 0 && allEvents[eventIndex] ? allEvents[eventIndex] : event;
+  // getAllEventsFn를 통해 최신 allEvents 참조
+  const currentEvents = getAllEventsFn ? getAllEventsFn() : [];
+  const targetEvent = eventIndex >= 0 && currentEvents[eventIndex] ? currentEvents[eventIndex] : event;
   if (!targetEvent) return;
   
   if (!isAiConfigured()) {
@@ -349,8 +351,10 @@ export async function requestAiSelectorsForEvent(
     targetEvent.aiSelectorCandidates = normalizedCandidates;
     targetEvent.aiSelectorsUpdatedAt = updatedAt;
     
-    if (eventIndex >= 0 && allEvents[eventIndex]) {
-      allEvents[eventIndex] = targetEvent;
+    // 최신 allEvents 업데이트
+    const latestEvents = getAllEventsFn ? getAllEventsFn() : [];
+    if (eventIndex >= 0 && latestEvents[eventIndex]) {
+      latestEvents[eventIndex] = targetEvent;
     }
     
     setAiState(targetEvent, { status: 'loaded', error: null, updatedAt });

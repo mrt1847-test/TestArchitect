@@ -726,13 +726,14 @@ export function applySelector(
   eventIndex,
   source,
   listIndex,
-  allEvents,
+  getAllEventsFn, // allEvents 대신 getAllEvents 함수 전달
   currentEventIndex,
   inferSelectorTypeFn,
   showSelectorsFn,
   updateTimelineFn,
   updateCodeFn,
-  logMessageFn
+  logMessageFn,
+  syncAllEventsToTCFn
 ) {
   const targetIndex = eventIndex !== undefined && eventIndex !== null ? eventIndex : currentEventIndex;
   if (targetIndex < 0) {
@@ -740,8 +741,10 @@ export function applySelector(
     return;
   }
   
-  if (targetIndex >= 0 && targetIndex < allEvents.length) {
-    const targetEvent = allEvents[targetIndex];
+  // getAllEventsFn를 통해 최신 allEvents 참조
+  const currentEvents = getAllEventsFn ? getAllEventsFn() : [];
+  if (targetIndex >= 0 && targetIndex < currentEvents.length) {
+    const targetEvent = currentEvents[targetIndex];
     const candidateToApply = { ...s };
     const selectorType = candidateToApply.type || (inferSelectorTypeFn ? inferSelectorTypeFn(candidateToApply.selector) : 'css');
 
@@ -776,7 +779,7 @@ export function applySelector(
     }
 
     // 이벤트 업데이트
-    allEvents[targetIndex] = targetEvent;
+    currentEvents[targetIndex] = targetEvent;
     
     // UI 업데이트
     if (currentEventIndex === targetIndex) {
@@ -789,7 +792,35 @@ export function applySelector(
       updateTimelineFn();
     }
     if (updateCodeFn) {
-      updateCodeFn({ preloadedEvents: allEvents });
+      updateCodeFn({ preloadedEvents: currentEvents });
+    }
+    
+    // TC step 업데이트 (셀렉터 변경 반영)
+    if (syncAllEventsToTCFn) {
+      syncAllEventsToTCFn({ allEvents: currentEvents }).then((result) => {
+        if (result && result.success) {
+          console.log('[Recorder] ✅ 셀렉터 변경이 TC step에 반영되었습니다');
+          // 부모 윈도우에 TC 새로고침 요청 (iframe 환경)
+          if (window.parent !== window) {
+            try {
+              const tcIdInput = document.getElementById('tc-id-input');
+              const tcId = tcIdInput?.value;
+              if (tcId) {
+                window.parent.postMessage({
+                  type: 'tc-step-updated',
+                  tcId: parseInt(tcId, 10)
+                }, '*');
+              }
+            } catch (e) {
+              console.warn('[Recorder] 부모 윈도우 메시지 전송 실패:', e);
+            }
+          }
+        } else {
+          console.warn('[Recorder] ⚠️ 셀렉터 변경 반영 실패:', result?.error);
+        }
+      }).catch((error) => {
+        console.error('[Recorder] ❌ 셀렉터 변경 반영 중 오류:', error);
+      });
     }
     
     if (logMessageFn) {

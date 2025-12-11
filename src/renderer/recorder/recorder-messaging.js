@@ -111,7 +111,20 @@ export function setupIpcListeners(dependencies) {
     console.log('[Recorder] IPC로 요소 선택 결과 수신:', data.type);
     if (data.type === 'ELEMENT_SELECTION_PICKED') {
       // 심플 요소 선택이 활성화되어 있으면 심플 처리, 아니면 기존 처리
-      console.log('[Recorder] ELEMENT_SELECTION_PICKED 수신 (IPC), simpleSelectionState.active:', simpleSelectionState.active);
+      // 중복 처리 방지: 이미 처리 중이거나 처리된 메시지인지 확인
+      const messageId = data.timestamp ? `${data.timestamp}-${data.selectors?.[0]?.selector || ''}` : `${Date.now()}-${data.selectors?.[0]?.selector || ''}`;
+      
+      if (simpleSelectionState?.isProcessing) {
+        console.log('[Recorder] ELEMENT_SELECTION_PICKED 수신 (IPC): 이미 처리 중인 메시지 무시');
+        return;
+      }
+      
+      if (simpleSelectionState?.lastProcessedMessageId === messageId) {
+        console.log('[Recorder] ELEMENT_SELECTION_PICKED 수신 (IPC): 이미 처리된 메시지 무시:', messageId);
+        return;
+      }
+      
+      console.log('[Recorder] ELEMENT_SELECTION_PICKED 수신 (IPC), simpleSelectionState.active:', simpleSelectionState.active, { messageId });
       if (simpleSelectionState.active) {
         handleSimpleElementSelectionPicked(data);
       } else {
@@ -119,8 +132,8 @@ export function setupIpcListeners(dependencies) {
         handleElementSelectionPicked(data);
       }
     } else if (data.type === 'ELEMENT_SELECTION_ERROR') {
-      if (simpleSelectionState.active) {
-        cancelSimpleElementSelection();
+      if (simpleSelectionState.active && cancelSimpleElementSelection) {
+        cancelSimpleElementSelection(simpleSelectionState, elementStatusEl, null);
         if (elementStatusEl) {
           const reason = data.reason || '요소를 선택할 수 없습니다.';
           elementStatusEl.textContent = reason;
@@ -130,15 +143,14 @@ export function setupIpcListeners(dependencies) {
         handleElementSelectionError(data);
       }
     } else if (data.type === 'ELEMENT_SELECTION_CANCELLED' || data.type === 'ELEMENT_SELECTION_CANCEL') {
-      console.log('[Recorder] ELEMENT_SELECTION_CANCEL 수신, 상태 초기화');
-      if (simpleSelectionState.active) {
-        cancelSimpleElementSelection();
+      // 요소 선택 취소
+      // handleSimpleElementSelectionPicked의 finally 블록에서 이미 ELEMENT_SELECTION_CANCEL을 전송했을 수 있으므로
+      // 상태만 초기화하고 추가로 ELEMENT_SELECTION_CANCEL을 전송하지 않음
+      console.log('[Recorder] ELEMENT_SELECTION_CANCEL 수신 (IPC), simpleSelectionState.active:', simpleSelectionState.active);
+      if (simpleSelectionState.active && cancelSimpleElementSelection) {
+        // 중앙 관리 함수 사용 (추가 CANCEL 전송 없이 상태만 초기화)
+        cancelSimpleElementSelection(simpleSelectionState, elementStatusEl, null);
       } else {
-        // active가 false여도 상태를 확실히 초기화
-        simpleSelectionState.active = false;
-        simpleSelectionState.callback = null;
-        simpleSelectionState.pendingAction = null;
-        simpleSelectionState.pendingStepIndex = null;
         handleElementSelectionCancelled();
       }
     }
@@ -236,9 +248,23 @@ export function setupPostMessageListeners(dependencies) {
         const selectionResult = event.data;
         if (selectionResult.type === 'ELEMENT_SELECTION_PICKED') {
           // 심플 요소 선택이 활성화되어 있으면 심플 처리, 아니면 기존 처리
+          // 중복 처리 방지: 이미 처리 중이거나 처리된 메시지인지 확인
+          const messageId = selectionResult.timestamp ? `${selectionResult.timestamp}-${selectionResult.selectors?.[0]?.selector || ''}` : `${Date.now()}-${selectionResult.selectors?.[0]?.selector || ''}`;
+          
+          if (simpleSelectionState?.isProcessing) {
+            console.log('[Recorder] ELEMENT_SELECTION_PICKED 수신 (postMessage): 이미 처리 중인 메시지 무시');
+            return;
+          }
+          
+          if (simpleSelectionState?.lastProcessedMessageId === messageId) {
+            console.log('[Recorder] ELEMENT_SELECTION_PICKED 수신 (postMessage): 이미 처리된 메시지 무시:', messageId);
+            return;
+          }
+          
           console.log('[Recorder] ELEMENT_SELECTION_PICKED 수신 (postMessage), simpleSelectionState.active:', simpleSelectionState.active, {
             hasSimpleSelectionState: !!simpleSelectionState,
-            hasHandleSimpleElementSelectionPicked: !!handleSimpleElementSelectionPicked
+            hasHandleSimpleElementSelectionPicked: !!handleSimpleElementSelectionPicked,
+            messageId
           });
           if (simpleSelectionState.active) {
             console.log('[Recorder] handleSimpleElementSelectionPicked 호출 (postMessage)');
@@ -248,8 +274,8 @@ export function setupPostMessageListeners(dependencies) {
             handleElementSelectionPicked(selectionResult);
           }
         } else if (selectionResult.type === 'ELEMENT_SELECTION_ERROR') {
-          if (simpleSelectionState.active) {
-            cancelSimpleElementSelection();
+          if (simpleSelectionState.active && cancelSimpleElementSelection) {
+            cancelSimpleElementSelection(simpleSelectionState, elementStatusEl, null);
             if (elementStatusEl) {
               const reason = selectionResult.reason || '요소를 선택할 수 없습니다.';
               elementStatusEl.textContent = reason;
@@ -258,9 +284,14 @@ export function setupPostMessageListeners(dependencies) {
           } else {
             handleElementSelectionError(selectionResult);
           }
-        } else if (selectionResult.type === 'ELEMENT_SELECTION_CANCELLED') {
-          if (simpleSelectionState.active) {
-            cancelSimpleElementSelection();
+        } else if (selectionResult.type === 'ELEMENT_SELECTION_CANCELLED' || selectionResult.type === 'ELEMENT_SELECTION_CANCEL') {
+          // 요소 선택 취소
+          // handleSimpleElementSelectionPicked의 finally 블록에서 이미 ELEMENT_SELECTION_CANCEL을 전송했을 수 있으므로
+          // 상태만 초기화하고 추가로 ELEMENT_SELECTION_CANCEL을 전송하지 않음
+          console.log('[Recorder] ELEMENT_SELECTION_CANCEL 수신 (postMessage), simpleSelectionState.active:', simpleSelectionState.active);
+          if (simpleSelectionState.active && cancelSimpleElementSelection) {
+            // 중앙 관리 함수 사용 (추가 CANCEL 전송 없이 상태만 초기화)
+            cancelSimpleElementSelection(simpleSelectionState, elementStatusEl, null);
           } else {
             handleElementSelectionCancelled();
           }
@@ -340,10 +371,11 @@ export function handleWebSocketMessage(message, dependencies) {
     return;
   }
   
-  console.log('[Recorder] WebSocket 메시지 수신:', message.type, {
+  console.log('[Recorder] 🔵 WebSocket 메시지 수신:', message.type, {
     hasSimpleSelectionState: !!simpleSelectionState,
     simpleSelectionStateActive: simpleSelectionState?.active,
-    hasHandleSimpleElementSelectionPicked: !!handleSimpleElementSelectionPicked
+    hasHandleSimpleElementSelectionPicked: !!handleSimpleElementSelectionPicked,
+    messageKeys: Object.keys(message || {})
   });
   
   switch (message.type) {
@@ -448,24 +480,44 @@ export function handleWebSocketMessage(message, dependencies) {
     case 'ELEMENT_SELECTION_PICKED':
       // 요소 선택 완료
       // 심플 요소 선택이 활성화되어 있으면 심플 처리, 아니면 기존 처리
-      console.log('[Recorder] ELEMENT_SELECTION_PICKED 수신 (WebSocket), simpleSelectionState.active:', simpleSelectionState.active, {
+      // 중복 처리 방지: 이미 처리 중이거나 처리된 메시지인지 확인
+      const messageId = message.timestamp ? `${message.timestamp}-${message.selectors?.[0]?.selector || ''}` : `${Date.now()}-${message.selectors?.[0]?.selector || ''}`;
+      
+      if (simpleSelectionState?.isProcessing) {
+        console.log('[Recorder] ELEMENT_SELECTION_PICKED 수신 (WebSocket): 이미 처리 중인 메시지 무시');
+        break;
+      }
+      
+      if (simpleSelectionState?.lastProcessedMessageId === messageId) {
+        console.log('[Recorder] ELEMENT_SELECTION_PICKED 수신 (WebSocket): 이미 처리된 메시지 무시:', messageId);
+        break;
+      }
+      
+      console.log('[Recorder] ELEMENT_SELECTION_PICKED 수신 (WebSocket), simpleSelectionState.active:', simpleSelectionState?.active, {
         hasSimpleSelectionState: !!simpleSelectionState,
         hasHandleSimpleElementSelectionPicked: !!handleSimpleElementSelectionPicked,
-        messageKeys: Object.keys(message || {})
+        messageKeys: Object.keys(message || {}),
+        simpleSelectionStateKeys: simpleSelectionState ? Object.keys(simpleSelectionState) : 'null',
+        callback: !!simpleSelectionState?.callback,
+        pendingAction: simpleSelectionState?.pendingAction,
+        messageId
       });
-      if (simpleSelectionState.active) {
-        console.log('[Recorder] handleSimpleElementSelectionPicked 호출 (WebSocket)');
+      if (simpleSelectionState?.active) {
+        console.log('[Recorder] ✅ simpleSelectionState.active가 true - handleSimpleElementSelectionPicked 호출 (WebSocket)');
         handleSimpleElementSelectionPicked(message);
       } else {
-        console.log('[Recorder] simpleSelectionState.active가 false이므로 handleElementSelectionPicked 호출 (WebSocket)');
+        console.log('[Recorder] ⚠️ simpleSelectionState.active가 false이므로 handleElementSelectionPicked 호출 (WebSocket)', {
+          active: simpleSelectionState?.active,
+          hasCallback: !!simpleSelectionState?.callback
+        });
         handleElementSelectionPicked(message);
       }
       break;
 
     case 'ELEMENT_SELECTION_ERROR':
       // 요소 선택 오류
-      if (simpleSelectionState.active) {
-        cancelSimpleElementSelection();
+      if (simpleSelectionState.active && cancelSimpleElementSelection) {
+        cancelSimpleElementSelection(simpleSelectionState, elementStatusEl, null);
         if (elementStatusEl) {
           const reason = message && message.reason ? message.reason : '요소를 선택할 수 없습니다.';
           elementStatusEl.textContent = reason;
@@ -479,8 +531,12 @@ export function handleWebSocketMessage(message, dependencies) {
     case 'ELEMENT_SELECTION_CANCELLED':
     case 'ELEMENT_SELECTION_CANCEL':
       // 요소 선택 취소
-      if (simpleSelectionState.active) {
-        cancelSimpleElementSelection();
+      // handleSimpleElementSelectionPicked의 finally 블록에서 이미 ELEMENT_SELECTION_CANCEL을 전송했을 수 있으므로
+      // 상태만 초기화하고 추가로 ELEMENT_SELECTION_CANCEL을 전송하지 않음
+      console.log('[Recorder] ELEMENT_SELECTION_CANCEL 수신 (WebSocket), simpleSelectionState.active:', simpleSelectionState.active);
+      if (simpleSelectionState.active && cancelSimpleElementSelection) {
+        // 중앙 관리 함수 사용 (추가 CANCEL 전송 없이 상태만 초기화)
+        cancelSimpleElementSelection(simpleSelectionState, elementStatusEl, null);
       } else {
         handleElementSelectionCancelled();
       }

@@ -35,7 +35,8 @@ export function handleGlobalAssertion(assertionType, dependencies) {
     const matchMode = confirm('완전일치 검증을 사용하시겠습니까?\n\n확인: 완전일치\n취소: 포함 검증');
     const matchModeValue = matchMode ? 'exact' : 'contains';
     
-    addVerifyAction(assertionType, null, inputValue || currentUrl, null, matchModeValue);
+    // elementInfo에 matchMode 포함하여 전달
+    addVerifyAction(assertionType, null, inputValue || currentUrl, { matchMode: matchModeValue });
     return;
   }
   
@@ -185,7 +186,6 @@ export function handleGlobalWait(waitType, dependencies) {
         path,
         elementInfo,
         normalizeEventRecord,
-        allEvents,
         updateCode,
         syncTimelineFromEvents,
         saveEventAsStep,

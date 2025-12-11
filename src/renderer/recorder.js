@@ -50,7 +50,8 @@ import {
   buildAiRequestPayload,
   requestAiSelectorsForEvent,
   renderAiRequestControls,
-  performAiCodeReview as performAiCodeReviewModule
+  performAiCodeReview as performAiCodeReviewModule,
+  getAiStateKey
 } from './recorder/recorder-ai.js';
 import {
   buildManualActionEntry,
@@ -658,7 +659,7 @@ function formatSelectorTypeLabel(type) {
  * popup.js의 updateDeleteButtonState 이식
  */
 function updateDeleteButtonState() {
-  updateDeleteButtonStateModule(deleteEventBtn, currentEventIndex, allEvents);
+  updateDeleteButtonStateModule(deleteEventBtn, currentEventIndex, getAllEvents());
 }
 
 /**
@@ -760,7 +761,7 @@ function appendTimelineItem(ev, index) {
  * 빈 상태 메시지 업데이트 (래퍼 함수)
  */
 function updateStepsEmptyState() {
-  updateStepsEmptyStateModule(allEvents);
+  updateStepsEmptyStateModule(getAllEvents());
 }
 
 /**
@@ -813,7 +814,7 @@ function updateTimeline() {
  * 셀렉터 표시 래퍼 함수
  */
 function showSelectorsWrapper(list, event, eventIndex) {
-  const applySelectorFn = (s, ei, src, li) => applySelector(s, ei, src, li, allEvents, currentEventIndex, inferSelectorType, showSelectorsWrapper, updateTimeline, updateCode, logMessage);
+  const applySelectorFn = (s, ei, src, li) => applySelector(s, ei, src, li, getAllEvents, currentEventIndex, inferSelectorType, showSelectorsWrapper, updateTimeline, updateCode, logMessage, syncAllEventsToTCWrapper);
   const highlightSelectorFn = (c) => highlightSelector(c, logMessage);
   
   showSelectors(
@@ -821,13 +822,13 @@ function showSelectorsWrapper(list, event, eventIndex) {
     event,
     eventIndex,
     selectorList,
-    allEvents,
+    getAllEvents(),
     selectedFramework,
     selectedLanguage,
-    (ev, idx) => requestAiSelectorsForEvent(ev, idx, allEvents, selectedFramework, selectedLanguage, showSelectorsWrapper),
+    (ev, idx) => requestAiSelectorsForEvent(ev, idx, getAllEvents, selectedFramework, selectedLanguage, showSelectorsWrapper),
     () => updateSelectorTabUI(
       selectorTabState,
-      allEvents,
+      getAllEvents(),
       currentEventIndex,
       showSelectorsWrapper,
       applySelectorFn,
@@ -847,22 +848,35 @@ function applySelectorWrapper(s, eventIndex, source = 'base', listIndex = -1) {
     eventIndex,
     source,
     listIndex,
-    allEvents,
+    getAllEvents, // allEvents 대신 getAllEvents 함수 전달
     currentEventIndex,
     inferSelectorType,
     showSelectorsWrapper,
     updateTimeline,
     updateCode,
-    logMessage
+    logMessage,
+    syncAllEventsToTCWrapper
   );
+}
+
+// syncAllEventsToTCWrapper 함수 추가
+function syncAllEventsToTCWrapper(dependencies) {
+  return syncAllEventsToTC({
+    tcIdInput,
+    allEvents: dependencies?.allEvents || getAllEvents(), // 최신 allEvents 사용
+    electronAPI,
+    initElectronAPI,
+    logMessage
+  });
 }
 
 /**
  * 현재 이벤트의 셀렉터 리스트 새로고침
  */
 function refreshSelectorListForCurrentEvent() {
-  if (currentEventIndex >= 0 && allEvents[currentEventIndex]) {
-    const currentEvent = allEvents[currentEventIndex];
+  const currentEvents = getAllEvents();
+  if (currentEventIndex >= 0 && currentEvents[currentEventIndex]) {
+    const currentEvent = currentEvents[currentEventIndex];
     showSelectorsWrapper(currentEvent.selectorCandidates || [], currentEvent, currentEventIndex);
   }
 }
@@ -1051,6 +1065,28 @@ function cancelSimpleElementSelectionWrapper() {
   );
 }
 
+// getAllEvents 함수 - 최신 allEvents 반환
+function getAllEvents() {
+  return allEvents;
+}
+
+// addVerifyAction 래퍼 함수
+function addVerifyActionWrapper(verifyType, path, value, elementInfo = null) {
+  return addVerifyAction(
+    verifyType,
+    path,
+    value,
+    elementInfo,
+    normalizeEventRecord,
+    getAllEvents, // allEvents 대신 getAllEvents 함수 전달
+    updateCode,
+    syncTimelineFromEvents,
+    saveEventAsStep,
+    setElementStatusWrapper,
+    captureVerifyImageScreenshot ? (clientRect) => captureVerifyImageScreenshot(clientRect, electronAPI, initElectronAPI) : null
+  );
+}
+
 function handleElementSelectionPickedWrapper(msg) {
   handleElementSelectionPicked(
     msg,
@@ -1061,7 +1097,7 @@ function handleElementSelectionPickedWrapper(msg) {
     addVerifyAction,
     addWaitAction,
     normalizeEventRecord,
-    allEvents,
+    getAllEvents, // allEvents 대신 getAllEvents 함수 전달
     updateCode,
     syncTimelineFromEvents,
     saveEventAsStep,
@@ -1210,7 +1246,7 @@ function clearElementHover() {
   clearElementHoverModule(
     selectorList,
     currentEventIndex,
-    allEvents,
+    getAllEvents(),
     showSelectors,
     (ctx) => showIframeModule(ctx, iframeBanner)
   );
@@ -1229,17 +1265,68 @@ function updateCode(options = {}) {
     preserveSelection = false,
     selectLast = false,
     resetAiState = false,
-    preloadedEvents = null
+    preloadedEvents = null,
+    appendEvent = null,
+    wrapInTryUpdate = null
   } = options || {};
+  
+  // wrapInTryUpdate가 제공되면 먼저 allEvents 업데이트
+  if (wrapInTryUpdate && wrapInTryUpdate.index >= 0 && wrapInTryUpdate.index < allEvents.length) {
+    allEvents[wrapInTryUpdate.index].wrapInTry = wrapInTryUpdate.value;
+    console.log('[Recorder] updateCode: wrapInTry 플래그 업데이트:', {
+      index: wrapInTryUpdate.index,
+      wrapInTry: wrapInTryUpdate.value
+    });
+  }
 
   const handleEvents = (events) => {
     let normalizedEvents;
     if (refreshTimeline) {
+      console.log('[Recorder] updateCode: syncTimelineFromEvents 호출 전, events 수:', events?.length || 0, 'allEvents 수:', allEvents.length);
+      // wrapInTry 플래그 확인을 위한 로그
+      if (Array.isArray(events)) {
+        const wrapInTryEvents = events.filter(ev => ev && ev.wrapInTry === true);
+        if (wrapInTryEvents.length > 0) {
+          console.log('[Recorder] updateCode: 입력 events 중 wrapInTry가 true인 이벤트 수:', wrapInTryEvents.length);
+        }
+      }
       normalizedEvents = syncTimelineFromEvents(events, {
         preserveSelection,
         selectLast,
         resetAiState
       });
+      console.log('[Recorder] updateCode: syncTimelineFromEvents 호출 후, normalizedEvents 수:', normalizedEvents?.length || 0, 'allEvents 수:', allEvents.length);
+      // wrapInTry 플래그 확인을 위한 로그
+      if (Array.isArray(normalizedEvents)) {
+        const wrapInTryNormalized = normalizedEvents.filter(ev => ev && ev.wrapInTry === true);
+        if (wrapInTryNormalized.length > 0) {
+          console.log('[Recorder] updateCode: normalizedEvents 중 wrapInTry가 true인 이벤트 수:', wrapInTryNormalized.length);
+        }
+      }
+      if (Array.isArray(allEvents)) {
+        const wrapInTryAllEvents = allEvents.filter(ev => ev && ev.wrapInTry === true);
+        if (wrapInTryAllEvents.length > 0) {
+          console.log('[Recorder] updateCode: allEvents 중 wrapInTry가 true인 이벤트 수:', wrapInTryAllEvents.length);
+        }
+      }
+      // syncTimelineFromEvents가 allEvents를 업데이트하고 normalizedEvents를 반환
+      // allEvents는 이미 syncTimelineFromEvents 내부에서 업데이트되었으므로
+      // allEvents를 직접 사용하여 코드 생성 (가장 최신 상태 보장)
+      // normalizedEvents는 syncTimelineFromEvents의 반환값이지만, allEvents가 더 최신 상태일 수 있음
+      if (!normalizedEvents || normalizedEvents.length === 0) {
+        console.warn('[Recorder] updateCode: syncTimelineFromEvents가 빈 배열을 반환했습니다. allEvents 사용:', allEvents.length);
+        normalizedEvents = allEvents;
+      } else if (normalizedEvents.length !== allEvents.length) {
+        console.warn('[Recorder] updateCode: normalizedEvents와 allEvents의 길이가 다릅니다. allEvents 사용:', {
+          normalizedEventsLength: normalizedEvents.length,
+          allEventsLength: allEvents.length
+        });
+        // allEvents가 더 최신 상태일 수 있으므로 allEvents 사용
+        normalizedEvents = allEvents;
+      } else {
+        // 길이가 같아도 allEvents를 사용하여 최신 상태 보장
+        normalizedEvents = allEvents;
+      }
     } else {
       normalizedEvents = Array.isArray(events) ? events.map((ev) => normalizeEventRecord(ev)) : [];
       allEvents = normalizedEvents;
@@ -1247,7 +1334,9 @@ function updateCode(options = {}) {
 
     // 수동 액션 로드 (간소화 버전)
     loadManualActions(() => {
+      console.log('[Recorder] updateCode: 코드 생성 시작, normalizedEvents 수:', normalizedEvents.length);
       const code = generateCode(normalizedEvents, manualActions, selectedFramework, selectedLanguage);
+      console.log('[Recorder] updateCode: 코드 생성 완료, 코드 길이:', code?.length || 0);
       setCodeText(code);
       
       // 코드를 TC에 실시간 저장 (debounce 적용)
@@ -1260,8 +1349,27 @@ function updateCode(options = {}) {
     });
   };
 
+  // appendEvent가 제공되면 현재 allEvents에 추가
+  if (appendEvent) {
+    console.log('[Recorder] updateCode: appendEvent 수신:', {
+      appendEventAction: appendEvent.action,
+      appendEventValue: appendEvent.value,
+      currentAllEventsLength: allEvents.length
+    });
+    const mergedEvents = [...allEvents, appendEvent];
+    console.log('[Recorder] updateCode: mergedEvents 수:', mergedEvents.length);
+    handleEvents(mergedEvents);
+    return;
+  }
+
   // preloadedEvents가 제공되면 바로 사용
   if (Array.isArray(preloadedEvents)) {
+    console.log('[Recorder] updateCode: preloadedEvents 사용, 이벤트 수:', preloadedEvents.length);
+    // wrapInTry 플래그 확인을 위한 로그
+    const wrapInTryEvents = preloadedEvents.filter(ev => ev.wrapInTry === true);
+    if (wrapInTryEvents.length > 0) {
+      console.log('[Recorder] updateCode: wrapInTry가 true인 이벤트 수:', wrapInTryEvents.length);
+    }
     handleEvents(preloadedEvents);
     return;
   }
@@ -1513,20 +1621,21 @@ async function sendRecordingData() {
     return;
   }
 
-  if (allEvents.length === 0) {
+  const currentEvents = getAllEvents();
+  if (currentEvents.length === 0) {
     alert('전송할 이벤트가 없습니다.');
     return;
   }
 
   try {
-    const code = generateCode(allEvents, manualActions, selectedFramework, selectedLanguage);
+    const code = generateCode(currentEvents, manualActions, selectedFramework, selectedLanguage);
     
     const recordingData = {
       type: 'recording_complete',
       tcId: parseInt(tcId, 10),
       projectId: parseInt(projectId, 10),
       sessionId: `session-${Date.now()}`,
-      events: allEvents,
+      events: currentEvents,
       code: code,
       framework: selectedFramework,
       language: selectedLanguage,
@@ -1569,7 +1678,7 @@ async function performAiCodeReview() {
     aiReviewStatusEl,
     selectedFramework,
     selectedLanguage,
-    allEvents,
+    getAllEvents(), // 최신 allEvents 사용
     setCodeText,
     logMessage
   );
@@ -1591,7 +1700,7 @@ function setupActionMenu() {
     addVerifyAction,
     addWaitAction,
     normalizeEventRecord,
-    allEvents,
+    getAllEvents, // allEvents 대신 getAllEvents 함수 전달
     updateCode,
     syncTimelineFromEvents,
     saveEventAsStep,
@@ -1665,7 +1774,7 @@ function setupEventListeners() {
     selectedFramework: stateRefs.selectedFramework,
     selectedLanguage: stateRefs.selectedLanguage,
     codeEditor,
-    allEvents,
+    getAllEvents, // allEvents 대신 getAllEvents 함수 전달
     currentEventIndex: stateRefs.currentEventIndex,
     recording,
     selectionState,
@@ -2197,7 +2306,7 @@ function addConditionalActionAfterStep(stepIndex, actionData) {
  */
 function handleGlobalAssertion(assertionType) {
   handleGlobalAssertionModule(assertionType, {
-    addVerifyAction,
+    addVerifyAction: addVerifyActionWrapper,
     addAssertionAfterStep,
     startSimpleElementSelection: startSimpleElementSelectionWrapper
   });

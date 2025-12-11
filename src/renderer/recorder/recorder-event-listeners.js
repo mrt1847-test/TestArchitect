@@ -21,7 +21,7 @@ export function setupActionMenu(dependencies) {
     addVerifyAction,
     addWaitAction,
     normalizeEventRecord,
-    allEvents,
+    getAllEvents, // allEvents 대신 getAllEvents 함수 전달
     updateCode,
     syncTimelineFromEvents,
     saveEventAsStep,
@@ -71,7 +71,7 @@ export function setupActionMenu(dependencies) {
           path,
           value,
           normalizeEventRecord,
-          allEvents,
+          getAllEvents, // allEvents 대신 getAllEvents 함수 전달
           updateCode,
           syncTimelineFromEvents,
           saveEventAsStep,
@@ -89,7 +89,7 @@ export function setupActionMenu(dependencies) {
           value,
           elementInfo,
           normalizeEventRecord,
-          allEvents,
+          getAllEvents, // allEvents 대신 getAllEvents 함수 전달
           updateCode,
           syncTimelineFromEvents,
           saveEventAsStep,
@@ -110,7 +110,6 @@ export function setupActionMenu(dependencies) {
           path,
           elementInfo,
           normalizeEventRecord,
-          allEvents,
           updateCode,
           syncTimelineFromEvents,
           saveEventAsStep,
@@ -223,7 +222,7 @@ export function setupEventListeners(dependencies) {
     selectedFramework,
     selectedLanguage,
     codeEditor,
-    allEvents,
+    getAllEvents, // allEvents 대신 getAllEvents 함수 전달
     currentEventIndex,
     recording,
     selectionState,
@@ -435,7 +434,7 @@ export function setupEventListeners(dependencies) {
           path,
           value,
           normalizeEventRecord,
-          allEvents,
+          getAllEvents, // allEvents 대신 getAllEvents 함수 전달
           updateCode,
           syncTimelineFromEvents,
           saveEventAsStep,
@@ -464,7 +463,7 @@ export function setupEventListeners(dependencies) {
           value,
           elementInfo,
           normalizeEventRecord,
-          allEvents,
+          getAllEvents, // allEvents 대신 getAllEvents 함수 전달
           updateCode,
           syncTimelineFromEvents,
           saveEventAsStep,
@@ -496,7 +495,6 @@ export function setupEventListeners(dependencies) {
           path,
           elementInfo,
           normalizeEventRecord,
-          allEvents,
           updateCode,
           syncTimelineFromEvents,
           saveEventAsStep,
@@ -523,7 +521,6 @@ export function setupEventListeners(dependencies) {
       null,
       null,
       normalizeEventRecord,
-      allEvents,
       updateCode,
       syncTimelineFromEvents,
       saveEventAsStep,
@@ -596,27 +593,21 @@ export function setupEventListeners(dependencies) {
       const currentIdx = (dependencies.currentEventIndex && typeof dependencies.currentEventIndex === 'object' && 'value' in dependencies.currentEventIndex) 
         ? dependencies.currentEventIndex.value 
         : dependencies.currentEventIndex;
-      if (currentIdx >= 0 && currentIdx < dependencies.allEvents.length) {
-        dependencies.allEvents[currentIdx].wrapInTry = e.target.checked;
-        // 코드 재생성
-        const normalizedEvents = dependencies.allEvents.map(ev => normalizeEventRecord(ev));
-        const framework = (dependencies.selectedFramework && typeof dependencies.selectedFramework === 'object' && 'value' in dependencies.selectedFramework) 
-          ? dependencies.selectedFramework.value 
-          : dependencies.selectedFramework;
-        const language = (dependencies.selectedLanguage && typeof dependencies.selectedLanguage === 'object' && 'value' in dependencies.selectedLanguage) 
-          ? dependencies.selectedLanguage.value 
-          : dependencies.selectedLanguage;
-        const code = generateCode(normalizedEvents, manualActions, framework, language);
-        setCodeText(code);
-        // 코드를 TC에 실시간 저장
-        if (dependencies.recording || normalizedEvents.length > 0) {
-          saveCodeToTCWithDebounce(code, {
-            tcIdInput: dependencies.tcIdInput,
-            projectIdInput: dependencies.projectIdInput,
-            selectedLanguage: language,
-            selectedFramework: framework,
-            electronAPI,
-            initElectronAPI
+      if (currentIdx >= 0) {
+        console.log('[Recorder] wrapInTry 체크박스 변경:', {
+          currentIdx,
+          wrapInTry: e.target.checked
+        });
+        // 코드 재생성 - updateCode()를 호출하여 타임라인 동기화 및 코드 업데이트
+        // wrapInTryUpdate 옵션을 통해 updateCode 내부에서 allEvents를 직접 업데이트
+        if (dependencies.updateCode) {
+          dependencies.updateCode({ 
+            refreshTimeline: true,
+            preserveSelection: true,
+            wrapInTryUpdate: {
+              index: currentIdx,
+              value: e.target.checked
+            }
           });
         }
       }
@@ -830,7 +821,7 @@ export function setupEventListeners(dependencies) {
         addWaitAction,
         startSimpleElementSelection: startSimpleElementSelectionWrapper,
         normalizeEventRecord,
-        allEvents,
+        getAllEvents, // allEvents 대신 getAllEvents 함수 전달
         updateCode,
         syncTimelineFromEvents,
         saveEventAsStep,

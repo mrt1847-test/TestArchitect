@@ -259,7 +259,7 @@ export async function addVerifyAction(
   value,
   elementInfo = null,
   normalizeEventRecordFn,
-  allEvents,
+  getAllEventsFn, // allEvents 대신 getAllEvents 함수 전달
   updateCodeFn,
   syncTimelineFromEventsFn,
   saveEventAsStepFn,
@@ -344,18 +344,26 @@ export async function addVerifyAction(
       // 이벤트 추가 (이미지 없이 먼저 추가)
       const normalized = normalizeEventRecordFn ? normalizeEventRecordFn(eventRecord) : eventRecord;
       console.log('[Recorder] addVerifyAction: 정규화된 이벤트:', normalized);
-      allEvents.push(normalized);
-      console.log('[Recorder] addVerifyAction: allEvents에 추가됨, 총 이벤트 수:', allEvents.length);
       
+      // allEvents 직접 수정 대신 updateCode를 통해 상태 관리
       // updateCode를 refreshTimeline: true로 호출하여 syncTimelineFromEvents를 내부에서 호출
+      // syncTimelineFromEvents가 allEvents를 업데이트하므로 직접 push 불필요
       if (updateCodeFn) {
+        // 임시로 이벤트를 allEvents에 추가한 후 updateCode 호출
+        // updateCode 내부에서 syncTimelineFromEvents가 allEvents를 정규화하므로
+        // 여기서는 임시로 추가만 하고 updateCode가 처리하도록 함
+        const currentEvents = getAllEventsFn ? getAllEventsFn() : [];
+        const tempEvents = [...currentEvents, normalized];
         updateCodeFn({ 
           refreshTimeline: true,
-          selectLast: true 
+          selectLast: true,
+          preloadedEvents: tempEvents
         });
       } else if (syncTimelineFromEventsFn) {
         // updateCodeFn이 없으면 syncTimelineFromEvents만 호출
-        syncTimelineFromEventsFn(allEvents, { selectLast: true });
+        const currentEvents = getAllEventsFn ? getAllEventsFn() : [];
+        const tempEvents = [...currentEvents, normalized];
+        syncTimelineFromEventsFn(tempEvents, { selectLast: true });
       }
       console.log('[Recorder] addVerifyAction: 코드 및 타임라인 업데이트 완료');
       
@@ -365,23 +373,30 @@ export async function addVerifyAction(
           // 이벤트에 이미지 데이터 추가
           eventRecord.elementImageData = imageData;
           
-          // 이미 추가된 이벤트 업데이트
-          const lastEvent = allEvents[allEvents.length - 1];
-          if (lastEvent && lastEvent.timestamp === timestamp) {
-            lastEvent.elementImageData = imageData;
+          // 이미지가 포함된 이벤트 생성 (normalized를 기반으로)
+          const eventWithImage = { ...normalized, elementImageData: imageData };
+          
+          // allEvents에서 해당 이벤트 찾아서 업데이트
+          // getAllEventsFn를 통해 최신 allEvents 참조
+          const currentEvents = getAllEventsFn ? getAllEventsFn() : [];
+          const eventIndex = currentEvents.findIndex(ev => ev.timestamp === timestamp);
+          if (eventIndex >= 0) {
+            currentEvents[eventIndex].elementImageData = imageData;
             // 타임라인 새로고침하여 이미지 표시
             if (syncTimelineFromEventsFn) {
-              syncTimelineFromEventsFn(allEvents, { selectLast: false });
+              syncTimelineFromEventsFn(currentEvents, { selectLast: false });
             }
-            console.log('[Recorder] ✅ verifyImage 이미지 데이터 추가 완료');
-            
-            // 이미지가 추가된 후에 TC step으로 저장
-            console.log('[Recorder] addVerifyAction: saveEventAsStep 호출 시작 (이미지 포함)');
-            if (saveEventAsStepFn) {
-              saveEventAsStepFn(lastEvent);
-            }
-            console.log('[Recorder] addVerifyAction: saveEventAsStep 호출 완료');
           }
+          
+          console.log('[Recorder] ✅ verifyImage 이미지 데이터 추가 완료');
+          
+          // 이미지가 추가된 후에 TC step으로 저장
+          // eventWithImage를 직접 사용하여 최신 상태 보장
+          console.log('[Recorder] addVerifyAction: saveEventAsStep 호출 시작 (이미지 포함)');
+          if (saveEventAsStepFn) {
+            saveEventAsStepFn(eventWithImage);
+          }
+          console.log('[Recorder] addVerifyAction: saveEventAsStep 호출 완료');
         } else {
           // 이미지 캡처 실패해도 이벤트는 저장
           console.log('[Recorder] addVerifyAction: saveEventAsStep 호출 시작 (이미지 없음)');
@@ -480,25 +495,32 @@ export async function addVerifyAction(
         attributeName: null
       },
       primarySelector: null,
-      primarySelectorType: null
+      primarySelectorType: null,
+      // verifyUrl의 경우 matchMode 설정 (elementInfo에서 가져오기)
+      matchMode: elementInfo?.matchMode || null
     };
   }
   
   // 이벤트 추가
   const normalized = normalizeEventRecordFn ? normalizeEventRecordFn(eventRecord) : eventRecord;
   console.log('[Recorder] addVerifyAction: 정규화된 이벤트:', normalized);
-  allEvents.push(normalized);
-  console.log('[Recorder] addVerifyAction: allEvents에 추가됨, 총 이벤트 수:', allEvents.length);
   
+  // allEvents 직접 수정 대신 updateCode를 통해 상태 관리
   // updateCode를 refreshTimeline: true로 호출하여 syncTimelineFromEvents를 내부에서 호출
   if (updateCodeFn) {
+    // 임시로 이벤트를 allEvents에 추가한 후 updateCode 호출
+    const currentEvents = getAllEventsFn ? getAllEventsFn() : [];
+    const tempEvents = [...currentEvents, normalized];
     updateCodeFn({ 
       refreshTimeline: true,
-      selectLast: true 
+      selectLast: true,
+      preloadedEvents: tempEvents
     });
   } else if (syncTimelineFromEventsFn) {
     // updateCodeFn이 없으면 syncTimelineFromEvents만 호출
-    syncTimelineFromEventsFn(allEvents, { selectLast: true });
+    const currentEvents = getAllEventsFn ? getAllEventsFn() : [];
+    const tempEvents = [...currentEvents, normalized];
+    syncTimelineFromEventsFn(tempEvents, { selectLast: true });
   }
   console.log('[Recorder] addVerifyAction: 코드 및 타임라인 업데이트 완료');
   
@@ -569,7 +591,6 @@ export function addWaitAction(
   path,
   elementInfo = null,
   normalizeEventRecordFn,
-  allEvents,
   updateCodeFn,
   syncTimelineFromEventsFn,
   saveEventAsStepFn,
@@ -670,17 +691,19 @@ export function addWaitAction(
   
   // 이벤트 추가
   const normalized = normalizeEventRecordFn ? normalizeEventRecordFn(eventRecord) : eventRecord;
-  allEvents.push(normalized);
   
-  // updateCode를 refreshTimeline: true로 호출하여 syncTimelineFromEvents를 내부에서 호출
+  // allEvents 직접 수정 대신 updateCode를 통해 상태 관리
+  // updateCode에 appendEvent 옵션을 사용하여 최신 allEvents에 새 이벤트 추가
   if (updateCodeFn) {
     updateCodeFn({ 
       refreshTimeline: true,
-      selectLast: true 
+      selectLast: true,
+      appendEvent: normalized
     });
   } else if (syncTimelineFromEventsFn) {
     // updateCodeFn이 없으면 syncTimelineFromEvents만 호출
-    syncTimelineFromEventsFn(allEvents, { selectLast: true });
+    // 이 경우는 거의 발생하지 않을 것으로 예상
+    console.warn('[Recorder] addWaitAction: updateCodeFn이 없습니다.');
   }
   
   // 실시간으로 TC step으로 저장
@@ -701,7 +724,7 @@ export function addInteractionAction(
   path,
   value,
   normalizeEventRecordFn,
-  allEvents,
+  getAllEventsFn, // allEvents 대신 getAllEvents 함수 전달
   updateCodeFn,
   syncTimelineFromEventsFn,
   saveEventAsStepFn,
@@ -766,17 +789,21 @@ export function addInteractionAction(
   
   // 이벤트 추가
   const normalized = normalizeEventRecordFn ? normalizeEventRecordFn(eventRecord) : eventRecord;
-  allEvents.push(normalized);
   
+  // allEvents 직접 수정 대신 updateCode를 통해 상태 관리
   // updateCode를 refreshTimeline: true로 호출하여 syncTimelineFromEvents를 내부에서 호출
   if (updateCodeFn) {
+    // appendEvent 옵션 사용 (더 간단한 방법)
     updateCodeFn({ 
       refreshTimeline: true,
-      selectLast: true 
+      selectLast: true,
+      appendEvent: normalized
     });
   } else if (syncTimelineFromEventsFn) {
     // updateCodeFn이 없으면 syncTimelineFromEvents만 호출
-    syncTimelineFromEventsFn(allEvents, { selectLast: true });
+    const currentEvents = getAllEventsFn ? getAllEventsFn() : [];
+    const tempEvents = [...currentEvents, normalized];
+    syncTimelineFromEventsFn(tempEvents, { selectLast: true });
   }
   
   // 실시간으로 TC step으로 저장

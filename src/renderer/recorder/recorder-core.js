@@ -42,6 +42,13 @@ export function connectWebSocket(logMessage, handleWebSocketMessageCallback, sta
     newConnection.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
+        // ELEMENT_SELECTION_PICKED 메시지 도달 확인
+        if (message.type === 'ELEMENT_SELECTION_PICKED') {
+          console.log('[Recorder-Core] ✅ ELEMENT_SELECTION_PICKED 메시지 도달:', {
+            hasSelectors: !!message.selectors,
+            selectorsCount: message.selectors?.length || 0
+          });
+        }
         handleWebSocketMessageCallback(message);
       } catch (error) {
         console.error('[Recorder] WebSocket 메시지 파싱 오류:', error);

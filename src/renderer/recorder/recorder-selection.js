@@ -30,7 +30,9 @@ export const simpleSelectionState = {
   active: false,
   callback: null, // (path, elementInfo) => void
   pendingAction: null, // 'verifyText' | 'verifyElementPresent' | 'waitForElement' 등
-  pendingStepIndex: null
+  pendingStepIndex: null,
+  lastProcessedMessageId: null, // 중복 처리 방지를 위한 마지막 처리된 메시지 ID
+  isProcessing: false // 현재 처리 중인지 여부
 };
 
 /**
@@ -586,12 +588,31 @@ export function handleSimpleElementSelectionPicked(
   elementStatusEl,
   sendSelectionMessageFn
 ) {
+  // 메시지 ID 생성 (타임스탬프 + 셀렉터 조합)
+  const messageId = msg.timestamp ? `${msg.timestamp}-${msg.selectors?.[0]?.selector || ''}` : `${Date.now()}-${msg.selectors?.[0]?.selector || ''}`;
+  
+  // 중복 처리 방지
+  if (simpleSelectionStateRef.isProcessing) {
+    console.log('[Recorder] handleSimpleElementSelectionPicked: 이미 처리 중인 메시지 무시');
+    return;
+  }
+  
+  if (simpleSelectionStateRef.lastProcessedMessageId === messageId) {
+    console.log('[Recorder] handleSimpleElementSelectionPicked: 이미 처리된 메시지 무시:', messageId);
+    return;
+  }
+  
   console.log('[Recorder] handleSimpleElementSelectionPicked 호출:', {
     active: simpleSelectionStateRef.active,
     hasCallback: !!simpleSelectionStateRef.callback,
     pendingAction: simpleSelectionStateRef.pendingAction,
-    selectorsCount: msg.selectors?.length || 0
+    selectorsCount: msg.selectors?.length || 0,
+    messageId
   });
+  
+  // 처리 중 플래그 설정
+  simpleSelectionStateRef.isProcessing = true;
+  simpleSelectionStateRef.lastProcessedMessageId = messageId;
   
   // 상태 확인 및 콜백 백업 (상태 초기화 전에)
   const wasActive = simpleSelectionStateRef.active;
@@ -600,10 +621,20 @@ export function handleSimpleElementSelectionPicked(
   const pendingStepIndex = simpleSelectionStateRef.pendingStepIndex;
   
   if (!wasActive || !callback) {
-    console.warn('[Recorder] handleSimpleElementSelectionPicked: 상태가 활성화되지 않았거나 콜백이 없음');
+    console.warn('[Recorder] handleSimpleElementSelectionPicked: 상태가 활성화되지 않았거나 콜백이 없음', {
+      wasActive,
+      hasCallback: !!callback,
+      active: simpleSelectionStateRef.active
+    });
+    // 처리 중 플래그 해제
+    simpleSelectionStateRef.isProcessing = false;
     // 상태가 활성화되지 않았어도 ELEMENT_SELECTION_CANCEL 전송하여 Content Script 해제
-    if (sendSelectionMessageFn) {
-      sendSelectionMessageFn({type: 'ELEMENT_SELECTION_CANCEL'}, () => {});
+    // 하지만 중복 전송을 방지하기 위해 상태를 먼저 확인
+    if (simpleSelectionStateRef.active && sendSelectionMessageFn) {
+      resetSimpleSelectionState(simpleSelectionStateRef);
+      sendSelectionMessageFn({type: 'ELEMENT_SELECTION_CANCEL'}, () => {
+        console.log('[Recorder] handleSimpleElementSelectionPicked: early return - ELEMENT_SELECTION_CANCEL 전송 완료');
+      });
     }
     return;
   }
@@ -656,44 +687,87 @@ export function handleSimpleElementSelectionPicked(
     pathSelector: path[0]?.selector
   });
   
-  // 상태 초기화 (콜백 호출 전에 초기화하여 중복 호출 방지)
-  simpleSelectionStateRef.active = false;
-  simpleSelectionStateRef.callback = null;
-  simpleSelectionStateRef.pendingAction = null;
-  simpleSelectionStateRef.pendingStepIndex = null;
-  
-  // 요소 선택 종료를 먼저 전송하여 Content Script의 isElementSelectionMode를 즉시 해제
-  // (콜백 호출 전에 전송하여 이후 클릭 이벤트가 무시되도록 함)
-  if (sendSelectionMessageFn) {
-    sendSelectionMessageFn({type: 'ELEMENT_SELECTION_CANCEL'}, () => {
-      console.log('[Recorder] handleSimpleElementSelectionPicked: ELEMENT_SELECTION_CANCEL 전송 완료');
-    });
-  }
-  
   // 상태 메시지 초기화 (요소 선택 모드 해제)
   if (elementStatusEl) {
     elementStatusEl.textContent = '';
     elementStatusEl.className = 'element-status';
   }
   
-  // 콜백 호출
-  try {
-    console.log('[Recorder] handleSimpleElementSelectionPicked: 콜백 호출 시작');
-    callback(path, elementInfo, pendingAction, pendingStepIndex);
-    console.log('[Recorder] handleSimpleElementSelectionPicked: 콜백 호출 완료');
-  } catch (error) {
-    console.error('[Recorder] handleSimpleElementSelectionPicked: 콜백 호출 오류:', error);
-    // 오류 발생 시에도 상태 메시지 표시
-    if (elementStatusEl) {
-      elementStatusEl.textContent = `오류 발생: ${error.message}`;
-      elementStatusEl.className = 'element-status error';
+  // 콜백 호출 (먼저 실행하여 assertion 등록 완료)
+  // 콜백이 비동기일 수 있으므로 Promise로 처리
+  const callbackResult = (async () => {
+    try {
+      console.log('[Recorder] handleSimpleElementSelectionPicked: 콜백 호출 시작', {
+        pendingAction,
+        pendingStepIndex,
+        pathLength: path.length
+      });
+      const result = callback(path, elementInfo, pendingAction, pendingStepIndex);
+      // 콜백이 Promise를 반환하는 경우 await
+      if (result && typeof result.then === 'function') {
+        await result;
+      }
+      console.log('[Recorder] handleSimpleElementSelectionPicked: 콜백 호출 완료');
+      return result;
+    } catch (error) {
+      console.error('[Recorder] handleSimpleElementSelectionPicked: 콜백 호출 오류:', error);
+      // 오류 발생 시에도 상태 메시지 표시
+      if (elementStatusEl) {
+        elementStatusEl.textContent = `오류 발생: ${error.message}`;
+        elementStatusEl.className = 'element-status error';
+      }
+      throw error;
     }
-  }
+  })();
+  
+  // 콜백 완료 후 상태 초기화 및 ELEMENT_SELECTION_CANCEL 전송
+  // 중복 전송 방지를 위한 플래그
+  let cancelSent = false;
+  
+  // 성공 시 상태 초기화 및 CANCEL 전송
+  callbackResult.then(() => {
+    if (!cancelSent) {
+      cancelSent = true;
+      // 상태 초기화 (중앙 관리)
+      resetSimpleSelectionState(simpleSelectionStateRef);
+      
+      if (sendSelectionMessageFn) {
+        sendSelectionMessageFn({type: 'ELEMENT_SELECTION_CANCEL'}, () => {
+          console.log('[Recorder] handleSimpleElementSelectionPicked: ELEMENT_SELECTION_CANCEL 전송 완료 (성공)');
+        });
+      }
+    }
+  }).catch(() => {
+    // 실패 시에도 상태 초기화 및 CANCEL 전송
+    if (!cancelSent) {
+      cancelSent = true;
+      // 상태 초기화 (중앙 관리)
+      resetSimpleSelectionState(simpleSelectionStateRef);
+      
+      if (sendSelectionMessageFn) {
+        sendSelectionMessageFn({type: 'ELEMENT_SELECTION_CANCEL'}, () => {
+          console.log('[Recorder] handleSimpleElementSelectionPicked: ELEMENT_SELECTION_CANCEL 전송 완료 (오류)');
+        });
+      }
+    }
+  });
 }
 
 /**
  * 심플 요소 선택 취소
  */
+/**
+ * 심플 요소 선택 상태 초기화 (중앙 관리)
+ */
+function resetSimpleSelectionState(simpleSelectionStateRef) {
+  simpleSelectionStateRef.active = false;
+  simpleSelectionStateRef.callback = null;
+  simpleSelectionStateRef.pendingAction = null;
+  simpleSelectionStateRef.pendingStepIndex = null;
+  simpleSelectionStateRef.isProcessing = false;
+  // lastProcessedMessageId는 유지 (중복 방지용)
+}
+
 export function cancelSimpleElementSelection(
   simpleSelectionStateRef,
   elementStatusEl,
@@ -703,10 +777,7 @@ export function cancelSimpleElementSelection(
     if (sendSelectionMessageFn) {
       sendSelectionMessageFn({type: 'ELEMENT_SELECTION_CANCEL'}, () => {});
     }
-    simpleSelectionStateRef.active = false;
-    simpleSelectionStateRef.callback = null;
-    simpleSelectionStateRef.pendingAction = null;
-    simpleSelectionStateRef.pendingStepIndex = null;
+    resetSimpleSelectionState(simpleSelectionStateRef);
     if (elementStatusEl) {
       elementStatusEl.textContent = '';
     }

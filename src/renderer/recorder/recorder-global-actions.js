@@ -8,35 +8,86 @@
  * @param {string} assertionType - assertion 타입
  * @param {Object} dependencies - 의존성 객체
  */
-export function handleGlobalAssertion(assertionType, dependencies) {
+export async function handleGlobalAssertion(assertionType, dependencies) {
   if (!assertionType) return;
   
   const {
     addVerifyAction,
     addAssertionAfterStep,
-    startSimpleElementSelection
+    startSimpleElementSelection,
+    getAllEvents // 최신 allEvents를 가져오는 함수
   } = dependencies;
   
   // verifyTitle은 요소 선택 불필요
   if (assertionType === 'verifyTitle') {
-    addVerifyAction(assertionType, null, null);
+    console.log('[Recorder] handleGlobalAssertion: verifyTitle 처리 시작');
+    try {
+      await addVerifyAction(assertionType, null, null);
+      console.log('[Recorder] handleGlobalAssertion: verifyTitle 처리 완료');
+    } catch (error) {
+      console.error('[Recorder] handleGlobalAssertion: verifyTitle 처리 오류', error);
+    }
     return;
   }
   
   // verifyUrl은 matchMode 선택 필요
   if (assertionType === 'verifyUrl') {
-    // withActiveTab은 Electron 환경에서만 사용 가능
-    // 대신 window.location.href 사용
-    const currentUrl = window.location.href || '';
-    const inputValue = prompt('검증할 URL을 입력하세요:', currentUrl);
-    if (inputValue === null) return; // 취소
+    console.log('[Recorder] handleGlobalAssertion: verifyUrl 처리 시작');
+    console.log('[Recorder] handleGlobalAssertion: getAllEvents 존재 여부:', !!getAllEvents);
     
-    // matchMode 선택 (완전일치/포함)
-    const matchMode = confirm('완전일치 검증을 사용하시겠습니까?\n\n확인: 완전일치\n취소: 포함 검증');
-    const matchModeValue = matchMode ? 'exact' : 'contains';
+    // 마지막 이벤트의 page.url을 가져오기 (실제 브라우저 탭의 URL)
+    let currentUrl = '';
+    if (getAllEvents) {
+      const events = getAllEvents();
+      console.log('[Recorder] handleGlobalAssertion: 이벤트 개수:', events ? events.length : 0);
+      if (events && events.length > 0) {
+        // 마지막 이벤트부터 역순으로 page.url이 있는 이벤트 찾기
+        for (let i = events.length - 1; i >= 0; i--) {
+          const event = events[i];
+          console.log('[Recorder] handleGlobalAssertion: 이벤트 확인:', i, {
+            hasEvent: !!event,
+            hasPage: !!(event && event.page),
+            hasUrl: !!(event && event.page && event.page.url),
+            url: event && event.page ? event.page.url : null
+          });
+          if (event && event.page && event.page.url) {
+            currentUrl = event.page.url;
+            console.log('[Recorder] handleGlobalAssertion: 마지막 이벤트의 URL 사용:', currentUrl, '이벤트 인덱스:', i);
+            break;
+          }
+        }
+      } else {
+        console.log('[Recorder] handleGlobalAssertion: 이벤트가 없거나 빈 배열');
+      }
+    } else {
+      console.log('[Recorder] handleGlobalAssertion: getAllEvents 함수가 전달되지 않음');
+    }
     
-    // elementInfo에 matchMode 포함하여 전달
-    addVerifyAction(assertionType, null, inputValue || currentUrl, { matchMode: matchModeValue });
+    // 마지막 이벤트에 URL이 없으면 취소
+    if (!currentUrl) {
+      console.log('[Recorder] handleGlobalAssertion: 마지막 이벤트에 URL이 없음, verifyUrl 취소');
+      return; // URL이 없으면 취소
+    }
+    
+    // prompt 없이 마지막 이벤트의 URL을 자동으로 사용 (일반 verifyUrl과 동일한 방식)
+    const inputValue = currentUrl;
+    console.log('[Recorder] handleGlobalAssertion: 사용할 URL:', inputValue);
+    
+    // matchMode 제거 - 일반 verifyUrl과 동일하게 처리 (기본값 'exact' 사용)
+    console.log('[Recorder] handleGlobalAssertion: addVerifyAction 호출 시작', {
+      assertionType,
+      path: null,
+      value: inputValue,
+      hasAddVerifyAction: !!addVerifyAction
+    });
+    
+    // addVerifyAction은 async 함수이므로 await 사용
+    try {
+      const result = await addVerifyAction(assertionType, null, inputValue);
+      console.log('[Recorder] handleGlobalAssertion: addVerifyAction 호출 완료', result);
+    } catch (error) {
+      console.error('[Recorder] handleGlobalAssertion: addVerifyAction 호출 오류', error);
+    }
     return;
   }
   

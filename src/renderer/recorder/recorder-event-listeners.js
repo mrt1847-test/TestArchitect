@@ -768,7 +768,8 @@ export function setupEventListeners(dependencies) {
       handleGlobalAssertion(assertionType, {
         addVerifyAction,
         addAssertionAfterStep: dependencies.addAssertionAfterStep,
-        startSimpleElementSelection: startSimpleElementSelectionWrapper
+        startSimpleElementSelection: startSimpleElementSelectionWrapper,
+        getAllEvents // 이미 destructuring으로 받은 getAllEvents 함수 전달
       });
     });
   } else {

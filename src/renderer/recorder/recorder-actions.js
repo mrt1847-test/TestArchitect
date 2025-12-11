@@ -430,6 +430,7 @@ export async function addVerifyAction(
     if (verifyType === 'verifyTitle') {
       value = value || currentTitle;
     } else if (verifyType === 'verifyUrl') {
+      // verifyUrl: 중간 URL 필터링 적용
       // URL 정규화 적용 (쿼리 파라미터 제거)
       let rawUrl = value || currentUrl;
       
@@ -496,8 +497,8 @@ export async function addVerifyAction(
       },
       primarySelector: null,
       primarySelectorType: null,
-      // verifyUrl의 경우 matchMode 설정 (elementInfo에서 가져오기)
-      matchMode: elementInfo?.matchMode || null
+      // matchMode 제거 - 기본값 'exact' 사용
+      matchMode: null
     };
   }
   

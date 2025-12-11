@@ -1797,7 +1797,7 @@ function setupEventListeners() {
     startSelectionWorkflowWrapper,
     startSimpleElementSelectionWrapper,
     addInteractionAction,
-    addVerifyAction,
+    addVerifyAction: addVerifyActionWrapper, // 래퍼 함수 사용
     addWaitAction,
     normalizeEventRecord,
     syncTimelineFromEvents,
@@ -2308,7 +2308,8 @@ function handleGlobalAssertion(assertionType) {
   handleGlobalAssertionModule(assertionType, {
     addVerifyAction: addVerifyActionWrapper,
     addAssertionAfterStep,
-    startSimpleElementSelection: startSimpleElementSelectionWrapper
+    startSimpleElementSelection: startSimpleElementSelectionWrapper,
+    getAllEvents // 최신 allEvents를 가져오는 함수 전달
   });
 }
 
